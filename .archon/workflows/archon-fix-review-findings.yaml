@@ -1,0 +1,102 @@
+name: archon-fix-review-findings
+description: |
+  Use when: A PR review has completed and medium/low severity issues remain unfixed.
+  Triggers: "fix review findings", "fix medium and low", "address medium/low issues",
+            "fix medium low PR", "handle medium/low review feedback".
+  Does: Takes PR number -> fetches review comments -> extracts MEDIUM and LOW severity
+        findings -> writes them as review artifacts -> uses archon-self-fix-all to implement
+        all fixes, validate, commit, push, and post a fix summary comment on the PR.
+  NOT for: Fixing CRITICAL/HIGH issues (handled automatically during the review workflow).
+           Running a new review (use archon-smart-pr-review or archon-comprehensive-pr-review).
+
+nodes:
+  - id: setup-pr
+    bash: |
+      #!/bin/bash
+      set -e
+      PR_NUMBER="$ARGUMENTS"
+      if [ -z "$PR_NUMBER" ] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+        echo "Error: PR number required. Usage: workflow run archon-fix-review-findings <PR_NUMBER>" >&2
+        exit 1
+      fi
+
+      echo "$PR_NUMBER" > "$ARTIFACTS_DIR/.pr-number"
+      mkdir -p "$ARTIFACTS_DIR/review"
+
+      # Get PR branch and checkout
+      HEAD_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+      git fetch origin "$HEAD_BRANCH"
+      git checkout "$HEAD_BRANCH"
+      git pull origin "$HEAD_BRANCH"
+
+      # Fetch all PR comments (Archon review workflows post findings as issue comments)
+      gh pr view "$PR_NUMBER" --json comments --jq '.comments[].body' > "$ARTIFACTS_DIR/review/pr-comments-raw.txt"
+
+      # Also fetch PR review bodies (in case findings were posted as review submissions)
+      gh pr view "$PR_NUMBER" --json reviews --jq '.reviews[].body // empty' >> "$ARTIFACTS_DIR/review/pr-comments-raw.txt" 2>/dev/null || true
+
+      echo "PR=$PR_NUMBER BRANCH=$HEAD_BRANCH"
+    timeout: 60000
+
+  - id: extract-findings
+    prompt: |
+      You are a review findings extractor. Your job is to read the PR comments from a
+      completed code review and extract only the MEDIUM and LOW severity findings into a
+      consolidated review artifact that the downstream fix command can process.
+
+      ## Context
+
+      PR number: read from `$ARTIFACTS_DIR/.pr-number`
+      Raw PR comments: `$ARTIFACTS_DIR/review/pr-comments-raw.txt`
+
+      ## Instructions
+
+      1. Read `$ARTIFACTS_DIR/review/pr-comments-raw.txt`
+      2. Identify comments posted by Archon review workflows — look for review synthesis
+         comments, auto-fix reports, or individual agent findings (they typically have
+         severity tables, fix/skip sections, and "Auto-fix by Archon" footers)
+      3. Extract ALL findings classified as **MEDIUM** or **LOW** severity
+      4. **Skip** any CRITICAL or HIGH findings — these were already auto-fixed during review
+      5. Write the extracted findings to `$ARTIFACTS_DIR/review/consolidated-review.md`
+
+      ## Output Format
+
+      Write `$ARTIFACTS_DIR/review/consolidated-review.md` using this structure:
+
+      ```markdown
+      # Consolidated Review Findings (Medium/Low)
+
+      **PR**: #<number>
+      **Source**: Extracted from PR review comments
+      **Scope**: MEDIUM and LOW severity only (CRITICAL/HIGH already addressed)
+
+      ---
+
+      ## Findings
+
+      ### MEDIUM: <finding title>
+      **Severity**: MEDIUM
+      **Location**: `<file>:<line>` (if specified in the original finding)
+      **Description**: <what the issue is>
+      **Suggested Fix**: <how to fix it, from the original review>
+
+      ### LOW: <finding title>
+      **Severity**: LOW
+      **Location**: `<file>:<line>`
+      **Description**: <description>
+      **Suggested Fix**: <suggestion>
+      ```
+
+      If NO medium/low findings exist in the comments, still write the file but note
+      "No MEDIUM or LOW findings found in PR review comments" in the body.
+
+      ## Important
+
+      - Preserve original file locations, descriptions, and fix suggestions exactly
+      - Do not invent or embellish findings — only extract what the review agents reported
+      - Include enough context for each finding so the fix agent understands what to change
+    depends_on: [setup-pr]
+
+  - id: fix-all
+    command: archon-self-fix-all
+    depends_on: [extract-findings]
