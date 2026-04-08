@@ -793,6 +793,7 @@ const getHealthRoute = createRoute({
             .object({
               status: z.string(),
               adapter: z.string(),
+              activeAdapters: z.array(z.string()),
               concurrency: z.record(z.unknown()),
               runningWorkflows: z.number(),
               version: z.string().optional(),
@@ -812,7 +813,8 @@ const getHealthRoute = createRoute({
 export function registerApiRoutes(
   app: OpenAPIHono,
   webAdapter: WebAdapter,
-  lockManager: ConversationLockManager
+  lockManager: ConversationLockManager,
+  activeAdapters: string[]
 ): void {
   function apiError(
     c: Context,
@@ -2483,6 +2485,7 @@ export function registerApiRoutes(
     return c.json({
       status: 'ok',
       adapter: 'web',
+      activeAdapters,
       concurrency: {
         ...stats,
         active: allActiveIds.length,

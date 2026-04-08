@@ -207,7 +207,7 @@ function makeApp(): OpenAPIHono {
     }),
     getStats: mock(() => ({ active: 0, queued: 0 })),
   } as unknown as ConversationLockManager;
-  registerApiRoutes(app, mockWebAdapter, mockLockManager);
+  registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
   return app;
 }
 
