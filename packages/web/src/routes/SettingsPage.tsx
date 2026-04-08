@@ -531,16 +531,19 @@ function AssistantConfigSection({ config }: { config: SafeConfigResponse }): Rea
 }
 
 function PlatformConnectionsSection({
-  adapter,
+  activeAdapters,
 }: {
-  adapter: string | undefined;
+  activeAdapters: string[] | undefined;
 }): React.ReactElement {
+  const adapters = activeAdapters ?? [];
   const platforms = [
-    { name: 'Web', connected: adapter === 'web' },
-    { name: 'Slack', connected: false },
-    { name: 'Telegram', connected: false },
-    { name: 'Discord', connected: false },
-    { name: 'GitHub', connected: false },
+    { name: 'Web', connected: adapters.includes('web') },
+    { name: 'Slack', connected: adapters.includes('slack') },
+    { name: 'Telegram', connected: adapters.includes('telegram') },
+    { name: 'Discord', connected: adapters.includes('discord') },
+    { name: 'GitHub', connected: adapters.includes('github') },
+    { name: 'Gitea', connected: adapters.includes('gitea') },
+    { name: 'GitLab', connected: adapters.includes('gitlab') },
   ];
 
   return (
@@ -641,7 +644,7 @@ export function SettingsPage(): React.ReactElement {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {configData && <AssistantConfigSection config={configData.config} />}
-            <PlatformConnectionsSection adapter={health?.adapter} />
+            <PlatformConnectionsSection activeAdapters={health?.activeAdapters} />
           </div>
 
           <ProjectsSection />

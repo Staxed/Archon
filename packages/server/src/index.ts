@@ -418,8 +418,20 @@ async function main(): Promise<void> {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
+  // Build active adapters list from env-var flags for the health endpoint
+  const hasSlack = Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN);
+  const activeAdapters: string[] = [
+    'web',
+    ...(hasGitHub ? ['github'] : []),
+    ...(hasGitea ? ['gitea'] : []),
+    ...(hasGitLab ? ['gitlab'] : []),
+    ...(hasDiscord ? ['discord'] : []),
+    ...(hasSlack ? ['slack'] : []),
+    ...(hasTelegram ? ['telegram'] : []),
+  ];
+
   // Register Web UI API routes
-  registerApiRoutes(app, webAdapter, lockManager);
+  registerApiRoutes(app, webAdapter, lockManager, activeAdapters);
 
   // GitHub webhook endpoint
   if (github) {

@@ -46,6 +46,7 @@ export interface CodebaseResponse {
 export interface HealthResponse {
   status: string;
   adapter: string;
+  activeAdapters: string[];
   concurrency: {
     active: number;
     queuedTotal: number;

@@ -108,7 +108,7 @@ describe('GET /api/conversations/:id', () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => MOCK_CONV);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-test-abc');
     expect(response.status).toBe(200);
@@ -120,7 +120,7 @@ describe('GET /api/conversations/:id', () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-nonexistent-id');
     expect(response.status).toBe(404);
@@ -134,7 +134,7 @@ describe('GET /api/conversations/:id', () => {
     });
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-test-abc');
     expect(response.status).toBe(500);
@@ -149,7 +149,7 @@ describe('DELETE /api/conversations/:id', () => {
     mockSoftDeleteConversation.mockImplementationOnce(async () => {});
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-test-abc', { method: 'DELETE' });
     expect(response.status).toBe(200);
@@ -162,7 +162,7 @@ describe('DELETE /api/conversations/:id', () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-nonexistent-id', {
       method: 'DELETE',
@@ -179,7 +179,7 @@ describe('PATCH /api/conversations/:id', () => {
     mockUpdateConversationTitle.mockImplementationOnce(async () => {});
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-test-abc', {
       method: 'PATCH',
@@ -196,7 +196,7 @@ describe('PATCH /api/conversations/:id', () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-nonexistent-id', {
       method: 'PATCH',
@@ -210,7 +210,7 @@ describe('PATCH /api/conversations/:id', () => {
 
   test('returns 400 for malformed JSON body', async () => {
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/web-test-abc', {
       method: 'PATCH',
@@ -224,7 +224,7 @@ describe('PATCH /api/conversations/:id', () => {
     mockFindConversationByPlatformId.mockImplementationOnce(async () => MOCK_CONV);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const callsBefore = mockUpdateConversationTitle.mock.calls.length;
     const response = await app.request('/api/conversations/web-test-abc', {
@@ -243,7 +243,7 @@ describe('PATCH /api/conversations/:id', () => {
     mockUpdateConversationTitle.mockImplementationOnce(async () => {});
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const longTitle = 'a'.repeat(300);
     const response = await app.request('/api/conversations/web-test-abc', {
@@ -264,7 +264,7 @@ describe('POST /api/conversations', () => {
 
   test('creates conversation and returns auto-generated conversationId', async () => {
     const app = new OpenAPIHono();
-    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations', {
       method: 'POST',
@@ -279,7 +279,7 @@ describe('POST /api/conversations', () => {
 
   test('returns 400 if conversationId is provided in request body', async () => {
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations', {
       method: 'POST',
@@ -293,7 +293,7 @@ describe('POST /api/conversations', () => {
 
   test('returns 400 for malformed JSON body', async () => {
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, mockWebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations', {
       method: 'POST',
@@ -320,7 +320,7 @@ describe('POST /api/conversations with message (atomic create+send)', () => {
 
   test('creates conversation and dispatches message atomically', async () => {
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, mockLockManager);
+    registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
 
     const response = await app.request('/api/conversations', {
       method: 'POST',
@@ -342,7 +342,7 @@ describe('POST /api/conversations with message (atomic create+send)', () => {
     const callsBefore = mockAddMessage.mock.calls.length;
 
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, mockLockManager);
+    registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
 
     await app.request('/api/conversations', {
       method: 'POST',
@@ -356,7 +356,7 @@ describe('POST /api/conversations with message (atomic create+send)', () => {
     const callsBefore = mockGenerateAndSetTitle.mock.calls.length;
 
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, mockLockManager);
+    registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
 
     await app.request('/api/conversations', {
       method: 'POST',
@@ -370,7 +370,7 @@ describe('POST /api/conversations with message (atomic create+send)', () => {
     const callsBefore = mockGenerateAndSetTitle.mock.calls.length;
 
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, mockWebAdapter, mockLockManager);
+    registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
 
     await app.request('/api/conversations', {
       method: 'POST',
@@ -386,7 +386,7 @@ describe('POST /api/conversations with message (atomic create+send)', () => {
     } as unknown as WebAdapter;
 
     const app = new OpenAPIHono({ defaultHook: validationErrorHook });
-    registerApiRoutes(app, simpleWebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, simpleWebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations', {
       method: 'POST',
@@ -430,7 +430,7 @@ describe('GET /api/conversations/:id — forge platform IDs with encoded slashes
     });
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     // Client must URL-encode the ID: %2F for slash, %23 for #
     const response = await app.request('/api/conversations/CyberFitz-LLC%2Fdevops-platform%2324');
@@ -456,7 +456,7 @@ describe('GET /api/conversations/:id — forge platform IDs with encoded slashes
     });
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/owner%2Frepo!42');
     expect(response.status).toBe(200);
@@ -468,7 +468,7 @@ describe('GET /api/conversations/:id — forge platform IDs with encoded slashes
     mockFindConversationByPlatformId.mockImplementationOnce(async () => null);
 
     const app = new OpenAPIHono();
-    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager);
+    registerApiRoutes(app, {} as WebAdapter, {} as ConversationLockManager, ['web']);
 
     const response = await app.request('/api/conversations/unknown-org%2Funknown-repo%2399');
     expect(response.status).toBe(404);

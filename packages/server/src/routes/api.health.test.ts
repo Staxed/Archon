@@ -187,7 +187,7 @@ function makeApp(): Hono {
     }),
     getStats: mockGetStats,
   } as unknown as ConversationLockManager;
-  registerApiRoutes(app, mockWebAdapter, mockLockManager);
+  registerApiRoutes(app, mockWebAdapter, mockLockManager, ['web']);
   return app;
 }
 
@@ -221,12 +221,14 @@ describe('GET /api/health', () => {
     const body = (await response.json()) as {
       status: string;
       adapter: string;
+      activeAdapters: string[];
       concurrency: { active: number; activeConversationIds: string[] };
       runningWorkflows: number;
       version: string;
     };
     expect(body.status).toBe('ok');
     expect(body.adapter).toBe('web');
+    expect(body.activeAdapters).toEqual(['web']);
     expect(body.concurrency).toBeDefined();
     expect(body.concurrency.active).toBe(1);
     expect(body.concurrency.activeConversationIds).toEqual(['conv-1']);
