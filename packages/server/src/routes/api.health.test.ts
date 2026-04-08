@@ -365,6 +365,38 @@ describe('GET /api/health', () => {
     const body = (await response.json()) as { is_docker: boolean };
     expect(body.is_docker).toBe(true);
   });
+
+  test('returns all active adapters when multiple are configured', async () => {
+    mockGetStats.mockImplementationOnce(() => ({
+      active: 0,
+      queuedTotal: 0,
+      queuedByConversation: [],
+      maxConcurrent: 10,
+      activeConversationIds: [],
+    }));
+    mockGetRunningWorkflows.mockImplementationOnce(async () => []);
+
+    const appMulti = new OpenAPIHono();
+    const mockWebAdapter = {
+      setConversationDbId: mock((_platformId: string, _dbId: string) => {}),
+      emitSSE: mock(async () => {}),
+      emitLockEvent: mock(async () => {}),
+    } as unknown as WebAdapter;
+    const mockLockManager = {
+      acquireLock: mock(async (_id: string, fn: () => Promise<void>) => {
+        await fn();
+        return { status: 'started' };
+      }),
+      getStats: mockGetStats,
+    } as unknown as ConversationLockManager;
+    registerApiRoutes(appMulti, mockWebAdapter, mockLockManager, ['web', 'slack', 'github']);
+
+    const response = await appMulti.request('/api/health');
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as { activeAdapters: string[] };
+    expect(body.activeAdapters).toEqual(['web', 'slack', 'github']);
+  });
 });
 
 // ---------------------------------------------------------------------------

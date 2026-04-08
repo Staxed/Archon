@@ -236,8 +236,9 @@ async function main(): Promise<void> {
     process.env.GITEA_URL && process.env.GITEA_TOKEN && process.env.GITEA_WEBHOOK_SECRET
   );
   const hasGitLab = Boolean(process.env.GITLAB_TOKEN && process.env.GITLAB_WEBHOOK_SECRET);
+  const hasSlack = Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN);
 
-  if (!hasTelegram && !hasDiscord && !hasGitHub && !hasGitea && !hasGitLab) {
+  if (!hasTelegram && !hasDiscord && !hasGitHub && !hasGitea && !hasGitLab && !hasSlack) {
     getLog().warn('no_platform_adapters_configured');
   }
 
@@ -418,8 +419,10 @@ async function main(): Promise<void> {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
-  // Build active adapters list from env-var flags for the health endpoint
-  const hasSlack = Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN);
+  // Build active adapters list from env-var flags for the health endpoint.
+  // Uses flags (not adapter instance null-checks) so registerApiRoutes can be
+  // called before Bun.serve() — moving it after would let the SPA catch-all
+  // intercept API routes.
   const activeAdapters: string[] = [
     'web',
     ...(hasGitHub ? ['github'] : []),
@@ -432,6 +435,7 @@ async function main(): Promise<void> {
 
   // Register Web UI API routes
   registerApiRoutes(app, webAdapter, lockManager, activeAdapters);
+  getLog().info({ activeAdapters }, 'server.adapters_registered');
 
   // GitHub webhook endpoint
   if (github) {
