@@ -1,5 +1,5 @@
 worktree:
-  baseBranch: dev
+  baseBranch: main
 
 docs:
   path: packages/docs-web/src/content/docs
