@@ -217,8 +217,8 @@
       "technicalNotes": "Extend knowledge-flush.ts. Use @archon/git for git diff operations. Haiku performs mechanical comparison (article content vs changed files). Staleness markers are standard markdown admonitions.",
       "dependsOn": ["US-009"],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 11. Files: packages/core/src/services/knowledge-flush.ts, packages/core/src/services/knowledge-flush.test.ts."
     },
     {
       "id": "US-012",

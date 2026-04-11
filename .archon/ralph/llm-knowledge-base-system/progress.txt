@@ -296,3 +296,27 @@
 - Existing test for index.md needed updating since writes now go through .tmp/ first
 
 ---
+
+## 2026-04-11 — US-011: Implement staleness validation in flush
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Added validateStaleness(), checkBrokenWikilinks(), addStalenessMarker(), identifyStaleArticles(), collectAllArticles(), getCurrentGitSha(), getGitDiffNameOnly(); updated updateLastFlush() to store git SHA
+- packages/core/src/services/knowledge-flush.test.ts — Added @archon/git mock, 6 new tests for staleness validation, wikilink checking, git SHA storage, idempotent markers
+
+**Acceptance criteria verified**:
+- [x] During flush, run Haiku model to compare existing articles against git diff since last-flush SHA
+- [x] Flag articles that reference files/functions/patterns that have changed significantly
+- [x] Add staleness markers to flagged articles (> [!WARNING] This article may be stale)
+- [x] Check for broken [[wikilink]] cross-references between articles
+- [x] Log validation results: articles checked, flagged stale, links broken
+- [x] Type-check passes
+- [x] Tests pass (30 tests, 74 expect calls)
+
+**Learnings**:
+- execFileAsync from @archon/git works well for running git commands; use -C flag for specifying repo directory
+- Staleness check is skipped when no lastFlushSha exists (empty string is falsy), so most existing tests don't trigger it
+- Multiple sendQuery calls in one test need callCount tracking to return different responses
+- Wikilink regex with global flag needs lastIndex reset for each article iteration
+
+---
