@@ -28,6 +28,10 @@ import {
   getProjectLogsPath,
   getRunArtifactsPath,
   getRunLogPath,
+  getProjectKnowledgePath,
+  getGlobalKnowledgePath,
+  getKnowledgeLogsPath,
+  getKnowledgeDomainsPath,
   resolveProjectRootFromCwd,
   ensureProjectStructure,
   createProjectSourceSymlink,
@@ -418,6 +422,69 @@ describe('archon-paths', () => {
       delete process.env.ARCHON_DOCKER;
       expect(getRunLogPath('acme', 'widget', 'run-123')).toBe(
         join(homedir(), '.archon', 'workspaces', 'acme', 'widget', 'logs', 'run-123.jsonl')
+      );
+    });
+  });
+
+  describe('getProjectKnowledgePath', () => {
+    test('appends knowledge/ to project root', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_HOME;
+      delete process.env.ARCHON_DOCKER;
+      expect(getProjectKnowledgePath('acme', 'widget')).toBe(
+        join(homedir(), '.archon', 'workspaces', 'acme', 'widget', 'knowledge')
+      );
+    });
+
+    test('respects ARCHON_HOME', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_DOCKER;
+      process.env.ARCHON_HOME = '/custom/archon';
+      expect(getProjectKnowledgePath('acme', 'widget')).toBe(
+        join('/custom/archon', 'workspaces', 'acme', 'widget', 'knowledge')
+      );
+    });
+  });
+
+  describe('getGlobalKnowledgePath', () => {
+    test('returns knowledge/ under archon home', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_HOME;
+      delete process.env.ARCHON_DOCKER;
+      expect(getGlobalKnowledgePath()).toBe(join(homedir(), '.archon', 'knowledge'));
+    });
+
+    test('returns /.archon/knowledge in Docker', () => {
+      process.env.ARCHON_DOCKER = 'true';
+      expect(getGlobalKnowledgePath()).toBe(join('/', '.archon', 'knowledge'));
+    });
+
+    test('respects ARCHON_HOME', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_DOCKER;
+      process.env.ARCHON_HOME = '/custom/archon';
+      expect(getGlobalKnowledgePath()).toBe(join('/custom/archon', 'knowledge'));
+    });
+  });
+
+  describe('getKnowledgeLogsPath', () => {
+    test('appends knowledge/logs/ to project root', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_HOME;
+      delete process.env.ARCHON_DOCKER;
+      expect(getKnowledgeLogsPath('acme', 'widget')).toBe(
+        join(homedir(), '.archon', 'workspaces', 'acme', 'widget', 'knowledge', 'logs')
+      );
+    });
+  });
+
+  describe('getKnowledgeDomainsPath', () => {
+    test('appends knowledge/domains/ to project root', () => {
+      delete process.env.WORKSPACE_PATH;
+      delete process.env.ARCHON_HOME;
+      delete process.env.ARCHON_DOCKER;
+      expect(getKnowledgeDomainsPath('acme', 'widget')).toBe(
+        join(homedir(), '.archon', 'workspaces', 'acme', 'widget', 'knowledge', 'domains')
       );
     });
   });

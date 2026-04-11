@@ -277,6 +277,38 @@ export function getRunLogPath(owner: string, repo: string, workflowRunId: string
 }
 
 /**
+ * Get the knowledge base directory for a project.
+ * Returns: ~/.archon/workspaces/owner/repo/knowledge/
+ */
+export function getProjectKnowledgePath(owner: string, repo: string): string {
+  return join(getProjectRoot(owner, repo), 'knowledge');
+}
+
+/**
+ * Get the global knowledge base directory.
+ * Returns: ~/.archon/knowledge/
+ */
+export function getGlobalKnowledgePath(): string {
+  return join(getArchonHome(), 'knowledge');
+}
+
+/**
+ * Get the knowledge logs directory for a project.
+ * Returns: ~/.archon/workspaces/owner/repo/knowledge/logs/
+ */
+export function getKnowledgeLogsPath(owner: string, repo: string): string {
+  return join(getProjectKnowledgePath(owner, repo), 'logs');
+}
+
+/**
+ * Get the knowledge domains directory for a project.
+ * Returns: ~/.archon/workspaces/owner/repo/knowledge/domains/
+ */
+export function getKnowledgeDomainsPath(owner: string, repo: string): string {
+  return join(getProjectKnowledgePath(owner, repo), 'domains');
+}
+
+/**
  * Resolve the project root path from a working directory path.
  * If the path is under ~/.archon/workspaces/owner/repo/..., returns the project root.
  * Returns null if the path is not under the workspaces directory.
