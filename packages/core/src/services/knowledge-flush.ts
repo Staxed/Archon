@@ -5,7 +5,7 @@
  * Reads unprocessed logs since last flush, calls Sonnet to produce/update
  * concept articles, then updates indexes and the flush timestamp.
  */
-import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, readdir, writeFile, mkdir, rename, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getProjectKnowledgePath } from '@archon/paths';
 import { createLogger } from '@archon/paths';
@@ -47,6 +47,58 @@ export interface KnowledgeFlushReport {
   logsProcessed: string[];
   skipped: boolean;
   skipReason?: string;
+}
+
+/**
+ * Acquire a file-based flush lock. Returns true if lock acquired, false if
+ * another live process holds it (skip with warning).
+ * Stale locks (dead PID) are reclaimed automatically.
+ */
+async function acquireFlushLock(knowledgePath: string): Promise<boolean> {
+  const log = getLog();
+  const lockPath = join(knowledgePath, 'meta', 'flush.lock');
+
+  try {
+    const content = await readFile(lockPath, 'utf-8');
+    const pid = parseInt(content.trim(), 10);
+
+    if (!isNaN(pid)) {
+      // Check if the process is still alive
+      try {
+        process.kill(pid, 0); // Signal 0 = existence check, no actual signal sent
+        // Process is alive — lock is held
+        log.warn({ pid, lockPath }, 'knowledge.flush_lock_held');
+        return false;
+      } catch {
+        // Process is dead — stale lock, reclaim it
+        log.info({ stalePid: pid, lockPath }, 'knowledge.flush_lock_reclaimed');
+      }
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw err;
+    }
+    // Lock file doesn't exist — proceed to create
+  }
+
+  // Write our PID
+  await mkdir(join(knowledgePath, 'meta'), { recursive: true });
+  await writeFile(lockPath, String(process.pid));
+  return true;
+}
+
+/**
+ * Release the flush lock file.
+ */
+async function releaseFlushLock(knowledgePath: string): Promise<void> {
+  const lockPath = join(knowledgePath, 'meta', 'flush.lock');
+  try {
+    await unlink(lockPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw err;
+    }
+  }
 }
 
 /** Prompt sent to Sonnet to synthesize daily logs into structured articles */
@@ -116,12 +168,27 @@ export async function flushKnowledge(
 
   log.info({ owner, repo }, 'knowledge.flush_started');
 
+  // Ensure KB directory exists
+  await initKnowledgeDir(owner, repo);
+
+  const knowledgePath = getProjectKnowledgePath(owner, repo);
+
+  // Acquire flush lock (one concurrent flush per project)
+  const lockAcquired = await acquireFlushLock(knowledgePath);
+  if (!lockAcquired) {
+    log.warn({ owner, repo }, 'knowledge.flush_skipped_locked');
+    return {
+      articlesCreated: 0,
+      articlesUpdated: 0,
+      articlesStale: 0,
+      domainsCreated: [],
+      logsProcessed: [],
+      skipped: true,
+      skipReason: 'Flush lock held by another process',
+    };
+  }
+
   try {
-    // Ensure KB directory exists
-    await initKnowledgeDir(owner, repo);
-
-    const knowledgePath = getProjectKnowledgePath(owner, repo);
-
     // Read last flush metadata
     const lastFlush = await readLastFlush(knowledgePath);
 
@@ -154,10 +221,10 @@ export async function flushKnowledge(
       mergedConfig.knowledge.compileModel
     );
 
-    // Write articles and collect stats
-    const report = await writeFlushResults(knowledgePath, synthesis, unprocessedLogs);
+    // Write to temp dir first, then atomic rename to final paths
+    const report = await writeFlushResultsAtomic(knowledgePath, synthesis, unprocessedLogs);
 
-    // Update last-flush metadata
+    // Update last-flush metadata (also via temp + rename)
     await updateLastFlush(knowledgePath, unprocessedLogs);
 
     log.info(
@@ -186,6 +253,9 @@ export async function flushKnowledge(
       'knowledge.flush_failed'
     );
     throw err;
+  } finally {
+    // Always release the lock
+    await releaseFlushLock(knowledgePath);
   }
 }
 
@@ -333,35 +403,41 @@ async function synthesizeLogs(
 }
 
 /**
- * Write synthesized articles, update domain indexes, and top-level index.
- * Returns flush report with stats.
+ * Write synthesized articles to a temp directory, then atomically rename
+ * into final paths. If flush crashes mid-write, the temp dir is cleaned up
+ * on next flush (idempotent).
  */
-async function writeFlushResults(
+async function writeFlushResultsAtomic(
   knowledgePath: string,
   synthesis: FlushSynthesis,
   processedLogs: string[]
 ): Promise<KnowledgeFlushReport> {
   const domainsDir = join(knowledgePath, 'domains');
+  const tmpDir = join(knowledgePath, '.tmp');
+
+  // Clean up any leftover temp dir from a previous crashed flush
+  try {
+    await rm(tmpDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
+  }
+  await mkdir(tmpDir, { recursive: true });
+
   let articlesCreated = 0;
   let articlesUpdated = 0;
   const domainsCreated: string[] = [];
   const domainArticles: Record<string, string[]> = {};
 
-  // Write individual articles
+  // Collect all files to write into temp dir first
+  const pendingRenames: { tmpPath: string; finalPath: string }[] = [];
+
+  // Write individual articles to temp dir
   for (const article of synthesis.articles) {
     const domainDir = join(domainsDir, article.domain);
 
-    // Create domain directory if it doesn't exist (organic domain creation)
-    try {
-      await mkdir(domainDir, { recursive: true });
-      // Check if this is a new domain
-      const existingDomains = await readdir(domainsDir);
-      if (!existingDomains.includes(article.domain)) {
-        domainsCreated.push(article.domain);
-      }
-    } catch {
-      // mkdir with recursive won't fail if exists
-    }
+    // Create real domain directory (needed for _index.md check and final location)
+    await mkdir(domainDir, { recursive: true });
+
     // Track domains created by checking if _index.md exists
     const indexPath = join(domainDir, '_index.md');
     let isNewDomain = false;
@@ -378,7 +454,7 @@ async function writeFlushResults(
 
     const articlePath = join(domainDir, `${article.concept}.md`);
 
-    // Check if article exists (for created vs updated tracking)
+    // Check if article exists in real dir (for created vs updated tracking)
     let articleExists = false;
     try {
       await readFile(articlePath, 'utf-8');
@@ -387,7 +463,12 @@ async function writeFlushResults(
       // File doesn't exist
     }
 
-    await writeFile(articlePath, article.content);
+    // Write to temp dir
+    const tmpArticleDir = join(tmpDir, 'domains', article.domain);
+    await mkdir(tmpArticleDir, { recursive: true });
+    const tmpArticlePath = join(tmpArticleDir, `${article.concept}.md`);
+    await writeFile(tmpArticlePath, article.content);
+    pendingRenames.push({ tmpPath: tmpArticlePath, finalPath: articlePath });
 
     if (articleExists) {
       articlesUpdated++;
@@ -401,38 +482,61 @@ async function writeFlushResults(
     }
     domainArticles[article.domain].push(article.concept);
 
-    // Create domain _index.md if new domain
+    // Create domain _index.md in temp if new domain
     if (isNewDomain) {
       const domainTitle = article.domain
         .split('-')
         .map(w => w.charAt(0).toUpperCase() + w.slice(1))
         .join(' ');
       const domainIndexContent = `# ${domainTitle}\n\n${synthesis.domainSummaries[article.domain] ?? ''}\n\n## Articles\n\n${domainArticles[article.domain].map(c => `- [[${article.domain}/${c}|${formatConceptTitle(c)}]]`).join('\n')}\n`;
-      await writeFile(indexPath, domainIndexContent);
+      const tmpIndexPath = join(tmpArticleDir, '_index.md');
+      await writeFile(tmpIndexPath, domainIndexContent);
+      pendingRenames.push({ tmpPath: tmpIndexPath, finalPath: indexPath });
     }
   }
 
-  // Update existing domain indexes with new articles
+  // Update existing domain indexes — write to temp, then rename
   for (const [domain, concepts] of Object.entries(domainArticles)) {
     const indexPath = join(domainsDir, domain, '_index.md');
     try {
       const existingIndex = await readFile(indexPath, 'utf-8');
-      // Only update if articles section needs new entries
       const updatedIndex = updateDomainIndex(
         existingIndex,
         domain,
         concepts,
         synthesis.domainSummaries[domain]
       );
-      await writeFile(indexPath, updatedIndex);
+      const tmpIndexDir = join(tmpDir, 'domains', domain);
+      await mkdir(tmpIndexDir, { recursive: true });
+      const tmpIndexPath = join(tmpIndexDir, '_index.md');
+      await writeFile(tmpIndexPath, updatedIndex);
+      pendingRenames.push({ tmpPath: tmpIndexPath, finalPath: indexPath });
     } catch {
       // Index was already created above for new domains
     }
   }
 
-  // Update top-level index.md
+  // Write top-level index.md to temp
   if (synthesis.indexSummary || synthesis.articles.length > 0) {
-    await updateTopLevelIndex(knowledgePath, synthesis, domainArticles);
+    const indexContent = buildTopLevelIndex(synthesis, domainArticles);
+    const tmpIndexPath = join(tmpDir, 'index.md');
+    await writeFile(tmpIndexPath, indexContent);
+    pendingRenames.push({
+      tmpPath: tmpIndexPath,
+      finalPath: join(knowledgePath, 'index.md'),
+    });
+  }
+
+  // Atomic phase: rename all temp files into their final locations
+  for (const { tmpPath, finalPath } of pendingRenames) {
+    await rename(tmpPath, finalPath);
+  }
+
+  // Clean up temp dir
+  try {
+    await rm(tmpDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
   }
 
   return {
@@ -494,15 +598,12 @@ function updateDomainIndex(
 }
 
 /**
- * Update the top-level index.md with domain summaries.
+ * Build the top-level index.md content (pure — no I/O).
  */
-async function updateTopLevelIndex(
-  knowledgePath: string,
+function buildTopLevelIndex(
   synthesis: FlushSynthesis,
   domainArticles: Record<string, string[]>
-): Promise<void> {
-  const indexPath = join(knowledgePath, 'index.md');
-
+): string {
   const domainSections: string[] = [];
   const allDomains = new Set([
     ...Object.keys(synthesis.domainSummaries),
@@ -515,7 +616,7 @@ async function updateTopLevelIndex(
     domainSections.push(`### [[domains/${domain}/_index|${title}]]\n${summary}`);
   }
 
-  const indexContent = `# Knowledge Base Index
+  return `# Knowledge Base Index
 
 > This index is auto-maintained. Navigate to domain indexes for detailed articles.
 
@@ -523,12 +624,10 @@ async function updateTopLevelIndex(
 
 ${domainSections.join('\n\n')}
 `;
-
-  await writeFile(indexPath, indexContent);
 }
 
 /**
- * Update meta/last-flush.json with current timestamp.
+ * Update meta/last-flush.json with current timestamp via atomic temp+rename.
  */
 async function updateLastFlush(knowledgePath: string, processedLogs: string[]): Promise<void> {
   const metaDir = join(knowledgePath, 'meta');
@@ -540,7 +639,10 @@ async function updateLastFlush(knowledgePath: string, processedLogs: string[]): 
     logsCaptured: processedLogs,
   };
 
-  await writeFile(join(metaDir, 'last-flush.json'), JSON.stringify(meta, null, 2));
+  const tmpPath = join(metaDir, 'last-flush.json.tmp');
+  const finalPath = join(metaDir, 'last-flush.json');
+  await writeFile(tmpPath, JSON.stringify(meta, null, 2));
+  await rename(tmpPath, finalPath);
 }
 
 /**

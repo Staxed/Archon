@@ -13,6 +13,24 @@ const mockMkdir = mock(async (path: string) => {
   return undefined;
 });
 
+const renameCalls: Array<{ oldPath: string; newPath: string }> = [];
+const mockRename = mock(async (oldPath: string, newPath: string) => {
+  renameCalls.push({ oldPath, newPath });
+  return undefined;
+});
+
+const unlinkCalls: string[] = [];
+const mockUnlink = mock(async (path: string) => {
+  unlinkCalls.push(path);
+  return undefined;
+});
+
+const rmCalls: string[] = [];
+const mockRm = mock(async (path: string) => {
+  rmCalls.push(path);
+  return undefined;
+});
+
 // File system state for readFile/readdir
 let fileSystem: Record<string, string> = {};
 let directories: Record<string, string[]> = {};
@@ -44,6 +62,9 @@ mock.module('node:fs/promises', () => ({
   mkdir: mockMkdir,
   readFile: mockReadFile,
   readdir: mockReaddir,
+  rename: mockRename,
+  unlink: mockUnlink,
+  rm: mockRm,
 }));
 
 // Mock @archon/paths
@@ -110,10 +131,16 @@ describe('knowledge-flush', () => {
   beforeEach(() => {
     writeFileCalls.length = 0;
     mkdirCalls.length = 0;
+    renameCalls.length = 0;
+    unlinkCalls.length = 0;
+    rmCalls.length = 0;
     fileSystem = {};
     directories = {};
     mockWriteFile.mockClear();
     mockMkdir.mockClear();
+    mockRename.mockClear();
+    mockUnlink.mockClear();
+    mockRm.mockClear();
     mockReadFile.mockClear();
     mockReaddir.mockClear();
     mockLoadConfig.mockClear();
@@ -406,10 +433,15 @@ describe('knowledge-flush', () => {
 
     await flushKnowledge('acme', 'widget');
 
-    const indexWrite = writeFileCalls.find(c => c.path.endsWith('/knowledge/index.md'));
+    // With atomic writes, index is written to .tmp/ first then renamed
+    const indexWrite = writeFileCalls.find(c => c.path.includes('.tmp/index.md'));
     expect(indexWrite).toBeDefined();
     expect(indexWrite!.content).toContain('[[domains/patterns/_index|Patterns]]');
     expect(indexWrite!.content).toContain('Code patterns including error handling.');
+
+    // Verify it was renamed to the final path
+    const indexRename = renameCalls.find(r => r.newPath.endsWith('/knowledge/index.md'));
+    expect(indexRename).toBeDefined();
   });
 
   test('handles AI response with markdown code fences', async () => {
@@ -550,5 +582,167 @@ describe('knowledge-flush', () => {
     const infoMessages = mockLogger.info.mock.calls.map((call: unknown[]) => call[1] as string);
     expect(infoMessages).toContain('knowledge.flush_started');
     expect(infoMessages).toContain('knowledge.flush_completed');
+  });
+
+  test('acquires and releases flush lock', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    // Lock file was written with PID
+    const lockWrite = writeFileCalls.find(c => c.path.includes('flush.lock'));
+    expect(lockWrite).toBeDefined();
+    expect(lockWrite!.content).toBe(String(process.pid));
+
+    // Lock was released (unlinked)
+    const lockUnlink = unlinkCalls.find(p => p.includes('flush.lock'));
+    expect(lockUnlink).toBeDefined();
+  });
+
+  test('skips flush when lock held by another live process', async () => {
+    // Simulate lock held by our own process (which is alive)
+    fileSystem[`${KB_PATH}/meta/flush.lock`] = String(process.pid);
+
+    const result = await flushKnowledge('acme', 'widget');
+
+    expect(result.skipped).toBe(true);
+    expect(result.skipReason).toContain('lock held');
+
+    // Warning logged
+    const warnMessages = mockLogger.warn.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(warnMessages).toContain('knowledge.flush_lock_held');
+  });
+
+  test('reclaims stale lock from dead process', async () => {
+    // Use a PID that definitely doesn't exist (very large number)
+    fileSystem[`${KB_PATH}/meta/flush.lock`] = '99999999';
+
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    const result = await flushKnowledge('acme', 'widget');
+
+    // Should have reclaimed the stale lock and proceeded
+    expect(result.skipped).toBe(false);
+
+    // Info log about reclaiming
+    const infoMessages = mockLogger.info.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(infoMessages).toContain('knowledge.flush_lock_reclaimed');
+  });
+
+  test('releases lock even when flush throws', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQuery.mockImplementation(function* () {
+      throw new Error('Synthesis failed');
+    });
+
+    await expect(flushKnowledge('acme', 'widget')).rejects.toThrow('Synthesis failed');
+
+    // Lock should still be released via finally
+    const lockUnlink = unlinkCalls.find(p => p.includes('flush.lock'));
+    expect(lockUnlink).toBeDefined();
+  });
+
+  test('writes articles to temp dir then renames to final paths', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    const synthesisResponse = JSON.stringify({
+      articles: [
+        {
+          domain: 'decisions',
+          concept: 'test-concept',
+          content: '# Test Concept\n\nContent.\n',
+        },
+      ],
+      domainSummaries: { decisions: 'Decisions.' },
+      indexSummary: 'Summary.',
+    });
+
+    mockSendQueryChunks = [{ type: 'assistant', content: synthesisResponse }];
+
+    await flushKnowledge('acme', 'widget');
+
+    // Articles written to .tmp first
+    const tmpArticleWrite = writeFileCalls.find(c =>
+      c.path.includes('.tmp/domains/decisions/test-concept.md')
+    );
+    expect(tmpArticleWrite).toBeDefined();
+
+    // Renamed from tmp to final
+    const articleRename = renameCalls.find(
+      r =>
+        r.oldPath.includes('.tmp/domains/decisions/test-concept.md') &&
+        r.newPath.includes('domains/decisions/test-concept.md') &&
+        !r.newPath.includes('.tmp')
+    );
+    expect(articleRename).toBeDefined();
+  });
+
+  test('updates last-flush.json via temp+rename', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    // last-flush.json written to tmp path first
+    const tmpWrite = writeFileCalls.find(c => c.path.includes('last-flush.json.tmp'));
+    expect(tmpWrite).toBeDefined();
+
+    // Renamed from tmp to final
+    const flushRename = renameCalls.find(
+      r => r.oldPath.includes('last-flush.json.tmp') && r.newPath.includes('last-flush.json')
+    );
+    expect(flushRename).toBeDefined();
+  });
+
+  test('cleans up leftover temp dir from crashed flush', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    // rm was called to clean up .tmp dir (at least twice — once before, once after)
+    const tmpRmCalls = rmCalls.filter(p => p.includes('.tmp'));
+    expect(tmpRmCalls.length).toBeGreaterThanOrEqual(1);
   });
 });
