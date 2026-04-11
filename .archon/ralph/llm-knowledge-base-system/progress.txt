@@ -124,3 +124,35 @@
 - Templates exported as named constants for use in tests and future consumers
 
 ---
+
+### Capture Service Pattern
+- **Where**: `packages/core/src/services/knowledge-capture.ts`
+- **Pattern**: IAssistantClient.sendQuery() returns AsyncGenerator<MessageChunk>. Collect `assistant` type chunks into string. Use `tools: []` to disable tools for extraction-only calls. Model name passed via `options.model`.
+- **Example**: `const generator = client.sendQuery(prompt, cwd, undefined, { model: 'haiku', tools: [] }); for await (const chunk of generator) { if (chunk.type === 'assistant') chunks.push(chunk.content); }`
+
+## 2026-04-11 — US-005: Implement capture service (transcript to daily log)
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-capture.ts — New file: captureKnowledge(), formatTranscript(), extractKnowledge(), appendToDailyLog()
+- packages/core/src/services/knowledge-capture.test.ts — New file: 12 tests covering all acceptance criteria
+- packages/core/package.json — Added knowledge-capture.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Create captureKnowledge(conversationId, owner, repo) function
+- [x] Reads conversation transcript via listMessages() from packages/core/src/db/messages.ts
+- [x] Calls Haiku model via IAssistantClient factory to extract structured knowledge
+- [x] Appends extracted knowledge to knowledge/logs/YYYY-MM-DD.md (daily log format)
+- [x] Falls back to available model if Haiku unavailable (uses configurable captureModel)
+- [x] Respects knowledge.enabled config (skip if false)
+- [x] Logs capture events: knowledge.capture_started, knowledge.capture_completed, knowledge.capture_failed
+- [x] Type-check passes
+- [x] Tests pass (mock AI client and DB) — 12 tests, 31 expect calls
+
+**Learnings**:
+- IAssistantClient only has streaming sendQuery(), no simple completion — must collect chunks
+- Used `tools: []` to disable tools for extraction (different semantics from `undefined`)
+- Mock generator functions need `function*` syntax, not arrow functions
+- Config provides Required<KnowledgeConfig> at merged level, so all fields guaranteed present
+
+---

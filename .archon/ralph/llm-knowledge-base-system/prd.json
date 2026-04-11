@@ -98,8 +98,8 @@
       "technicalNotes": "New file: packages/core/src/services/knowledge-capture.ts. Follow cleanup-service.ts pattern (lazy logger, config constants) at packages/core/src/services/cleanup-service.ts:27-40. Use IAssistantClient factory from packages/core/src/clients/. Read messages via listMessages() from packages/core/src/db/messages.ts.",
       "dependsOn": ["US-001", "US-002"],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 5. Files: packages/core/src/services/knowledge-capture.ts, packages/core/src/services/knowledge-capture.test.ts, packages/core/package.json."
     },
     {
       "id": "US-006",
