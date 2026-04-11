@@ -19,6 +19,42 @@ export interface AssistantDefaults {
   additionalDirectories?: string[];
 }
 
+/**
+ * Knowledge base configuration
+ * Controls automatic capture, compilation, and maintenance of cross-session knowledge
+ */
+export interface KnowledgeConfig {
+  /**
+   * Enable/disable knowledge base features
+   * @default true
+   */
+  enabled?: boolean;
+
+  /**
+   * Model to use for knowledge capture (fast extraction from transcripts)
+   * @default 'haiku'
+   */
+  captureModel?: string;
+
+  /**
+   * Model to use for knowledge compilation (synthesis into articles)
+   * @default 'sonnet'
+   */
+  compileModel?: string;
+
+  /**
+   * Minutes to wait after capture before triggering a flush
+   * @default 10
+   */
+  flushDebounceMinutes?: number;
+
+  /**
+   * Knowledge domains to initialize
+   * @default ['architecture', 'decisions', 'patterns', 'lessons', 'connections']
+   */
+  domains?: string[];
+}
+
 export interface ClaudeAssistantDefaults {
   model?: string;
   /** Claude Code settingSources — controls which CLAUDE.md files are loaded.
@@ -84,6 +120,11 @@ export interface GlobalConfig {
      */
     maxConversations?: number;
   };
+
+  /**
+   * Knowledge base configuration (global defaults)
+   */
+  knowledge?: KnowledgeConfig;
 }
 
 /**
@@ -157,6 +198,11 @@ export interface RepoConfig {
    * Sensitive — do not commit actual secrets to version-controlled repos.
    */
   env?: Record<string, string>;
+
+  /**
+   * Knowledge base configuration (repo overrides global)
+   */
+  knowledge?: KnowledgeConfig;
 
   /**
    * Default commands/workflows configuration
@@ -240,6 +286,11 @@ export interface MergedConfig {
    * Undefined when no env vars are configured.
    */
   envVars?: Record<string, string>;
+  /**
+   * Merged knowledge base configuration (global defaults + repo overrides).
+   * Repo-level fields override global-level fields.
+   */
+  knowledge: Required<KnowledgeConfig>;
 }
 
 /**
