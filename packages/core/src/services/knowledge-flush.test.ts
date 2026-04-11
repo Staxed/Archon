@@ -1147,4 +1147,104 @@ describe('knowledge-flush', () => {
     expect(mockInitGlobalKnowledgeDir).not.toHaveBeenCalled();
     expect(mockSendQuery).not.toHaveBeenCalled();
   });
+
+  // --- AI JSON parse failure tests ---
+
+  test('throws on malformed JSON from AI synthesis', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    // AI returns garbage that is not valid JSON
+    mockSendQueryChunks = [{ type: 'assistant', content: 'This is not JSON at all!' }];
+
+    await expect(flushKnowledge('acme', 'widget')).rejects.toThrow('invalid JSON');
+
+    // Warning was logged about the parse failure
+    const warnMessages = mockLogger.warn.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(warnMessages).toContain('knowledge.flush_synthesis_json_parse_failed');
+
+    // Error was logged at the flush level
+    const errorMessages = mockLogger.error.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(errorMessages).toContain('knowledge.flush_failed');
+
+    // Lock was still released despite the error
+    const lockUnlink = unlinkCalls.find(p => p.includes('flush.lock'));
+    expect(lockUnlink).toBeDefined();
+  });
+
+  test('throws on valid JSON with invalid schema from AI synthesis', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    // AI returns valid JSON but wrong structure (missing required fields)
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ wrongField: 'not what we expect' }),
+      },
+    ];
+
+    await expect(flushKnowledge('acme', 'widget')).rejects.toThrow('invalid structure');
+
+    // Warning was logged about schema validation failure
+    const warnMessages = mockLogger.warn.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(warnMessages).toContain('knowledge.flush_synthesis_schema_validation_failed');
+
+    // Lock was still released
+    const lockUnlink = unlinkCalls.find(p => p.includes('flush.lock'));
+    expect(lockUnlink).toBeDefined();
+  });
+
+  test('malformed JSON does not write any articles or update flush metadata', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    // AI returns invalid JSON
+    mockSendQueryChunks = [{ type: 'assistant', content: '{broken json' }];
+
+    await expect(flushKnowledge('acme', 'widget')).rejects.toThrow('invalid JSON');
+
+    // No articles were written (only lock file and maybe mkdir calls)
+    const articleWrites = writeFileCalls.filter(
+      c => c.path.includes('/domains/') || c.path.includes('last-flush.json')
+    );
+    expect(articleWrites).toHaveLength(0);
+
+    // No renames happened (no atomic writes)
+    const articleRenames = renameCalls.filter(
+      r => r.newPath.includes('/domains/') || r.newPath.includes('last-flush.json')
+    );
+    expect(articleRenames).toHaveLength(0);
+  });
+
+  test('partial valid JSON array in articles field fails Zod validation', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    // AI returns JSON that parses but has wrong article shape (missing content field)
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({
+          articles: [{ domain: 'decisions', concept: 'test' }], // missing 'content'
+          domainSummaries: {},
+          indexSummary: '',
+        }),
+      },
+    ];
+
+    await expect(flushKnowledge('acme', 'widget')).rejects.toThrow('invalid structure');
+
+    // Schema validation failure was logged
+    const warnMessages = mockLogger.warn.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(warnMessages).toContain('knowledge.flush_synthesis_schema_validation_failed');
+  });
 });
