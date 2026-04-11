@@ -3,7 +3,7 @@
  * Constructs the system prompt for the orchestrator agent with all
  * registered projects and available workflows.
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getGlobalKnowledgePath, getProjectKnowledgePath, parseOwnerRepo } from '@archon/paths';
 import type { Codebase } from '../types';
@@ -113,6 +113,9 @@ IMPORTANT: Always clone into ~/.archon/workspaces/{owner}/{repo}/source unless t
 /** Maximum approximate token budget for the knowledge index (~500 tokens ≈ ~2000 chars) */
 const KNOWLEDGE_INDEX_MAX_CHARS = 2000;
 
+/** Maximum approximate token budget for raw logs (~2000 tokens ≈ ~8000 chars) */
+const KNOWLEDGE_LOGS_MAX_CHARS = 8000;
+
 /**
  * Load a knowledge index.md file, returning its content or empty string if not found.
  * Gracefully handles ENOENT (empty KB state).
@@ -135,11 +138,76 @@ async function loadKnowledgeIndex(knowledgePath: string): Promise<string> {
 }
 
 /**
+ * Load unprocessed daily logs newer than the last flush timestamp.
+ * If no last-flush.json exists, includes all daily logs (pre-first-flush state).
+ * Returns concatenated log content truncated to the token budget.
+ */
+async function loadUnprocessedLogs(knowledgePath: string): Promise<string> {
+  const logsDir = join(knowledgePath, 'logs');
+  const metaPath = join(knowledgePath, 'meta', 'last-flush.json');
+
+  // Read the last-flush timestamp (if any)
+  let lastFlushTimestamp: string | null = null;
+  try {
+    const metaContent = await readFile(metaPath, 'utf-8');
+    const meta = JSON.parse(metaContent) as { timestamp?: string };
+    if (meta.timestamp) {
+      lastFlushTimestamp = meta.timestamp;
+    }
+  } catch {
+    // No last-flush.json — include all logs
+  }
+
+  // List log files
+  let logFiles: string[];
+  try {
+    const entries = await readdir(logsDir);
+    logFiles = entries.filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f)).sort();
+  } catch {
+    // No logs directory — nothing to include
+    return '';
+  }
+
+  // Filter to only logs newer than last flush
+  if (lastFlushTimestamp) {
+    const flushDate = lastFlushTimestamp.slice(0, 10); // Extract YYYY-MM-DD
+    logFiles = logFiles.filter(f => f.replace('.md', '') > flushDate);
+  }
+
+  if (logFiles.length === 0) return '';
+
+  // Read and concatenate logs (newest first), respecting token budget
+  let combined = '';
+  for (const file of logFiles.reverse()) {
+    try {
+      const content = await readFile(join(logsDir, file), 'utf-8');
+      if (combined.length + content.length > KNOWLEDGE_LOGS_MAX_CHARS) {
+        // Include partial content if we have room
+        const remaining = KNOWLEDGE_LOGS_MAX_CHARS - combined.length;
+        if (remaining > 200) {
+          combined += content.slice(0, remaining) + '\n\n*(log truncated)*\n';
+        }
+        break;
+      }
+      combined += content + '\n';
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  return combined;
+}
+
+/**
  * Format knowledge base content as a prompt section.
  * Combines global and project indexes with project taking precedence.
  */
-export function formatKnowledgeSection(globalIndex: string, projectIndex: string): string {
-  if (!globalIndex && !projectIndex) return '';
+export function formatKnowledgeSection(
+  globalIndex: string,
+  projectIndex: string,
+  unprocessedLogs?: string
+): string {
+  if (!globalIndex && !projectIndex && !unprocessedLogs) return '';
 
   let section = '\n## Knowledge Base\n\n';
   if (globalIndex) {
@@ -147,6 +215,9 @@ export function formatKnowledgeSection(globalIndex: string, projectIndex: string
   }
   if (projectIndex) {
     section += '### Project Knowledge\n\n' + projectIndex.trim() + '\n\n';
+  }
+  if (unprocessedLogs) {
+    section += '### Recent Knowledge (unprocessed)\n\n' + unprocessedLogs.trim() + '\n\n';
   }
   return section;
 }
@@ -182,9 +253,11 @@ You can answer questions directly or invoke workflows for structured development
   prompt += '## Available Workflows\n\n';
   prompt += formatWorkflowSection(workflows);
 
-  // Load global knowledge index
-  const globalIndex = await loadKnowledgeIndex(getGlobalKnowledgePath());
-  const knowledgeSection = formatKnowledgeSection(globalIndex, '');
+  // Load global knowledge index and unprocessed logs
+  const globalKnowledgePath = getGlobalKnowledgePath();
+  const globalIndex = await loadKnowledgeIndex(globalKnowledgePath);
+  const globalLogs = await loadUnprocessedLogs(globalKnowledgePath);
+  const knowledgeSection = formatKnowledgeSection(globalIndex, '', globalLogs);
   if (knowledgeSection) {
     prompt += knowledgeSection;
   }
@@ -230,14 +303,21 @@ ${formatProjectSection(scopedCodebase)}
   prompt += '## Available Workflows\n\n';
   prompt += formatWorkflowSection(workflows);
 
-  // Load global and project knowledge indexes
-  const globalIndex = await loadKnowledgeIndex(getGlobalKnowledgePath());
+  // Load global and project knowledge indexes + unprocessed logs
+  const globalKnowledgePath = getGlobalKnowledgePath();
+  const globalIndex = await loadKnowledgeIndex(globalKnowledgePath);
   let projectIndex = '';
+  let projectLogs = '';
   const parsed = parseOwnerRepo(scopedCodebase.name);
   if (parsed) {
-    projectIndex = await loadKnowledgeIndex(getProjectKnowledgePath(parsed.owner, parsed.repo));
+    const projectKnowledgePath = getProjectKnowledgePath(parsed.owner, parsed.repo);
+    projectIndex = await loadKnowledgeIndex(projectKnowledgePath);
+    projectLogs = await loadUnprocessedLogs(projectKnowledgePath);
   }
-  const knowledgeSection = formatKnowledgeSection(globalIndex, projectIndex);
+  // Prefer project logs over global logs for the supplementary context
+  const globalLogs = !projectLogs ? await loadUnprocessedLogs(globalKnowledgePath) : '';
+  const unprocessedLogs = projectLogs || globalLogs;
+  const knowledgeSection = formatKnowledgeSection(globalIndex, projectIndex, unprocessedLogs);
   if (knowledgeSection) {
     prompt += knowledgeSection;
   }

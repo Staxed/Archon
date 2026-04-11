@@ -2,9 +2,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // Mock node:fs/promises before importing the module under test
 const mockReadFile = mock<(path: string, encoding: string) => Promise<string>>(async () => '');
+const mockReaddir = mock<(path: string) => Promise<string[]>>(async () => []);
 
 mock.module('node:fs/promises', () => ({
   readFile: mockReadFile,
+  readdir: mockReaddir,
 }));
 
 mock.module('@archon/paths', () => ({
@@ -76,6 +78,10 @@ describe('buildOrchestratorPrompt — knowledge loading', () => {
   beforeEach(() => {
     mockReadFile.mockReset();
     mockReadFile.mockImplementation(async () => '');
+    mockReaddir.mockReset();
+    mockReaddir.mockImplementation(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
   });
 
   test('loads global knowledge index', async () => {
@@ -132,6 +138,10 @@ describe('buildProjectScopedPrompt — knowledge loading', () => {
   beforeEach(() => {
     mockReadFile.mockReset();
     mockReadFile.mockImplementation(async () => '');
+    mockReaddir.mockReset();
+    mockReaddir.mockImplementation(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
   });
 
   test('loads both global and project knowledge indexes', async () => {
@@ -207,5 +217,139 @@ describe('buildProjectScopedPrompt — knowledge loading', () => {
     const projectPos = result.indexOf('Project content');
     expect(globalPos).toBeGreaterThan(-1);
     expect(projectPos).toBeGreaterThan(globalPos);
+  });
+});
+
+describe('buildProjectScopedPrompt — unprocessed logs fallback', () => {
+  beforeEach(() => {
+    mockReadFile.mockReset();
+    mockReadFile.mockImplementation(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockReset();
+    mockReaddir.mockImplementation(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+  });
+
+  test('includes all daily logs when no last-flush.json exists', async () => {
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-10.md') {
+        return '## Decisions\n- Use Haiku for capture\n';
+      }
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
+        return '## Patterns\n- Builder pattern for prompts\n';
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs') {
+        return ['2026-04-10.md', '2026-04-11.md'];
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    expect(result).toContain('### Recent Knowledge (unprocessed)');
+    expect(result).toContain('Use Haiku for capture');
+    expect(result).toContain('Builder pattern for prompts');
+  });
+
+  test('includes only logs newer than last-flush timestamp', async () => {
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/meta/last-flush.json') {
+        return JSON.stringify({ timestamp: '2026-04-10T12:00:00Z', gitSha: 'abc123' });
+      }
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
+        return '## New knowledge\n- Fresh insight\n';
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs') {
+        return ['2026-04-09.md', '2026-04-10.md', '2026-04-11.md'];
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    expect(result).toContain('### Recent Knowledge (unprocessed)');
+    expect(result).toContain('Fresh insight');
+    // Should NOT include logs from 2026-04-09 or 2026-04-10 (at or before flush date)
+    expect(result).not.toContain('2026-04-09');
+  });
+
+  test('truncates logs that exceed token budget', async () => {
+    const largeContent = 'x'.repeat(9000);
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
+        return largeContent;
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs') {
+        return ['2026-04-11.md'];
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    expect(result).toContain('*(log truncated)*');
+    expect(result).not.toContain(largeContent);
+  });
+
+  test('skips unprocessed logs section when no logs exist', async () => {
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    expect(result).not.toContain('### Recent Knowledge (unprocessed)');
+  });
+
+  test('shows logs section after knowledge index', async () => {
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/index.md') {
+        return '# Project Index';
+      }
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
+        return '## Log entry';
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs') {
+        return ['2026-04-11.md'];
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    const indexPos = result.indexOf('# Project Index');
+    const logsPos = result.indexOf('### Recent Knowledge (unprocessed)');
+    expect(indexPos).toBeGreaterThan(-1);
+    expect(logsPos).toBeGreaterThan(indexPos);
+  });
+
+  test('falls back to global logs when no project logs exist', async () => {
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/knowledge/logs/2026-04-11.md') {
+        return '## Global log\n- Cross-project insight\n';
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockReaddir.mockImplementation(async (path: string) => {
+      if (path === '/home/user/.archon/knowledge/logs') {
+        return ['2026-04-11.md'];
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const codebase = makeCodebase();
+    const result = await buildProjectScopedPrompt(codebase, [codebase], emptyWorkflows);
+    expect(result).toContain('### Recent Knowledge (unprocessed)');
+    expect(result).toContain('Cross-project insight');
   });
 });
