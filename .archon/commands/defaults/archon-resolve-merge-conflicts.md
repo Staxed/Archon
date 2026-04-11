@@ -13,6 +13,12 @@ argument-hint: <pr-number|url>
 
 Analyze merge conflicts in the PR, automatically resolve simple conflicts where intent is clear, present options for complex conflicts, and push the resolution.
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for architecture
+decisions, module boundaries, and recent refactoring context that could inform how
+conflicts should be resolved (e.g., which side's changes reflect the intended direction).
+
 ---
 
 ## Phase 1: IDENTIFY - Get PR and Conflict Info

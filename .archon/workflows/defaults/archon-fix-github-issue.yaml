@@ -56,6 +56,12 @@ nodes:
 
       $fetch-issue.output
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for prior work on
+      similar issues, known patterns, and past decisions that could inform classification
+      and resolution approach.
+
       ## Classification Rules
 
       | Type | Indicators |
@@ -158,6 +164,11 @@ nodes:
       - **Classification**: $classify.output
       - **Issue title**: $classify.output.title
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for PR conventions,
+      commit message patterns, and any project-specific PR requirements.
+
       ## Instructions
 
       1. Check git status — ensure all changes are committed. If uncommitted changes exist, stage and commit them.
@@ -200,6 +211,11 @@ nodes:
       ## PR Scope
 
       $review-scope.output
+
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for past review
+      patterns and known areas of concern to inform which agents to prioritize.
 
       ## Rules
 

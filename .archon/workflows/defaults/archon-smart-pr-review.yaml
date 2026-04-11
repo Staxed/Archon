@@ -26,6 +26,12 @@ nodes:
       ## PR Scope
       $scope.output
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for project review
+      conventions, known areas of concern, and past review findings that could inform which
+      agents to run and what to focus on.
+
       ## Rules
       - **Code review**: Always run unless the diff is empty or only touches non-code files
         (e.g. README-only, config-only, or .yaml-only changes).

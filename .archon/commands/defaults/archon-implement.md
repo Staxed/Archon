@@ -49,6 +49,12 @@ Check `package.json` (or equivalent) for available scripts:
 
 ---
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for architecture
+decisions, coding patterns, and past implementation lessons relevant to this work.
+Use this knowledge to inform your approach and avoid repeating past mistakes.
+
 ## Phase 1: LOAD - Read the Plan
 
 ### 1.1 Load Plan File

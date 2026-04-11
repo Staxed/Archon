@@ -49,6 +49,12 @@ nodes:
       PR number: read from `$ARTIFACTS_DIR/.pr-number`
       Raw PR comments: `$ARTIFACTS_DIR/review/pr-comments-raw.txt`
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for past review
+      patterns, recurring findings, and known code quality concerns. This can help
+      prioritize which medium/low findings are most impactful to fix.
+
       ## Instructions
 
       1. Read `$ARTIFACTS_DIR/review/pr-comments-raw.txt`

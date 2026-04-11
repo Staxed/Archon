@@ -48,6 +48,11 @@ For each new/modified source file, find corresponding test file:
 find src -name "*.test.ts" -o -name "*.spec.ts" | head -20
 ```
 
+### 1.5 Check Knowledge Base
+
+If a knowledge base index is available in your context, check it for testing
+conventions, mock patterns, and past test coverage findings.
+
 **PHASE_1_CHECKPOINT:**
 - [ ] PR number identified
 - [ ] Source and test files identified

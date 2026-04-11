@@ -24,6 +24,12 @@ Review ALL code changed on this branch and implement simplifications directly. Y
 
 **Only code changed in this PR** — run `git diff $BASE_BRANCH...HEAD --name-only` to get the file list. Do not touch unrelated files.
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for established
+patterns, architecture decisions, and style conventions to ensure simplifications
+align with project norms.
+
 ## What to Simplify
 
 | Opportunity | What to Look For |

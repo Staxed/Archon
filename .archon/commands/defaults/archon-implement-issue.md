@@ -24,6 +24,12 @@ Execute the implementation plan from `/investigate-issue`:
 
 **Golden Rule**: Follow the artifact. If something seems wrong, validate it first - don't silently deviate.
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for architecture
+decisions, coding patterns, and past lessons relevant to this implementation.
+Incorporate relevant knowledge into your approach.
+
 ---
 
 ## Phase 1: LOAD - Get the Artifact

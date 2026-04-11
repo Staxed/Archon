@@ -235,6 +235,12 @@ nodes:
 
         Note all coding standards, patterns, and rules. Follow them exactly.
 
+        ### 0.4 Check Knowledge Base
+
+        If a knowledge base index is available in your context, check it for architecture
+        decisions, coding patterns, past lessons, and known gotchas relevant to the story
+        you are about to implement. Incorporate relevant context into your approach.
+
         **PHASE_0_CHECKPOINT:**
         - [ ] PRD directory identified
         - [ ] progress.txt read (or noted as absent)

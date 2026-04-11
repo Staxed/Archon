@@ -11,6 +11,12 @@ argument-hint: <any request>
 
 You are helping with a request that didn't match a specific workflow.
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for relevant
+architecture decisions, patterns, lessons learned, and known issues that could
+help with this request.
+
 ## Instructions
 
 1. **Understand the request** - What is the user actually asking for?

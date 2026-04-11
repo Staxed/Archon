@@ -105,6 +105,12 @@ nodes:
 
       $fetch-pr.output
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for known testing
+      patterns, areas that are particularly sensitive to UI changes, and past validation
+      lessons that could inform the test plan.
+
       ## Rules
 
       - **e2e_testable**: Changes affect the Web UI (components, hooks, styles, API routes

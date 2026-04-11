@@ -112,7 +112,14 @@ cat CLAUDE.md
 
 Note all coding standards, patterns, and rules that apply to this codebase.
 
-### 1.3 Extract from Input
+### 1.3 Check Knowledge Base
+
+If a knowledge base index is available in your context, check it for prior
+architecture decisions, design patterns, past implementation lessons, and known
+constraints that should inform this plan. Incorporate relevant context into your
+approach and reference it in the plan.
+
+### 1.4 Extract from Input
 
 - Core problem being solved
 - User value and business impact
@@ -120,7 +127,7 @@ Note all coding standards, patterns, and rules that apply to this codebase.
 - Complexity: LOW | MEDIUM | HIGH
 - Affected systems list
 
-### 1.4 Formulate User Story
+### 1.5 Formulate User Story
 
 ```
 As a <user type>

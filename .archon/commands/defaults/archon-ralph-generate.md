@@ -16,6 +16,12 @@ Generate production-quality Ralph PRD files — `prd.md` (full context document)
 
 **Core Principle**: CODEBASE FIRST. Explore the project before writing anything. Stories must reference real files, real patterns, and real types.
 
+## Knowledge Base
+
+If a knowledge base index is available in your context, check it for architecture
+decisions, design patterns, and past lessons that should inform PRD generation
+and story planning.
+
 ---
 
 ## Phase 0: DETECT — Determine Input Type

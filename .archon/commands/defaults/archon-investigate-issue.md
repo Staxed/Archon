@@ -49,7 +49,13 @@ gh issue view {number} --json title,body,labels,comments,state,url,author
 - Parse as problem description
 - Note: No GitHub posting (artifact only)
 
-### 1.3 Classify Issue Type
+### 1.3 Check Knowledge Base
+
+If a knowledge base index is available in your context, check it for prior work on
+similar issues, known bugs, past root cause analyses, and architectural decisions
+that may be relevant to this investigation.
+
+### 1.4 Classify Issue Type
 
 | Type | Indicators |
 |------|------------|
@@ -59,7 +65,7 @@ gh issue view {number} --json title,body,labels,comments,state,url,author
 | CHORE | "update", "upgrade", "maintenance", "dependency" |
 | DOCUMENTATION | "docs", "readme", "clarify", "example" |
 
-### 1.4 Assess Severity/Priority, Complexity, and Confidence
+### 1.5 Assess Severity/Priority, Complexity, and Confidence
 
 Each assessment requires a **one-sentence reasoning** explaining WHY you chose that value. This reasoning must be based on concrete findings from your investigation (codebase exploration, git history, integration analysis).
 
