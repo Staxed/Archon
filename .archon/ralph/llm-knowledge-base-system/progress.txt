@@ -125,6 +125,11 @@
 
 ---
 
+### Async Prompt Builder Pattern
+- **Where**: `packages/core/src/orchestrator/prompt-builder.ts:118-135`
+- **Pattern**: `buildOrchestratorPrompt` and `buildProjectScopedPrompt` are async (return `Promise<string>`) to support file I/O for knowledge loading. Callers must `await`. Test mocks returning plain strings still work because `await 'string'` === `'string'`.
+- **Example**: `const systemPrompt = await buildProjectScopedPrompt(scopedCodebase, codebases, workflows);`
+
 ### Capture Service Pattern
 - **Where**: `packages/core/src/services/knowledge-capture.ts`
 - **Pattern**: IAssistantClient.sendQuery() returns AsyncGenerator<MessageChunk>. Collect `assistant` type chunks into string. Use `tools: []` to disable tools for extraction-only calls. Model name passed via `options.model`.
@@ -154,5 +159,30 @@
 - Used `tools: []` to disable tools for extraction (different semantics from `undefined`)
 - Mock generator functions need `function*` syntax, not arrow functions
 - Config provides Required<KnowledgeConfig> at merged level, so all fields guaranteed present
+
+---
+
+## 2026-04-11 — US-007: Inject knowledge index into prompt builder
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/orchestrator/prompt-builder.ts — Made buildOrchestratorPrompt/buildProjectScopedPrompt async, added loadKnowledgeIndex(), formatKnowledgeSection()
+- packages/core/src/orchestrator/orchestrator-agent.ts — Updated buildFullPrompt to async, await prompt builder calls
+- packages/core/src/orchestrator/prompt-builder-knowledge.test.ts — New file: 13 tests for knowledge loading
+- packages/core/package.json — Added prompt-builder test batches
+
+**Acceptance criteria verified**:
+- [x] Extend buildProjectScopedPrompt() to load project knowledge/index.md content
+- [x] Extend buildOrchestratorPrompt() to load global knowledge/index.md content
+- [x] Project index overrides global when both exist (project loaded after global)
+- [x] Gracefully skip if no index.md exists (empty KB state)
+- [x] Added content stays within ~500 token budget for index (2000 char truncation)
+- [x] Type-check passes
+- [x] Tests pass (13 new tests, 33 expect calls)
+
+**Learnings**:
+- Making sync functions async is safe when all callers are in async contexts and test mocks return plain values
+- parseOwnerRepo(codebase.name) is the standard way to extract owner/repo from a Codebase
+- Codebase names that don't match owner/repo format (e.g., 'local-project') gracefully skip project KB loading
 
 ---

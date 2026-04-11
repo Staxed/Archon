@@ -136,8 +136,8 @@
       "technicalNotes": "Modify packages/core/src/orchestrator/prompt-builder.ts. Add formatKnowledgeSection() following pattern at lines 12-37. Load index.md via fs.readFile with graceful ENOENT handling. Use path functions from US-001.",
       "dependsOn": ["US-001"],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 6. Files: packages/core/src/orchestrator/prompt-builder.ts, packages/core/src/orchestrator/prompt-builder-knowledge.test.ts, packages/core/src/orchestrator/orchestrator-agent.ts, packages/core/package.json."
     },
     {
       "id": "US-008",
