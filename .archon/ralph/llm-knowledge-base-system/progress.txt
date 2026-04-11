@@ -544,3 +544,41 @@
 - The "if available" graceful degradation pattern from US-018 is now codified as a rule for generated workflows
 
 ---
+
+### Knowledge-Extract Node Pattern
+- **Where**: `packages/workflows/src/dag-executor.ts:1448-1560`
+- **Pattern**: Non-AI node types that need @archon/core functionality use injected callbacks on WorkflowDeps. The callback is optional (undefined check before use) so existing code without it continues to work. Pattern: add type to deps.ts, add implementation in store-adapter.ts.
+- **Example**: `deps.extractKnowledge?: KnowledgeExtractFn` — optional on WorkflowDeps, wired in createWorkflowDeps()
+
+## 2026-04-11 — US-020: Add explicit knowledge-extract workflow node type
+
+**Status**: PASSED
+**Files changed**:
+- packages/workflows/src/schemas/dag-node.ts — Added KnowledgeExtractNode type, schema, type guard; updated DagNode union, mutual exclusivity checks, and transform
+- packages/workflows/src/schemas/index.ts — Exported new types and type guard
+- packages/workflows/src/deps.ts — Added KnowledgeExtractFn type and optional extractKnowledge to WorkflowDeps
+- packages/workflows/src/dag-executor.ts — Added executeKnowledgeExtractNode function with variable substitution, upstream output collection, and event emission
+- packages/workflows/src/loader.ts — Added knowledge-extract to non-AI node warnings and $nodeId.output ref validation
+- packages/core/src/services/knowledge-capture.ts — Added extractKnowledgeFromContext() for standalone extraction via custom prompt
+- packages/core/src/workflows/store-adapter.ts — Wired extractKnowledgeFromContext into createWorkflowDeps()
+- packages/workflows/src/knowledge-extract-node.test.ts — 6 tests for node execution
+- packages/core/src/services/knowledge-extract.test.ts — 5 tests for extraction function
+- packages/workflows/src/schemas.test.ts — 9 new tests for type guard and schema parsing
+
+**Acceptance criteria verified**:
+- [x] Workflows can include `knowledge-extract` nodes that run targeted knowledge extraction (new schema type, dispatch in dag-executor)
+- [x] Node accepts a prompt describing what knowledge to extract from the workflow's output (knowledge_extract field with variable substitution)
+- [x] Node uses capture service infrastructure (Haiku model, daily log format) (extractKnowledgeFromContext uses captureModel config and daily log)
+- [x] Node output is appended to daily log with workflow context metadata (includes workflowRunId and nodeId in log entry)
+- [x] Existing workflows without knowledge-extract nodes continue to work unchanged (extractKnowledge is optional on WorkflowDeps)
+- [x] Type-check passes
+- [x] Tests pass (20 new tests across 3 files)
+
+**Learnings**:
+- @archon/workflows cannot import @archon/core — must use dependency injection via WorkflowDeps for any @archon/core functionality
+- Optional callbacks on WorkflowDeps is the pattern for extending node types without breaking existing callers
+- Dynamic import (`await import('@archon/git')`) in @archon/core services allows using @archon/git without static import conflicts in test mocking
+- priorCompletedNodes parameter on executeDagWorkflow is useful for testing downstream nodes without actually running upstream bash nodes
+- The node type schema uses flat superRefine + transform pattern (not z.union) because YAML nodes lack explicit type discriminants
+
+---

@@ -386,8 +386,8 @@
       "technicalNotes": "Extend DAG executor in packages/workflows/src/dag-executor.ts. Add 'knowledge-extract' as a recognized node type alongside 'command', 'prompt', 'bash', 'loop'. Node calls captureKnowledge() with custom extraction prompt.",
       "dependsOn": ["US-017"],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 20. Files: packages/workflows/src/schemas/dag-node.ts, packages/workflows/src/schemas/index.ts, packages/workflows/src/deps.ts, packages/workflows/src/dag-executor.ts, packages/workflows/src/loader.ts, packages/core/src/services/knowledge-capture.ts, packages/core/src/workflows/store-adapter.ts, packages/workflows/src/knowledge-extract-node.test.ts, packages/core/src/services/knowledge-extract.test.ts, packages/workflows/src/schemas.test.ts."
     }
   ]
 }
