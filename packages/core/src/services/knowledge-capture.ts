@@ -11,6 +11,7 @@ import * as messageDb from '../db/messages';
 import * as codebaseDb from '../db/codebases';
 import { loadConfig } from '../config/config-loader';
 import { initKnowledgeDir } from './knowledge-init';
+import { scheduleFlush } from './knowledge-scheduler';
 import type { MergedConfig } from '../config/config-types';
 import type { MessageRow } from '../db/messages';
 
@@ -238,7 +239,11 @@ export function triggerCapture(conversationId: string, codebaseId: string | null
       return;
     }
 
-    await captureKnowledge(conversationId, parsed.owner, parsed.repo);
+    const report = await captureKnowledge(conversationId, parsed.owner, parsed.repo);
+    // Schedule debounced flush after successful capture (non-skipped)
+    if (!report.skipped) {
+      await scheduleFlush(parsed.owner, parsed.repo);
+    }
   })().catch(err => {
     log.error(
       { conversationId, codebaseId, error: (err as Error).message, err },
