@@ -23,6 +23,7 @@ import type { RepoPath } from '@archon/git';
 import { createLogger } from '@archon/paths';
 import type { IsolationEnvironmentRow } from '@archon/isolation';
 import { ConversationNotFoundError } from '../types';
+import { triggerCapture } from './knowledge-capture';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -72,6 +73,9 @@ export async function onConversationClosed(
   }
 
   const envId = conversation.isolation_env_id;
+
+  // Trigger knowledge capture (fire-and-forget, before cleanup)
+  triggerCapture(conversation.id, conversation.codebase_id);
 
   // Deactivate any active sessions first
   const session = await sessionDb.getActiveSession(conversation.id);

@@ -4,10 +4,11 @@
  */
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getProjectKnowledgePath } from '@archon/paths';
+import { getProjectKnowledgePath, parseOwnerRepo } from '@archon/paths';
 import { createLogger } from '@archon/paths';
 import { getAssistantClient } from '../clients/factory';
 import * as messageDb from '../db/messages';
+import * as codebaseDb from '../db/codebases';
 import { loadConfig } from '../config/config-loader';
 import { initKnowledgeDir } from './knowledge-init';
 import type { MergedConfig } from '../config/config-types';
@@ -209,4 +210,39 @@ async function appendToDailyLog(
   await appendFile(logFile, entry);
 
   return logFile;
+}
+
+/**
+ * Fire-and-forget capture trigger for session transitions.
+ * Resolves owner/repo from codebaseId, then calls captureKnowledge().
+ * Logs errors but never throws — safe to call without await.
+ */
+export function triggerCapture(conversationId: string, codebaseId: string | null): void {
+  if (!codebaseId) return;
+
+  const log = getLog();
+
+  void (async (): Promise<void> => {
+    const codebase = await codebaseDb.getCodebase(codebaseId);
+    if (!codebase) {
+      log.debug({ conversationId, codebaseId }, 'knowledge.trigger_skipped_no_codebase');
+      return;
+    }
+
+    const parsed = parseOwnerRepo(codebase.name);
+    if (!parsed) {
+      log.debug(
+        { conversationId, codebaseName: codebase.name },
+        'knowledge.trigger_skipped_no_owner_repo'
+      );
+      return;
+    }
+
+    await captureKnowledge(conversationId, parsed.owner, parsed.repo);
+  })().catch(err => {
+    log.error(
+      { conversationId, codebaseId, error: (err as Error).message, err },
+      'knowledge.trigger_failed'
+    );
+  });
 }
