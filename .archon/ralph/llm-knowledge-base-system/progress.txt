@@ -41,6 +41,11 @@
 
 ---
 
+### Service File Pattern
+- **Where**: `packages/core/src/services/knowledge-init.ts`
+- **Pattern**: New service files in core/services need a separate test batch in packages/core/package.json test script to avoid mock.module() pollution
+- **Example**: `&& bun test src/services/knowledge-init.test.ts`
+
 ## 2026-04-11 — US-002: Add knowledge config types
 
 **Status**: PASSED
@@ -61,5 +66,28 @@
 - MergedConfig uses Required<KnowledgeConfig> so all fields are guaranteed present after merge
 - Merge pattern: spread defaults, then global overrides, then repo overrides — same as other config sections
 - Config types file has no tests of its own; merge logic is tested in config-loader.test.ts
+
+---
+
+## 2026-04-11 — US-003: Create knowledge directory initialization
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-init.ts — New file: initKnowledgeDir(), initGlobalKnowledgeDir(), DEFAULT_DOMAINS
+- packages/core/src/services/knowledge-init.test.ts — New file: 6 tests covering both functions and DEFAULT_DOMAINS
+- packages/core/package.json — Added knowledge-init.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] initKnowledgeDir(owner, repo) creates knowledge/, meta/, logs/, domains/, and 5 domain subdirs
+- [x] initGlobalKnowledgeDir() creates same structure at global path
+- [x] Both functions are idempotent (mkdir recursive: true)
+- [x] Directories created with standard permissions (default)
+- [x] Type-check passes
+- [x] Tests pass (6 tests, 43 expect calls)
+
+**Learnings**:
+- Service tests need mock.module for node:fs/promises and @archon/paths — must be in separate batch
+- Kept implementation simple: shared createDirectoryStructure() for both project and global variants
+- No need for getKnowledgeLogsPath/getKnowledgeDomainsPath in init — join() with base path is cleaner
 
 ---

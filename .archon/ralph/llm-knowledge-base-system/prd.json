@@ -58,8 +58,8 @@
       "technicalNotes": "New file: packages/core/src/services/knowledge-init.ts. Use path functions from US-001. Follow mkdir -p pattern (recursive: true). Called lazily by capture/flush services before first write.",
       "dependsOn": ["US-001"],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 3. Files: packages/core/src/services/knowledge-init.ts, packages/core/src/services/knowledge-init.test.ts, packages/core/package.json."
     },
     {
       "id": "US-004",
