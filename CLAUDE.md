@@ -237,6 +237,14 @@ bun run cli validate commands my-command    # Single command
 bun run cli complete <branch-name>
 bun run cli complete <branch-name> --force  # Skip uncommitted-changes check
 
+# Knowledge base management (requires git repo)
+bun run cli knowledge flush                    # Compile daily logs into articles
+bun run cli knowledge flush --project owner/repo  # Specify project explicitly
+bun run cli knowledge status                   # Show KB stats
+bun run cli knowledge status --json            # Machine-readable output
+bun run cli knowledge lint                     # Validate KB integrity
+bun run cli knowledge lint --json              # Machine-readable output
+
 # Show version
 bun run cli version
 ```
@@ -460,6 +468,19 @@ assistants:
 
 # docs:
 #   path: docs  # Optional: default is docs/
+
+# Knowledge base configuration
+knowledge:
+  enabled: true                  # Enable/disable KB capture and flush
+  captureModel: haiku            # Model for extracting knowledge from conversations
+  compileModel: sonnet           # Model for synthesizing articles during flush
+  flushDebounceMinutes: 10       # Minutes to wait after capture before auto-flush
+  domains:                       # Starting domain categories
+    - architecture
+    - decisions
+    - patterns
+    - lessons
+    - connections
 ```
 
 **Configuration Priority:**
@@ -522,7 +543,19 @@ curl http://localhost:3637/api/conversations/<conversationId>/messages
 │   ├── artifacts/                # Workflow artifacts (NEVER in git)
 │   │   ├── runs/{id}/            # Per-run artifacts ($ARTIFACTS_DIR)
 │   │   └── uploads/{convId}/     # Web UI file uploads (ephemeral)
+│   ├── knowledge/                # Persistent knowledge base (per-project)
+│   │   ├── index.md              # Agent entry point (~500 tokens)
+│   │   ├── meta/                 # Flush metadata (last-flush.json, flush.lock)
+│   │   ├── logs/                 # Daily capture logs (YYYY-MM-DD.md)
+│   │   └── domains/              # Compiled concept articles
+│   │       ├── architecture/     # Architecture knowledge
+│   │       ├── decisions/        # Decision records
+│   │       ├── patterns/         # Code patterns
+│   │       ├── lessons/          # Lessons learned
+│   │       └── connections/      # Cross-domain links
 │   └── logs/                     # Workflow execution logs
+├── knowledge/                    # Global knowledge base (cross-project)
+│   └── (same structure as project knowledge/)
 ├── archon.db                     # SQLite database (when DATABASE_URL not set)
 └── config.yaml                   # Global configuration (non-secrets)
 ```
@@ -664,7 +697,7 @@ async function createSession(conversationId: string, codebaseId: string) {
 2. **Workflows** (YAML-based):
    - Stored in `.archon/workflows/` (searched recursively)
    - Multi-step AI execution chains, discovered at runtime
-   - **`nodes:` (DAG format)**: Nodes with explicit `depends_on` edges; independent nodes in the same topological layer run concurrently. Node types: `command:` (named command file), `prompt:` (inline prompt), `bash:` (shell script, stdout captured as `$nodeId.output`, no AI), `loop:` (iterative AI prompt until completion signal) . Supports `when:` conditions, `trigger_rule` join semantics, `$nodeId.output` substitution, `output_format` for structured JSON output (Claude and Codex), `allowed_tools`/`denied_tools` for per-node tool restrictions (Claude only), `hooks` for per-node SDK hook callbacks (Claude only), `mcp` for per-node MCP server config files (Claude only, env vars expanded at execution time), and `skills` for per-node skill preloading via AgentDefinition wrapping (Claude only), and `effort`/`thinking`/`maxBudgetUsd`/`systemPrompt`/`fallbackModel`/`betas`/`sandbox` for Claude SDK advanced options (Claude only, also settable at workflow level)
+   - **`nodes:` (DAG format)**: Nodes with explicit `depends_on` edges; independent nodes in the same topological layer run concurrently. Node types: `command:` (named command file), `prompt:` (inline prompt), `bash:` (shell script, stdout captured as `$nodeId.output`, no AI), `loop:` (iterative AI prompt until completion signal), `knowledge-extract:` (targeted knowledge extraction from workflow context, appends to daily log) . Supports `when:` conditions, `trigger_rule` join semantics, `$nodeId.output` substitution, `output_format` for structured JSON output (Claude and Codex), `allowed_tools`/`denied_tools` for per-node tool restrictions (Claude only), `hooks` for per-node SDK hook callbacks (Claude only), `mcp` for per-node MCP server config files (Claude only, env vars expanded at execution time), and `skills` for per-node skill preloading via AgentDefinition wrapping (Claude only), and `effort`/`thinking`/`maxBudgetUsd`/`systemPrompt`/`fallbackModel`/`betas`/`sandbox` for Claude SDK advanced options (Claude only, also settable at workflow level)
    - Provider inherited from `.archon/config.yaml` unless explicitly set; per-node `provider` and `model` overrides supported
    - Model and options can be set per workflow or inherited from config defaults
    - `interactive: true` at the workflow level forces foreground execution on web (required for approval-gate workflows in the web UI)

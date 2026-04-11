@@ -3,7 +3,21 @@ import { mock, describe, test, expect, beforeEach } from 'bun:test';
 // Track writeFile calls
 const writeFileCalls: Array<{ path: string; content: string; options?: unknown }> = [];
 const mockWriteFile = mock(async (path: string, content: string, options?: unknown) => {
+  // Simulate exclusive create (wx flag) — fail if file already exists in mock FS
+  if (
+    options &&
+    typeof options === 'object' &&
+    'flag' in options &&
+    (options as { flag: string }).flag === 'wx'
+  ) {
+    if (fileSystem[path] !== undefined) {
+      const err = new Error(`EEXIST: file already exists, open '${path}'`) as NodeJS.ErrnoException;
+      err.code = 'EEXIST';
+      throw err;
+    }
+  }
   writeFileCalls.push({ path, content, options });
+  fileSystem[path] = content;
   return undefined;
 });
 
@@ -22,6 +36,7 @@ const mockRename = mock(async (oldPath: string, newPath: string) => {
 const unlinkCalls: string[] = [];
 const mockUnlink = mock(async (path: string) => {
   unlinkCalls.push(path);
+  delete fileSystem[path];
   return undefined;
 });
 
@@ -305,6 +320,7 @@ describe('knowledge-flush', () => {
     ];
     directories[`${KB_PATH}/domains`] = [];
 
+    fileSystem[`${KB_PATH}/logs/2026-04-09.md`] = '## Day 09\n';
     fileSystem[`${KB_PATH}/logs/2026-04-10.md`] = '## Day 10\n';
     fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Day 11\n';
 
@@ -321,11 +337,12 @@ describe('knowledge-flush', () => {
 
     const result = await flushKnowledge('acme', 'widget');
 
-    // Should only process logs from 2026-04-10 and 2026-04-11 (after 2026-04-09)
-    expect(result.logsProcessed).toEqual(['2026-04-10.md', '2026-04-11.md']);
+    // Should process logs from 2026-04-09 (same day — may have new entries), 2026-04-10, and 2026-04-11
+    expect(result.logsProcessed).toEqual(['2026-04-09.md', '2026-04-10.md', '2026-04-11.md']);
 
-    // Verify the prompt includes only the newer logs
+    // Verify the prompt includes the relevant logs
     const prompt = mockSendQuery.mock.calls[0]![0] as string;
+    expect(prompt).toContain('2026-04-09.md');
     expect(prompt).toContain('2026-04-10.md');
     expect(prompt).toContain('2026-04-11.md');
     expect(prompt).not.toContain('2026-04-08.md');

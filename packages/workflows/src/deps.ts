@@ -272,7 +272,7 @@ export interface WorkflowConfig {
 
 /**
  * Callback for knowledge-extract DAG nodes.
- * Calls AI (Haiku) with a custom prompt + context, appends extracted knowledge
+ * Calls AI (capture model) with a custom prompt + context, appends extracted knowledge
  * to the daily log, and returns the extracted content as node output.
  *
  * @param prompt - Extraction prompt describing what knowledge to extract

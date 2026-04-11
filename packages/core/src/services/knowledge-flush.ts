@@ -2,11 +2,12 @@
  * Knowledge flush service — synthesizes daily capture logs into structured
  * domain articles in the knowledge base.
  *
- * Reads unprocessed logs since last flush, calls Sonnet to produce/update
+ * Reads unprocessed logs since last flush, calls the compile model to produce/update
  * concept articles, then updates indexes and the flush timestamp.
  */
 import { readFile, readdir, writeFile, mkdir, rename, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   getProjectKnowledgePath,
   getGlobalKnowledgePath,
@@ -33,16 +34,21 @@ export interface LastFlushMeta {
   logsCaptured: string[];
 }
 
+/** Zod schema for validating AI flush synthesis responses */
+const flushSynthesisSchema = z.object({
+  articles: z.array(
+    z.object({
+      domain: z.string(),
+      concept: z.string(),
+      content: z.string(),
+    })
+  ),
+  domainSummaries: z.record(z.string()),
+  indexSummary: z.string(),
+});
+
 /** AI response structure for flush synthesis */
-interface FlushSynthesis {
-  articles: {
-    domain: string;
-    concept: string;
-    content: string;
-  }[];
-  domainSummaries: Record<string, string>;
-  indexSummary: string;
-}
+type FlushSynthesis = z.infer<typeof flushSynthesisSchema>;
 
 export interface KnowledgeFlushReport {
   articlesCreated: number;
@@ -62,34 +68,43 @@ export interface KnowledgeFlushReport {
 async function acquireFlushLock(knowledgePath: string): Promise<boolean> {
   const log = getLog();
   const lockPath = join(knowledgePath, 'meta', 'flush.lock');
+  await mkdir(join(knowledgePath, 'meta'), { recursive: true });
 
+  // Attempt atomic create — fails if file already exists
+  try {
+    await writeFile(lockPath, String(process.pid), { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  }
+
+  // Lock file exists — check if holder is alive
   try {
     const content = await readFile(lockPath, 'utf-8');
     const pid = parseInt(content.trim(), 10);
-
     if (!isNaN(pid)) {
-      // Check if the process is still alive
       try {
-        process.kill(pid, 0); // Signal 0 = existence check, no actual signal sent
-        // Process is alive — lock is held
+        process.kill(pid, 0); // Signal 0 = existence check
         log.warn({ pid, lockPath }, 'knowledge.flush_lock_held');
-        return false;
+        return false; // Live process holds lock
       } catch {
-        // Process is dead — stale lock, reclaim it
+        // Process is dead — reclaim stale lock
         log.info({ stalePid: pid, lockPath }, 'knowledge.flush_lock_reclaimed');
       }
     }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw err;
-    }
-    // Lock file doesn't exist — proceed to create
+    await unlink(lockPath);
+  } catch {
+    // Lock file disappeared between our attempts — race with another reclaimer
   }
 
-  // Write our PID
-  await mkdir(join(knowledgePath, 'meta'), { recursive: true });
-  await writeFile(lockPath, String(process.pid));
-  return true;
+  // Retry atomic create after stale lock removal
+  try {
+    await writeFile(lockPath, String(process.pid), { flag: 'wx' });
+    return true;
+  } catch {
+    log.warn({ lockPath }, 'knowledge.flush_lock_held');
+    return false;
+  }
 }
 
 /**
@@ -106,7 +121,7 @@ async function releaseFlushLock(knowledgePath: string): Promise<void> {
   }
 }
 
-/** Prompt sent to Sonnet to synthesize daily logs into structured articles */
+/** Prompt sent to the compile model to synthesize daily logs into structured articles */
 const SYNTHESIS_PROMPT = `You are a knowledge base compiler. Given daily capture logs and optionally existing articles, produce structured knowledge articles.
 
 ## Output Format
@@ -363,7 +378,7 @@ async function findUnprocessedLogs(
 
   // Filter to files newer than last flush date
   const flushDate = lastFlushTimestamp.slice(0, 10); // YYYY-MM-DD
-  return logFiles.filter(f => f.replace('.md', '') > flushDate);
+  return logFiles.filter(f => f.replace('.md', '') >= flushDate);
 }
 
 /**
@@ -404,7 +419,10 @@ async function readExistingArticles(knowledgePath: string): Promise<string> {
     let files: string[];
     try {
       files = await readdir(domainDir);
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLog().warn({ domain, error: (err as Error).message }, 'knowledge.read_domain_failed');
+      }
       continue;
     }
 
@@ -413,7 +431,13 @@ async function readExistingArticles(knowledgePath: string): Promise<string> {
       try {
         const content = await readFile(join(domainDir, file), 'utf-8');
         articles.push(`### ${domain}/${file}\n\n${content}`);
-      } catch {
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          getLog().warn(
+            { domain, file, error: (err as Error).message },
+            'knowledge.read_article_failed'
+          );
+        }
         continue;
       }
     }
@@ -458,7 +482,28 @@ async function synthesizeLogs(
 
   // Parse JSON from response (handle potential markdown code fences)
   const jsonStr = rawResponse.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '');
-  return JSON.parse(jsonStr) as FlushSynthesis;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (e) {
+    const err = e as Error;
+    getLog().warn(
+      { rawResponseLength: rawResponse.length, error: err.message },
+      'knowledge.flush_synthesis_json_parse_failed'
+    );
+    throw new Error(`Flush synthesis returned invalid JSON: ${err.message}`);
+  }
+
+  const result = flushSynthesisSchema.safeParse(parsed);
+  if (!result.success) {
+    getLog().warn(
+      { errors: result.error.issues },
+      'knowledge.flush_synthesis_schema_validation_failed'
+    );
+    throw new Error(`Flush synthesis response has invalid structure: ${result.error.message}`);
+  }
+  return result.data;
 }
 
 /**
@@ -723,7 +768,8 @@ export async function getCurrentGitSha(owner: string, repo: string): Promise<str
       timeout: 10000,
     });
     return stdout.trim();
-  } catch {
+  } catch (err) {
+    getLog().debug({ owner, repo, error: (err as Error).message }, 'knowledge.git_sha_unavailable');
     return '';
   }
 }
@@ -745,7 +791,11 @@ export async function getGitDiffNameOnly(
       { timeout: 30000 }
     );
     return stdout.trim();
-  } catch {
+  } catch (err) {
+    getLog().debug(
+      { owner, repo, fromSha, error: (err as Error).message },
+      'knowledge.git_diff_unavailable'
+    );
     return '';
   }
 }
@@ -869,7 +919,10 @@ export async function collectAllArticles(knowledgePath: string): Promise<Collect
     let files: string[];
     try {
       files = await readdir(domainDir);
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLog().warn({ domain, error: (err as Error).message }, 'knowledge.collect_domain_failed');
+      }
       continue;
     }
 
@@ -879,7 +932,13 @@ export async function collectAllArticles(knowledgePath: string): Promise<Collect
         const content = await readFile(join(domainDir, file), 'utf-8');
         const concept = file.replace('.md', '');
         articles.push({ key: `${domain}/${concept}`, content });
-      } catch {
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          getLog().warn(
+            { domain, file, error: (err as Error).message },
+            'knowledge.collect_article_failed'
+          );
+        }
         continue;
       }
     }
@@ -918,9 +977,14 @@ export async function identifyStaleArticles(
   const jsonStr = rawResponse.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '');
 
   try {
-    const result = JSON.parse(jsonStr) as string[];
-    return Array.isArray(result) ? result : [];
-  } catch {
+    const result = JSON.parse(jsonStr) as unknown;
+    if (!Array.isArray(result)) return [];
+    return result.filter((item): item is string => typeof item === 'string');
+  } catch (e) {
+    getLog().warn(
+      { rawResponseLength: rawResponse.length, error: (e as Error).message },
+      'knowledge.staleness_json_parse_failed'
+    );
     return [];
   }
 }
@@ -951,8 +1015,13 @@ async function addStalenessMarker(articlePath: string): Promise<void> {
     }
 
     await writeFile(articlePath, content);
-  } catch {
-    // Article may have been removed — skip silently
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLog().warn(
+        { articlePath, error: (err as Error).message },
+        'knowledge.staleness_marker_write_failed'
+      );
+    }
   }
 }
 

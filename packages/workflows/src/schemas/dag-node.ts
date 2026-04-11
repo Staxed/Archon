@@ -2,8 +2,9 @@
  * Zod schemas for DAG node types.
  *
  * Design: a flat "raw" schema validates all fields (with mutual exclusivity enforced via
- * superRefine), then a transform produces one of the six concrete variant types
- * (CommandNode, PromptNode, BashNode, LoopNode, ApprovalNode, CancelNode) as the DagNode union.
+ * superRefine), then a transform produces one of the seven concrete variant types
+ * (CommandNode, PromptNode, BashNode, LoopNode, ApprovalNode, CancelNode, KnowledgeExtractNode)
+ * as the DagNode union.
  * Per-variant schemas (commandNodeSchema etc.) are exported for type derivation only —
  * use dagNodeSchema for validation.
  *

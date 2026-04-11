@@ -22,7 +22,7 @@ function getLog(): ReturnType<typeof createLogger> {
   return cachedLog;
 }
 
-/** Extraction prompt sent to Haiku to extract structured knowledge from a transcript */
+/** Extraction prompt sent to the capture model to extract structured knowledge from a transcript */
 const EXTRACTION_PROMPT = `You are a knowledge extraction agent. Analyze the following conversation transcript and extract any valuable knowledge into these categories:
 
 ## Decisions
