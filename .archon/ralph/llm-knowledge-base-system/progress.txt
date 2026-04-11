@@ -10,6 +10,16 @@
 - **Pattern**: mergeGlobalConfig and mergeRepoConfig spread existing result, then conditionally override with non-undefined values. New config sections need: 1) defaults in getDefaults(), 2) merge in mergeGlobalConfig(), 3) merge in mergeRepoConfig().
 - **Example**: `if (global.knowledge) { result.knowledge = { ...result.knowledge, ...global.knowledge }; }`
 
+### Write-If-Not-Exists Pattern
+- **Where**: `packages/core/src/services/knowledge-init.ts:136-145`
+- **Pattern**: Use `writeFile(path, content, { flag: 'wx' })` for exclusive create; catch EEXIST to silently skip existing files.
+- **Example**: `try { await writeFile(path, content, { flag: 'wx' }); } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err; }`
+
+### Mock Reset Pattern
+- **Where**: `packages/core/src/services/knowledge-init.test.ts:39-49`
+- **Pattern**: When a test uses `mockRejectedValue`, subsequent tests fail because mock state persists. Use `mockReset()` + `mockImplementation()` in beforeEach to restore default behavior.
+- **Example**: `mockWriteFile.mockReset(); mockWriteFile.mockImplementation(async (...) => { ... });`
+
 ### Path Test Pattern
 - **Where**: `packages/paths/src/archon-paths.test.ts`
 - **Pattern**: Tests use `useEnvSnapshot()` for env var isolation, clear env vars before each test, test with default, ARCHON_HOME override, and Docker mode.
@@ -89,5 +99,28 @@
 - Service tests need mock.module for node:fs/promises and @archon/paths — must be in separate batch
 - Kept implementation simple: shared createDirectoryStructure() for both project and global variants
 - No need for getKnowledgeLogsPath/getKnowledgeDomainsPath in init — join() with base path is cleaner
+
+---
+
+## 2026-04-11 — US-004: Create KB meta templates and initial index structure
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-init.ts — Added SCHEMA_TEMPLATE, INDEX_TEMPLATE, DOMAIN_INDEX_TEMPLATES constants; added writeIfNotExists() helper; extended createDirectoryStructure() to write templates
+- packages/core/src/services/knowledge-init.test.ts — Added 6 new tests for template writing, content verification, EEXIST handling, error propagation, and template content validation
+
+**Acceptance criteria verified**:
+- [x] schema.md template describes KB structure, domain purposes, and navigation instructions
+- [x] index.md template with sections for each starting domain and placeholder content
+- [x] Domain _index.md templates for architecture, decisions, patterns, lessons, connections
+- [x] Templates written during initKnowledgeDir() only if files don't already exist (wx flag + EEXIST catch)
+- [x] Templates use standard markdown with [[wikilink]] backlink syntax for Obsidian compatibility
+- [x] Type-check passes
+- [x] Tests pass (14 tests, 97 expect calls)
+
+**Learnings**:
+- Used writeFile with flag 'wx' (exclusive create) — fails with EEXIST if file exists, which we catch and silently skip
+- mockRejectedValue persists across tests — need mockReset() + mockImplementation() in beforeEach to restore default behavior
+- Templates exported as named constants for use in tests and future consumers
 
 ---

@@ -77,8 +77,8 @@
       "technicalNotes": "Extend knowledge-init.ts from US-003. Templates are string constants or embedded files. schema.md describes the hierarchical navigation pattern. index.md is the agent's entry point (~500 tokens target).",
       "dependsOn": ["US-003"],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 4. Files: packages/core/src/services/knowledge-init.ts, packages/core/src/services/knowledge-init.test.ts."
     },
     {
       "id": "US-005",
