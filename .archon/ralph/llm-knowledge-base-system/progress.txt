@@ -271,3 +271,28 @@
 - Linting enforces T[] over Array<T> syntax
 
 ---
+
+## 2026-04-11 — US-010: Implement flush locking and atomicity
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Added acquireFlushLock(), releaseFlushLock(); replaced writeFlushResults with writeFlushResultsAtomic() using .tmp/ dir + rename; updated updateLastFlush() with temp+rename; added finally block for lock release
+- packages/core/src/services/knowledge-flush.test.ts — Added rename/unlink/rm mocks; updated existing index test for atomic pattern; added 8 new tests for lock and atomicity
+
+**Acceptance criteria verified**:
+- [x] Implement file-based lock at knowledge/meta/flush.lock with PID
+- [x] Flush acquires lock before writing, releases on completion or error (finally block)
+- [x] If lock held by another process, flush skips with a warning log
+- [x] If lock held by dead process (stale PID), lock is reclaimed (process.kill(pid, 0))
+- [x] All writes go to temp files first, then atomic rename into final paths (.tmp/ dir pattern)
+- [x] If flush crashes mid-write, next flush re-runs from scratch (rm .tmp/ at start, idempotent)
+- [x] Type-check passes
+- [x] Tests pass (24 tests, 61 expect calls)
+
+**Learnings**:
+- process.kill(pid, 0) throws if process is dead — use try/catch to detect stale locks
+- Atomic rename pattern: mkdir .tmp, write there, rename each file individually, rm .tmp
+- Lock file must be released in finally{} to handle both success and error paths
+- Existing test for index.md needed updating since writes now go through .tmp/ first
+
+---

@@ -198,8 +198,8 @@
       "technicalNotes": "Add to knowledge-flush.ts from US-009. Use fs.writeFile for lock with PID, check process.kill(pid, 0) for stale lock detection. Temp dir pattern: write to knowledge/.tmp/, rename to final paths.",
       "dependsOn": ["US-009"],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 10. Files: packages/core/src/services/knowledge-flush.ts, packages/core/src/services/knowledge-flush.test.ts."
     },
     {
       "id": "US-011",
