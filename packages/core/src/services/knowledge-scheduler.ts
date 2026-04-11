@@ -7,7 +7,7 @@
  */
 import { createLogger } from '@archon/paths';
 import { loadConfig } from '../config/config-loader';
-import { flushKnowledge } from './knowledge-flush';
+import { flushKnowledge, flushGlobalKnowledge } from './knowledge-flush';
 
 /** Lazy-initialized logger */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -58,6 +58,54 @@ export async function scheduleFlush(
     log.info({ projectKey }, 'knowledge.flush_debounce_fired');
 
     void flushKnowledge(owner, repo).catch(err => {
+      log.error(
+        { projectKey, error: (err as Error).message, err },
+        'knowledge.flush_scheduled_failed'
+      );
+    });
+  }, delayMs);
+
+  // Prevent the timer from keeping the process alive
+  if (typeof timer === 'object' && 'unref' in timer) {
+    timer.unref();
+  }
+
+  flushTimers.set(projectKey, timer);
+}
+
+/**
+ * Schedule a debounced flush for the global knowledge base.
+ * If a flush is already scheduled, the timer resets.
+ *
+ * @param debounceMinutes - Override debounce interval (uses config default if omitted)
+ */
+export async function scheduleGlobalFlush(debounceMinutes?: number): Promise<void> {
+  const log = getLog();
+  const projectKey = '__global__';
+
+  // Resolve debounce interval
+  let minutes = debounceMinutes;
+  if (minutes === undefined) {
+    const config = await loadConfig();
+    minutes = config.knowledge.flushDebounceMinutes;
+  }
+
+  // Cancel existing timer (debounce reset)
+  const existing = flushTimers.get(projectKey);
+  if (existing) {
+    clearTimeout(existing);
+    log.debug({ projectKey }, 'knowledge.flush_debounce_reset');
+  }
+
+  const delayMs = minutes * 60 * 1000;
+
+  log.info({ projectKey, debounceMinutes: minutes }, 'knowledge.flush_scheduled');
+
+  const timer = setTimeout(() => {
+    flushTimers.delete(projectKey);
+    log.info({ projectKey }, 'knowledge.flush_debounce_fired');
+
+    void flushGlobalKnowledge().catch(err => {
       log.error(
         { projectKey, error: (err as Error).message, err },
         'knowledge.flush_scheduled_failed'

@@ -7,12 +7,16 @@
  */
 import { readFile, readdir, writeFile, mkdir, rename, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getProjectKnowledgePath, getProjectSourcePath } from '@archon/paths';
+import {
+  getProjectKnowledgePath,
+  getGlobalKnowledgePath,
+  getProjectSourcePath,
+} from '@archon/paths';
 import { createLogger } from '@archon/paths';
 import { execFileAsync } from '@archon/git';
 import { getAssistantClient } from '../clients/factory';
 import { loadConfig } from '../config/config-loader';
-import { initKnowledgeDir } from './knowledge-init';
+import { initKnowledgeDir, initGlobalKnowledgeDir } from './knowledge-init';
 import type { MergedConfig } from '../config/config-types';
 
 /** Lazy-initialized logger */
@@ -139,23 +143,29 @@ You MUST respond with a JSON object (no markdown fences, no explanation, just JS
 
 `;
 
+/** Options for the shared flush core logic */
+interface FlushCoreOptions {
+  /** Label for logging (e.g., "acme/widget" or "global") */
+  label: string;
+  /** Path to the knowledge base directory */
+  knowledgePath: string;
+  /** Merged config */
+  config: MergedConfig;
+  /** Optional owner/repo for git-based staleness validation */
+  git?: { owner: string; repo: string };
+  /** Init function to call before flushing (ensures KB directory exists) */
+  init: () => Promise<void>;
+}
+
 /**
- * Flush daily logs into structured domain articles.
- *
- * @param owner - Repository owner
- * @param repo - Repository name
- * @param config - Optional pre-loaded config (avoids redundant loading)
+ * Shared flush core — used by both project and global flush functions.
  */
-export async function flushKnowledge(
-  owner: string,
-  repo: string,
-  config?: MergedConfig
-): Promise<KnowledgeFlushReport> {
+async function flushKnowledgeCore(options: FlushCoreOptions): Promise<KnowledgeFlushReport> {
   const log = getLog();
-  const mergedConfig = config ?? (await loadConfig());
+  const { label, knowledgePath, config: mergedConfig, git: gitInfo, init } = options;
 
   if (!mergedConfig.knowledge.enabled) {
-    log.debug({ owner, repo }, 'knowledge.flush_skipped_disabled');
+    log.debug({ label }, 'knowledge.flush_skipped_disabled');
     return {
       articlesCreated: 0,
       articlesUpdated: 0,
@@ -167,17 +177,15 @@ export async function flushKnowledge(
     };
   }
 
-  log.info({ owner, repo }, 'knowledge.flush_started');
+  log.info({ label }, 'knowledge.flush_started');
 
   // Ensure KB directory exists
-  await initKnowledgeDir(owner, repo);
+  await init();
 
-  const knowledgePath = getProjectKnowledgePath(owner, repo);
-
-  // Acquire flush lock (one concurrent flush per project)
+  // Acquire flush lock (one concurrent flush per KB)
   const lockAcquired = await acquireFlushLock(knowledgePath);
   if (!lockAcquired) {
-    log.warn({ owner, repo }, 'knowledge.flush_skipped_locked');
+    log.warn({ label }, 'knowledge.flush_skipped_locked');
     return {
       articlesCreated: 0,
       articlesUpdated: 0,
@@ -197,7 +205,7 @@ export async function flushKnowledge(
     const unprocessedLogs = await findUnprocessedLogs(knowledgePath, lastFlush?.timestamp);
 
     if (unprocessedLogs.length === 0) {
-      log.info({ owner, repo }, 'knowledge.flush_skipped_no_logs');
+      log.info({ label }, 'knowledge.flush_skipped_no_logs');
       return {
         articlesCreated: 0,
         articlesUpdated: 0,
@@ -225,23 +233,24 @@ export async function flushKnowledge(
     // Write to temp dir first, then atomic rename to final paths
     const report = await writeFlushResultsAtomic(knowledgePath, synthesis, unprocessedLogs);
 
-    // Validate staleness of articles against git history and check wikilinks
-    const validation = await validateStaleness(
-      knowledgePath,
-      owner,
-      repo,
-      lastFlush?.gitSha || undefined,
-      mergedConfig.knowledge.captureModel
-    );
-    report.articlesStale = validation.articlesFlaggedStale;
+    // Validate staleness against git history (project tier only — global has no git repo)
+    if (gitInfo) {
+      const validation = await validateStaleness(
+        knowledgePath,
+        gitInfo.owner,
+        gitInfo.repo,
+        lastFlush?.gitSha || undefined,
+        mergedConfig.knowledge.captureModel
+      );
+      report.articlesStale = validation.articlesFlaggedStale;
+    }
 
-    // Update last-flush metadata with current git SHA (also via temp + rename)
-    await updateLastFlush(knowledgePath, unprocessedLogs, owner, repo);
+    // Update last-flush metadata (git SHA only for project tier)
+    await updateLastFlush(knowledgePath, unprocessedLogs, gitInfo?.owner, gitInfo?.repo);
 
     log.info(
       {
-        owner,
-        repo,
+        label,
         articlesCreated: report.articlesCreated,
         articlesUpdated: report.articlesUpdated,
         articlesStale: report.articlesStale,
@@ -256,8 +265,7 @@ export async function flushKnowledge(
     const err = e as Error;
     log.error(
       {
-        owner,
-        repo,
+        label,
         error: err.message,
         errorType: err.constructor.name,
         err,
@@ -269,6 +277,45 @@ export async function flushKnowledge(
     // Always release the lock
     await releaseFlushLock(knowledgePath);
   }
+}
+
+/**
+ * Flush daily logs into structured domain articles for a project KB.
+ *
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param config - Optional pre-loaded config (avoids redundant loading)
+ */
+export async function flushKnowledge(
+  owner: string,
+  repo: string,
+  config?: MergedConfig
+): Promise<KnowledgeFlushReport> {
+  const mergedConfig = config ?? (await loadConfig());
+  return flushKnowledgeCore({
+    label: `${owner}/${repo}`,
+    knowledgePath: getProjectKnowledgePath(owner, repo),
+    config: mergedConfig,
+    git: { owner, repo },
+    init: () => initKnowledgeDir(owner, repo),
+  });
+}
+
+/**
+ * Flush daily logs into structured domain articles for the global KB.
+ * Same as project flush but operates on the global knowledge directory
+ * and skips git-based staleness validation (no associated repository).
+ *
+ * @param config - Optional pre-loaded config (avoids redundant loading)
+ */
+export async function flushGlobalKnowledge(config?: MergedConfig): Promise<KnowledgeFlushReport> {
+  const mergedConfig = config ?? (await loadConfig());
+  return flushKnowledgeCore({
+    label: 'global',
+    knowledgePath: getGlobalKnowledgePath(),
+    config: mergedConfig,
+    init: () => initGlobalKnowledgeDir(),
+  });
 }
 
 /**
@@ -640,17 +687,18 @@ ${domainSections.join('\n\n')}
 
 /**
  * Update meta/last-flush.json with current timestamp and git SHA via atomic temp+rename.
+ * Git SHA is only fetched when owner/repo are provided (project tier).
  */
 async function updateLastFlush(
   knowledgePath: string,
   processedLogs: string[],
-  owner: string,
-  repo: string
+  owner?: string,
+  repo?: string
 ): Promise<void> {
   const metaDir = join(knowledgePath, 'meta');
   await mkdir(metaDir, { recursive: true });
 
-  const gitSha = await getCurrentGitSha(owner, repo);
+  const gitSha = owner && repo ? await getCurrentGitSha(owner, repo) : '';
 
   const meta: LastFlushMeta = {
     timestamp: new Date().toISOString(),

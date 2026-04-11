@@ -112,8 +112,10 @@ mock.module('../config/config-loader', () => ({
 
 // Mock knowledge-init
 const mockInitKnowledgeDir = mock(async () => undefined);
+const mockInitGlobalKnowledgeDir = mock(async () => undefined);
 mock.module('./knowledge-init', () => ({
   initKnowledgeDir: mockInitKnowledgeDir,
+  initGlobalKnowledgeDir: mockInitGlobalKnowledgeDir,
 }));
 
 // Mock AI client
@@ -131,7 +133,7 @@ mock.module('../clients/factory', () => ({
   getAssistantClient: mockGetAssistantClient,
 }));
 
-import { flushKnowledge } from './knowledge-flush';
+import { flushKnowledge, flushGlobalKnowledge } from './knowledge-flush';
 
 const KB_PATH = '/home/test/.archon/workspaces/acme/widget/knowledge';
 
@@ -153,6 +155,7 @@ describe('knowledge-flush', () => {
     mockReaddir.mockClear();
     mockLoadConfig.mockClear();
     mockInitKnowledgeDir.mockClear();
+    mockInitGlobalKnowledgeDir.mockClear();
     mockSendQuery.mockClear();
     mockGetAssistantClient.mockClear();
     mockExecFileAsync.mockClear();
@@ -979,5 +982,152 @@ describe('knowledge-flush', () => {
     );
     // Article already had marker, so writeFile should not be called for marker addition
     expect(markerWrites.length).toBe(0);
+  });
+
+  // --- Global KB tier tests ---
+
+  const GLOBAL_KB_PATH = '/home/test/.archon/knowledge';
+
+  test('flushGlobalKnowledge uses global knowledge path', async () => {
+    directories[`${GLOBAL_KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${GLOBAL_KB_PATH}/domains`] = [];
+
+    fileSystem[`${GLOBAL_KB_PATH}/logs/2026-04-11.md`] =
+      '## Global lesson\n- Cross-project pattern\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({
+          articles: [
+            {
+              domain: 'patterns',
+              concept: 'cross-project-pattern',
+              content: '# Cross Project Pattern\n\nApplies everywhere.\n',
+            },
+          ],
+          domainSummaries: { patterns: 'Cross-project patterns.' },
+          indexSummary: 'Global knowledge.',
+        }),
+      },
+    ];
+
+    const result = await flushGlobalKnowledge();
+
+    expect(result.skipped).toBe(false);
+    expect(result.articlesCreated).toBe(1);
+    expect(result.logsProcessed).toEqual(['2026-04-11.md']);
+    expect(mockInitGlobalKnowledgeDir).toHaveBeenCalled();
+    expect(mockInitKnowledgeDir).not.toHaveBeenCalled();
+
+    // Articles written to global path
+    const articleWrite = writeFileCalls.find(c =>
+      c.path.includes('/home/test/.archon/knowledge/.tmp/domains/patterns/cross-project-pattern.md')
+    );
+    expect(articleWrite).toBeDefined();
+  });
+
+  test('flushGlobalKnowledge skips staleness validation (no git repo)', async () => {
+    // Set up last-flush with a git SHA (would trigger staleness in project flush)
+    fileSystem[`${GLOBAL_KB_PATH}/meta/last-flush.json`] = JSON.stringify({
+      timestamp: '2026-04-09T12:00:00Z',
+      gitSha: 'someshavalue',
+      logsCaptured: ['2026-04-09.md'],
+    });
+
+    directories[`${GLOBAL_KB_PATH}/logs`] = ['2026-04-10.md'];
+    directories[`${GLOBAL_KB_PATH}/domains`] = ['patterns'];
+    directories[`${GLOBAL_KB_PATH}/domains/patterns`] = ['_index.md', 'some-pattern.md'];
+
+    fileSystem[`${GLOBAL_KB_PATH}/logs/2026-04-10.md`] = '## New global info\n';
+    fileSystem[`${GLOBAL_KB_PATH}/domains/patterns/_index.md`] = '# Patterns\n';
+    fileSystem[`${GLOBAL_KB_PATH}/domains/patterns/some-pattern.md`] =
+      '# Some Pattern\n\nContent.\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    const result = await flushGlobalKnowledge();
+
+    // No staleness check — only one sendQuery call (synthesis, not staleness)
+    expect(result.articlesStale).toBe(0);
+    expect(mockSendQuery).toHaveBeenCalledTimes(1);
+
+    // No git diff was requested
+    expect(mockExecFileAsync).not.toHaveBeenCalled();
+  });
+
+  test('flushGlobalKnowledge stores empty git SHA in last-flush.json', async () => {
+    directories[`${GLOBAL_KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${GLOBAL_KB_PATH}/domains`] = [];
+
+    fileSystem[`${GLOBAL_KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushGlobalKnowledge();
+
+    const flushWrite = writeFileCalls.find(
+      c => c.path.includes('last-flush.json') && c.path.includes('.archon/knowledge')
+    );
+    expect(flushWrite).toBeDefined();
+    const meta = JSON.parse(flushWrite!.content) as { gitSha: string; logsCaptured: string[] };
+    expect(meta.gitSha).toBe('');
+    expect(meta.logsCaptured).toEqual(['2026-04-11.md']);
+  });
+
+  test('flushGlobalKnowledge operates independently from project flush', async () => {
+    // Set up both project and global logs
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Project content\n';
+
+    directories[`${GLOBAL_KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${GLOBAL_KB_PATH}/domains`] = [];
+    fileSystem[`${GLOBAL_KB_PATH}/logs/2026-04-11.md`] = '## Global content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    // Flush global — should NOT touch project KB
+    const globalResult = await flushGlobalKnowledge();
+    expect(globalResult.skipped).toBe(false);
+    expect(mockInitGlobalKnowledgeDir).toHaveBeenCalledTimes(1);
+    expect(mockInitKnowledgeDir).not.toHaveBeenCalled();
+
+    // Verify the synthesis prompt includes global log content, not project
+    const prompt = mockSendQuery.mock.calls[0]![0] as string;
+    expect(prompt).toContain('Global content');
+    expect(prompt).not.toContain('Project content');
+  });
+
+  test('flushGlobalKnowledge skips when knowledge is disabled', async () => {
+    const config = {
+      knowledge: { ...defaultKnowledgeConfig, enabled: false },
+      assistants: { claude: { model: 'sonnet', settingSources: ['project'] as const }, codex: {} },
+      worktree: {},
+      docs: { path: 'docs/' },
+      defaults: { loadDefaultCommands: true, loadDefaultWorkflows: true },
+    };
+
+    const result = await flushGlobalKnowledge(config as never);
+
+    expect(result.skipped).toBe(true);
+    expect(result.skipReason).toContain('disabled');
+    expect(mockInitGlobalKnowledgeDir).not.toHaveBeenCalled();
+    expect(mockSendQuery).not.toHaveBeenCalled();
   });
 });

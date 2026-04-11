@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 
 // Track flush calls
 let flushCalls: { owner: string; repo: string }[] = [];
+let globalFlushCalls = 0;
 let loadConfigCalls = 0;
 const DEFAULT_CONFIG = {
   knowledge: {
@@ -41,15 +42,32 @@ mock.module('./knowledge-flush', () => ({
       skipped: false,
     };
   },
+  flushGlobalKnowledge: async () => {
+    globalFlushCalls++;
+    return {
+      articlesCreated: 0,
+      articlesUpdated: 0,
+      articlesStale: 0,
+      domainsCreated: [],
+      logsProcessed: [],
+      skipped: false,
+    };
+  },
 }));
 
-const { scheduleFlush, cancelScheduledFlush, isFlushScheduled, cancelAllScheduledFlushes } =
-  await import('./knowledge-scheduler');
+const {
+  scheduleFlush,
+  scheduleGlobalFlush,
+  cancelScheduledFlush,
+  isFlushScheduled,
+  cancelAllScheduledFlushes,
+} = await import('./knowledge-scheduler');
 
 describe('knowledge-scheduler', () => {
   beforeEach(() => {
     cancelAllScheduledFlushes();
     flushCalls = [];
+    globalFlushCalls = 0;
     loadConfigCalls = 0;
   });
 
@@ -142,6 +160,43 @@ describe('knowledge-scheduler', () => {
     expect(isFlushScheduled('acme', 'other')).toBe(false);
 
     await new Promise(resolve => setTimeout(resolve, 120));
+    expect(flushCalls).toHaveLength(0);
+  });
+
+  it('should schedule a global flush that fires after debounce', async () => {
+    await scheduleGlobalFlush(0.001);
+
+    expect(globalFlushCalls).toBe(0);
+
+    await new Promise(resolve => setTimeout(resolve, 120));
+
+    expect(globalFlushCalls).toBe(1);
+    expect(flushCalls).toHaveLength(0); // No project flush triggered
+  });
+
+  it('should reset global flush timer on re-schedule', async () => {
+    await scheduleGlobalFlush(0.002); // ~120ms
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(globalFlushCalls).toBe(0);
+
+    await scheduleGlobalFlush(0.002); // reset
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(globalFlushCalls).toBe(0); // Original timer would have fired
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(globalFlushCalls).toBe(1);
+  });
+
+  it('should cancel all clears global flush timer too', async () => {
+    await scheduleGlobalFlush(0.001);
+    await scheduleFlush('acme', 'widget', 0.001);
+
+    cancelAllScheduledFlushes();
+
+    await new Promise(resolve => setTimeout(resolve, 120));
+    expect(globalFlushCalls).toBe(0);
     expect(flushCalls).toHaveLength(0);
   });
 });
