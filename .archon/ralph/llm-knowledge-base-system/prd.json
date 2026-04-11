@@ -154,8 +154,8 @@
       "technicalNotes": "Extend prompt-builder.ts changes from US-007. Read last-flush.json for timestamp, then scan knowledge/logs/ for newer YYYY-MM-DD.md files. Truncate if over budget.",
       "dependsOn": ["US-007"],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 8. Files: packages/core/src/orchestrator/prompt-builder.ts, packages/core/src/orchestrator/prompt-builder-knowledge.test.ts."
     },
     {
       "id": "US-009",

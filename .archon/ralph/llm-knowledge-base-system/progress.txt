@@ -212,3 +212,26 @@
 - Technical notes suggested wiring into session-transitions.ts but that's a pure type/behavior module; actual wiring goes to the callers
 
 ---
+
+## 2026-04-11 — US-008: Implement fresh log fallback for unprocessed logs
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/orchestrator/prompt-builder.ts — Added loadUnprocessedLogs(), KNOWLEDGE_LOGS_MAX_CHARS, extended formatKnowledgeSection() with unprocessedLogs param, wired into both prompt builders
+- packages/core/src/orchestrator/prompt-builder-knowledge.test.ts — Added mockReaddir, 6 new tests for unprocessed log loading
+
+**Acceptance criteria verified**:
+- [x] At session start, check for daily logs newer than meta/last-flush.json timestamp
+- [x] If unprocessed logs exist, include them as supplementary raw context after the index
+- [x] Limit raw log injection to reasonable token budget (~2,000 tokens max = 8000 chars)
+- [x] If no last-flush.json exists, include all daily logs (KB is pre-first-flush)
+- [x] Type-check passes
+- [x] Tests pass (6 new tests, 19 total in file)
+
+**Learnings**:
+- Daily log filenames (YYYY-MM-DD.md) can be compared lexicographically against the flush date string
+- readdir mock needs to throw ENOENT by default (matching real fs behavior for missing dirs)
+- Project logs take precedence; global logs used as fallback only when no project logs exist
+- Logs are loaded newest-first (reversed sort) so most recent context appears first
+
+---
