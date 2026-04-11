@@ -444,7 +444,7 @@ async function discoverAllWorkflows(conversation: Conversation): Promise<Discove
 }
 
 /** Build the full prompt with system prompt, user message, and optional contexts */
-function buildFullPrompt(
+async function buildFullPrompt(
   conversation: Conversation,
   codebases: readonly Codebase[],
   workflows: readonly WorkflowDefinition[],
@@ -452,14 +452,14 @@ function buildFullPrompt(
   issueContext: string | undefined,
   threadContext: string | undefined,
   attachedFiles?: AttachedFile[]
-): string {
+): Promise<string> {
   const scopedCodebase = conversation.codebase_id
     ? codebases.find(c => c.id === conversation.codebase_id)
     : undefined;
 
   const systemPrompt = scopedCodebase
-    ? buildProjectScopedPrompt(scopedCodebase, codebases, workflows)
-    : buildOrchestratorPrompt(codebases, workflows);
+    ? await buildProjectScopedPrompt(scopedCodebase, codebases, workflows)
+    : await buildOrchestratorPrompt(codebases, workflows);
 
   const contextSuffix = issueContext ? '\n\n---\n\n## Additional Context\n\n' + issueContext : '';
 
@@ -731,7 +731,7 @@ export async function handleMessage(
       });
     }
 
-    const fullPrompt = buildFullPrompt(
+    const fullPrompt = await buildFullPrompt(
       conversation,
       codebases,
       workflows,

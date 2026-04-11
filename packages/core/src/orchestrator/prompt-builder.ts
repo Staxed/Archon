@@ -3,6 +3,9 @@
  * Constructs the system prompt for the orchestrator agent with all
  * registered projects and available workflows.
  */
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { getGlobalKnowledgePath, getProjectKnowledgePath, parseOwnerRepo } from '@archon/paths';
 import type { Codebase } from '../types';
 import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
 
@@ -107,14 +110,55 @@ To remove a registered project:
 IMPORTANT: Always clone into ~/.archon/workspaces/{owner}/{repo}/source unless the user specifies a different location.`;
 }
 
+/** Maximum approximate token budget for the knowledge index (~500 tokens ≈ ~2000 chars) */
+const KNOWLEDGE_INDEX_MAX_CHARS = 2000;
+
+/**
+ * Load a knowledge index.md file, returning its content or empty string if not found.
+ * Gracefully handles ENOENT (empty KB state).
+ */
+async function loadKnowledgeIndex(knowledgePath: string): Promise<string> {
+  try {
+    const indexPath = join(knowledgePath, 'index.md');
+    const content = await readFile(indexPath, 'utf-8');
+    // Truncate to stay within ~500 token budget
+    if (content.length > KNOWLEDGE_INDEX_MAX_CHARS) {
+      return content.slice(0, KNOWLEDGE_INDEX_MAX_CHARS) + '\n\n*(index truncated)*\n';
+    }
+    return content;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return '';
+    }
+    throw err;
+  }
+}
+
+/**
+ * Format knowledge base content as a prompt section.
+ * Combines global and project indexes with project taking precedence.
+ */
+export function formatKnowledgeSection(globalIndex: string, projectIndex: string): string {
+  if (!globalIndex && !projectIndex) return '';
+
+  let section = '\n## Knowledge Base\n\n';
+  if (globalIndex) {
+    section += '### Global Knowledge\n\n' + globalIndex.trim() + '\n\n';
+  }
+  if (projectIndex) {
+    section += '### Project Knowledge\n\n' + projectIndex.trim() + '\n\n';
+  }
+  return section;
+}
+
 /**
  * Build the full orchestrator system prompt.
  * Includes all registered projects, available workflows, and routing instructions.
  */
-export function buildOrchestratorPrompt(
+export async function buildOrchestratorPrompt(
   codebases: readonly Codebase[],
   workflows: readonly WorkflowDefinition[]
-): string {
+): Promise<string> {
   let prompt = `# Archon Orchestrator
 
 You are Archon, an intelligent coding assistant that manages multiple projects.
@@ -138,6 +182,13 @@ You can answer questions directly or invoke workflows for structured development
   prompt += '## Available Workflows\n\n';
   prompt += formatWorkflowSection(workflows);
 
+  // Load global knowledge index
+  const globalIndex = await loadKnowledgeIndex(getGlobalKnowledgePath());
+  const knowledgeSection = formatKnowledgeSection(globalIndex, '');
+  if (knowledgeSection) {
+    prompt += knowledgeSection;
+  }
+
   prompt += buildRoutingRules();
 
   return prompt;
@@ -148,11 +199,11 @@ You can answer questions directly or invoke workflows for structured development
  * The scoped project is shown prominently; other projects are listed separately.
  * Routing rules default to the scoped project when ambiguous.
  */
-export function buildProjectScopedPrompt(
+export async function buildProjectScopedPrompt(
   scopedCodebase: Codebase,
   allCodebases: readonly Codebase[],
   workflows: readonly WorkflowDefinition[]
-): string {
+): Promise<string> {
   const otherCodebases = allCodebases.filter(c => c.id !== scopedCodebase.id);
 
   let prompt = `# Archon Orchestrator
@@ -178,6 +229,18 @@ ${formatProjectSection(scopedCodebase)}
 
   prompt += '## Available Workflows\n\n';
   prompt += formatWorkflowSection(workflows);
+
+  // Load global and project knowledge indexes
+  const globalIndex = await loadKnowledgeIndex(getGlobalKnowledgePath());
+  let projectIndex = '';
+  const parsed = parseOwnerRepo(scopedCodebase.name);
+  if (parsed) {
+    projectIndex = await loadKnowledgeIndex(getProjectKnowledgePath(parsed.owner, parsed.repo));
+  }
+  const knowledgeSection = formatKnowledgeSection(globalIndex, projectIndex);
+  if (knowledgeSection) {
+    prompt += knowledgeSection;
+  }
 
   prompt += buildRoutingRulesWithProject(scopedCodebase.name);
 
