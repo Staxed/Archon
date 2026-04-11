@@ -78,6 +78,7 @@ import { continueCommand } from './commands/continue';
 import { chatCommand } from './commands/chat';
 import { setupCommand } from './commands/setup';
 import { validateWorkflowsCommand, validateCommandsCommand } from './commands/validate';
+import { knowledgeFlushCommand } from './commands/knowledge';
 import { closeDatabase } from '@archon/core';
 import { setLogLevel, createLogger } from '@archon/paths';
 import * as git from '@archon/git';
@@ -108,6 +109,7 @@ Commands:
   isolation list             List all active worktrees/environments
   isolation cleanup [days]   Remove stale environments (default: 7 days)
   isolation cleanup --merged Remove environments with branches merged into main
+  knowledge flush            Compile daily capture logs into KB articles
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   validate workflows [name]  Validate workflow definitions and their references
@@ -127,6 +129,7 @@ Options:
   --json                     Output machine-readable JSON (for workflow list)
   --workflow <name>          Workflow to run for 'continue' (default: archon-assist)
   --no-context               Skip context injection for 'continue'
+  --project <owner/repo>     Specify project for knowledge commands (default: git remote)
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -190,6 +193,7 @@ async function main(): Promise<number> {
         reason: { type: 'string' },
         workflow: { type: 'string' },
         'no-context': { type: 'boolean' },
+        project: { type: 'string' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -526,6 +530,24 @@ async function main(): Promise<number> {
         });
         break;
       }
+
+      case 'knowledge':
+        switch (subcommand) {
+          case 'flush': {
+            const projectFlag = values.project as string | undefined;
+            const quietFlag = values.quiet as boolean | undefined;
+            return await knowledgeFlushCommand(effectiveCwd, projectFlag, quietFlag);
+          }
+
+          default:
+            if (subcommand === undefined) {
+              console.error('Missing knowledge subcommand');
+            } else {
+              console.error(`Unknown knowledge subcommand: ${subcommand}`);
+            }
+            console.error('Available: flush');
+            return 1;
+        }
 
       default:
         if (command === undefined) {
