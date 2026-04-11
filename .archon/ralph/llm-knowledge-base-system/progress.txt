@@ -524,3 +524,23 @@
 - YAML files in .archon/workflows/defaults/ are imported as text in bundled-defaults.ts — changes are automatically reflected
 
 ---
+
+## 2026-04-11 — US-019: Update workflow builder for KB awareness
+
+**Status**: PASSED
+**Files changed**:
+- .archon/workflows/defaults/archon-workflow-builder.yaml — Added KB Integration section to generate-yaml node, KB awareness hint to extract-intent node, Rule 11 for KB sections
+
+**Acceptance criteria verified**:
+- [x] archon-workflow-builder workflow includes KB awareness instructions when generating new workflows
+- [x] Generated workflows reference knowledge base for context in relevant nodes (Rule 11 + detailed guidance)
+- [x] Generated workflows include guidance for KB-aware prompts (Knowledge Base Integration section with template)
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- Workflow builder only needed YAML prompt changes — no code changes required
+- KB awareness is injected at two levels: extract-intent (design phase) and generate-yaml (implementation phase)
+- The "if available" graceful degradation pattern from US-018 is now codified as a rule for generated workflows
+
+---

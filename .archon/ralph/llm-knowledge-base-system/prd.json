@@ -367,8 +367,8 @@
       "technicalNotes": "Modify the archon-workflow-builder workflow YAML in defaults. Add instructions about KB integration patterns for the builder to follow when generating workflows.",
       "dependsOn": ["US-018"],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 19. Files: .archon/workflows/defaults/archon-workflow-builder.yaml."
     },
     {
       "id": "US-020",
