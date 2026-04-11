@@ -1,0 +1,393 @@
+{
+  "project": "Archon",
+  "branchName": "ralph/llm-knowledge-base-system",
+  "prdFile": "prd.md",
+  "description": "Persistent auto-maintained knowledge base for cross-conversation memory using hierarchical markdown indexes",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add knowledge path resolution functions",
+      "description": "As a developer, I want knowledge base path functions in @archon/paths so that all packages can resolve KB directories consistently",
+      "acceptanceCriteria": [
+        "Add `getProjectKnowledgePath(owner, repo)` returning `~/.archon/workspaces/{owner}/{repo}/knowledge/`",
+        "Add `getGlobalKnowledgePath()` returning `~/.archon/knowledge/`",
+        "Add `getKnowledgeLogsPath(owner, repo)` returning `.../knowledge/logs/`",
+        "Add `getKnowledgeDomainsPath(owner, repo)` returning `.../knowledge/domains/`",
+        "Functions follow existing pattern: pure path construction, no I/O, use `getProjectRoot()` as base",
+        "Functions exported from `packages/paths/src/index.ts`",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Follow pattern at packages/paths/src/archon-paths.ts:235-277. All functions take (owner, repo) and return join(getProjectRoot(...), segment). Export from index.ts alongside existing path functions.",
+      "dependsOn": [],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add knowledge config types",
+      "description": "As a developer, I want knowledge configuration types so that KB behavior is configurable per-repo and globally",
+      "acceptanceCriteria": [
+        "Add `KnowledgeConfig` interface with `enabled`, `captureModel`, `compileModel`, `flushDebounceMinutes`, `domains` fields (all optional with defaults)",
+        "Add `knowledge?: KnowledgeConfig` to `RepoConfig` interface",
+        "Add `knowledge?: KnowledgeConfig` to `GlobalConfig` interface",
+        "Add `knowledge` field to `MergedConfig` with merge logic (repo overrides global)",
+        "Include JSDoc with `@default` annotations for each field",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Modify packages/core/src/config/config-types.ts. Follow existing section patterns (docs, env, defaults) at lines 93-187. Add to MergedConfig at lines 193-243 with merge logic matching existing patterns.",
+      "dependsOn": [],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Create knowledge directory initialization",
+      "description": "As a developer, I want KB directories auto-created on first use so that capture and compile steps have a valid filesystem target",
+      "acceptanceCriteria": [
+        "Create `initKnowledgeDir(owner, repo)` function that creates the full directory tree: knowledge/, meta/, logs/, domains/, and starting domain subdirs (architecture, decisions, patterns, lessons, connections)",
+        "Create `initGlobalKnowledgeDir()` for the global KB tier",
+        "Both functions are idempotent (safe to call multiple times)",
+        "Directories created with standard permissions",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "New file: packages/core/src/services/knowledge-init.ts. Use path functions from US-001. Follow mkdir -p pattern (recursive: true). Called lazily by capture/flush services before first write.",
+      "dependsOn": ["US-001"],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Create KB meta templates and initial index structure",
+      "description": "As an AI agent, I want schema.md and index.md templates so that I can understand and navigate the KB structure from session start",
+      "acceptanceCriteria": [
+        "Create `schema.md` template describing KB structure, domain purposes, and navigation instructions for the agent",
+        "Create `index.md` template with sections for each starting domain and placeholder content",
+        "Create domain `_index.md` templates for architecture, decisions, patterns, lessons, connections",
+        "Templates written during `initKnowledgeDir()` only if files don't already exist",
+        "Templates use standard markdown with [[wikilink]] backlink syntax for Obsidian compatibility",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Extend knowledge-init.ts from US-003. Templates are string constants or embedded files. schema.md describes the hierarchical navigation pattern. index.md is the agent's entry point (~500 tokens target).",
+      "dependsOn": ["US-003"],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Implement capture service (transcript to daily log)",
+      "description": "As a system, I want to extract decisions/lessons/patterns from conversation transcripts so that raw knowledge is persisted for later compilation",
+      "acceptanceCriteria": [
+        "Create `captureKnowledge(conversationId, owner, repo)` function",
+        "Reads conversation transcript via `listMessages()` from packages/core/src/db/messages.ts",
+        "Calls Haiku model via `IAssistantClient` factory to extract structured knowledge (decisions, lessons, patterns, connections)",
+        "Appends extracted knowledge to `knowledge/logs/YYYY-MM-DD.md` (daily log format)",
+        "Falls back to available model if Haiku unavailable",
+        "Respects `knowledge.enabled` config (skip if false)",
+        "Logs capture events: `knowledge.capture_started`, `knowledge.capture_completed`, `knowledge.capture_failed`",
+        "Type-check passes",
+        "Tests pass (mock AI client and DB)"
+      ],
+      "technicalNotes": "New file: packages/core/src/services/knowledge-capture.ts. Follow cleanup-service.ts pattern (lazy logger, config constants) at packages/core/src/services/cleanup-service.ts:27-40. Use IAssistantClient factory from packages/core/src/clients/. Read messages via listMessages() from packages/core/src/db/messages.ts.",
+      "dependsOn": ["US-001", "US-002"],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Wire capture triggers to session transitions",
+      "description": "As a system, I want knowledge capture to fire automatically on session end so that no manual intervention is needed",
+      "acceptanceCriteria": [
+        "Capture triggers on `conversation-closed` session transition",
+        "Capture triggers on `reset-requested` session transition",
+        "Capture does NOT trigger on `isolation-changed` (not a knowledge event)",
+        "Capture is fire-and-forget (does not block session transition)",
+        "Errors logged but never surface to user or block session flow",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Wire into packages/core/src/services/cleanup-service.ts onConversationClosed() and session deactivation in packages/core/src/state/session-transitions.ts. TransitionTrigger type at session-transitions.ts includes all 6 variants. Fire-and-forget with .catch() error logging.",
+      "dependsOn": ["US-005"],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Inject knowledge index into prompt builder",
+      "description": "As an AI agent, I want the knowledge index loaded into my context at session start so that I can navigate to relevant articles on demand",
+      "acceptanceCriteria": [
+        "Extend `buildProjectScopedPrompt()` to load project `knowledge/index.md` content",
+        "Extend `buildOrchestratorPrompt()` to load global `knowledge/index.md` content",
+        "Project index overrides global when both exist (project loaded after global)",
+        "Gracefully skip if no index.md exists (empty KB state)",
+        "Added content stays within ~500 token budget for index",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Modify packages/core/src/orchestrator/prompt-builder.ts. Add formatKnowledgeSection() following pattern at lines 12-37. Load index.md via fs.readFile with graceful ENOENT handling. Use path functions from US-001.",
+      "dependsOn": ["US-001"],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Implement fresh log fallback for unprocessed logs",
+      "description": "As an AI agent, I want unprocessed daily logs included as supplementary context so that recent knowledge is available even before compilation",
+      "acceptanceCriteria": [
+        "At session start, check for daily logs newer than `meta/last-flush.json` timestamp",
+        "If unprocessed logs exist, include them as supplementary raw context after the index",
+        "Limit raw log injection to reasonable token budget (~2,000 tokens max)",
+        "If no last-flush.json exists, include all daily logs (KB is pre-first-flush)",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Extend prompt-builder.ts changes from US-007. Read last-flush.json for timestamp, then scan knowledge/logs/ for newer YYYY-MM-DD.md files. Truncate if over budget.",
+      "dependsOn": ["US-007"],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement compile/flush service (daily logs to articles)",
+      "description": "As a system, I want daily logs synthesized into structured domain articles so that the knowledge base grows and stays organized",
+      "acceptanceCriteria": [
+        "Create `flushKnowledge(owner, repo)` function",
+        "Reads all daily logs since `meta/last-flush.json` timestamp",
+        "Calls Sonnet model via `IAssistantClient` to synthesize logs into domain articles",
+        "Creates/updates concept articles in `domains/{domain}/{concept}.md`",
+        "Updates domain `_index.md` files with new/modified article entries",
+        "Updates top-level `index.md` with domain summaries",
+        "Updates `meta/last-flush.json` with new timestamp and git SHA",
+        "Can create new domains beyond the starting set (organic domain creation)",
+        "Articles use standard markdown with [[wikilink]] backlinks",
+        "Logs flush events: `knowledge.flush_started`, `knowledge.flush_completed`, `knowledge.flush_failed`",
+        "Type-check passes",
+        "Tests pass (mock AI client)"
+      ],
+      "technicalNotes": "New file: packages/core/src/services/knowledge-flush.ts. Follow cleanup-service.ts pattern. Use IAssistantClient factory. Write to temp files first, then atomic rename (flush atomicity). Prompt Sonnet with existing articles + new logs for merge/update decisions.",
+      "dependsOn": ["US-005"],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Implement flush locking and atomicity",
+      "description": "As a system, I want only one concurrent flush per project so that writes don't conflict",
+      "acceptanceCriteria": [
+        "Implement file-based lock at `knowledge/meta/flush.lock` with PID",
+        "Flush acquires lock before writing, releases on completion or error",
+        "If lock held by another process, flush skips with a warning log",
+        "If lock held by dead process (stale PID), lock is reclaimed",
+        "All writes go to temp files first, then atomic rename into final paths",
+        "If flush crashes mid-write, next flush re-runs from scratch (idempotent)",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Add to knowledge-flush.ts from US-009. Use fs.writeFile for lock with PID, check process.kill(pid, 0) for stale lock detection. Temp dir pattern: write to knowledge/.tmp/, rename to final paths.",
+      "dependsOn": ["US-009"],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Implement staleness validation in flush",
+      "description": "As a system, I want articles cross-referenced against git history so that stale knowledge is flagged",
+      "acceptanceCriteria": [
+        "During flush, run Haiku model to compare existing articles against `git diff` since last-flush SHA",
+        "Flag articles that reference files/functions/patterns that have changed significantly",
+        "Add staleness markers to flagged articles (e.g., `> [!WARNING] This article may be stale`)",
+        "Check for broken [[wikilink]] cross-references between articles",
+        "Log validation results: articles checked, flagged stale, links broken",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Extend knowledge-flush.ts. Use @archon/git for git diff operations. Haiku performs mechanical comparison (article content vs changed files). Staleness markers are standard markdown admonitions.",
+      "dependsOn": ["US-009"],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Implement debounced flush trigger",
+      "description": "As a system, I want flush to trigger automatically after session end with a debounce so that the KB stays fresh without redundant flushes",
+      "acceptanceCriteria": [
+        "After capture completes, schedule a flush with configurable debounce (default ~10 minutes)",
+        "If another capture fires within debounce window, reset the timer",
+        "Debounce is per-project (different projects flush independently)",
+        "Use `knowledge.flushDebounceMinutes` from config",
+        "Debounce timer survives within server process lifetime (not persisted across restarts)",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Add to knowledge-flush.ts or create knowledge-scheduler.ts. Use setTimeout with Map<projectKey, NodeJS.Timeout> for per-project debounce. Follow cleanup-service.ts scheduler pattern at lines 555-595.",
+      "dependsOn": ["US-010"],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Implement global KB tier with precedence",
+      "description": "As a developer, I want a global knowledge base that applies across all projects so that cross-project lessons are retained",
+      "acceptanceCriteria": [
+        "Global KB lives at `~/.archon/knowledge/` (uses `getGlobalKnowledgePath()`)",
+        "Global KB has same directory structure as project KB (index.md, meta/, logs/, domains/)",
+        "Flush operates independently per tier (project flush doesn't touch global)",
+        "At query time, load global index.md first, then project index.md (project wins on conflicts)",
+        "Global KB initialization follows same pattern as project KB",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Extend capture and flush services to support global tier. Extend prompt builder to load both tiers. Precedence matching: same as config.yaml (packages/core/src/config/config-types.ts MergedConfig pattern).",
+      "dependsOn": ["US-009"],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Add `knowledge flush` CLI command",
+      "description": "As a developer, I want to manually trigger a knowledge flush so that I can compile the KB on demand",
+      "acceptanceCriteria": [
+        "Add `knowledge flush` subcommand to CLI",
+        "Accepts optional `--project owner/repo` flag (defaults to current git repo)",
+        "Calls `flushKnowledge()` and displays results (articles created/updated, domains, staleness)",
+        "Shows progress output during flush",
+        "Respects `--quiet` and `--verbose` CLI flags",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "New file: packages/cli/src/commands/knowledge.ts. Follow workflow.ts pattern at lines 4-46 (imports, lazy logger) and 79-112 (event rendering). Register in packages/cli/src/cli.ts alongside existing commands.",
+      "dependsOn": ["US-009"],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Add `knowledge status` CLI command",
+      "description": "As a developer, I want to see KB stats so that I know what the system has learned about my project",
+      "acceptanceCriteria": [
+        "Add `knowledge status` subcommand to CLI",
+        "Displays: total articles, articles per domain, last flush timestamp, unprocessed log count, staleness stats",
+        "Accepts optional `--project owner/repo` flag",
+        "Supports `--json` flag for machine-readable output",
+        "Shows global KB stats alongside project KB stats",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Add to packages/cli/src/commands/knowledge.ts from US-014. Reads knowledge/ directory tree, meta/last-flush.json, counts files. No AI calls needed — pure filesystem inspection.",
+      "dependsOn": ["US-003"],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Add `knowledge lint` CLI command",
+      "description": "As a developer, I want to validate KB integrity so that I can identify stale or broken articles",
+      "acceptanceCriteria": [
+        "Add `knowledge lint` subcommand to CLI",
+        "Validates all articles against current git state (runs staleness check)",
+        "Checks for broken [[wikilink]] cross-references",
+        "Checks for orphaned articles (not referenced in any index)",
+        "Displays results with actionable output (which articles are stale, which links are broken)",
+        "Supports `--json` flag for machine-readable output",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Add to packages/cli/src/commands/knowledge.ts. Reuses validation logic from US-011 (staleness check). Additional checks: parse [[wikilinks]] from all articles, verify targets exist; scan _index.md files for completeness.",
+      "dependsOn": ["US-011"],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-017",
+      "title": "Add engine-level post-workflow capture",
+      "description": "As a system, I want knowledge captured automatically after workflow completion so that workflow-generated knowledge persists",
+      "acceptanceCriteria": [
+        "Subscribe to `workflow_completed` events via `getWorkflowEventEmitter()`",
+        "Trigger `captureKnowledge()` for the conversation associated with the completed workflow",
+        "Also read JSONL workflow logs (from packages/workflows/src/logger.ts) as additional capture source",
+        "Capture is fire-and-forget (does not block workflow completion reporting)",
+        "Errors logged but never surface to user",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Add to packages/workflows/src/executor.ts at line 644 (after completion check). Use emitter.subscribe() pattern from packages/workflows/src/event-emitter.ts:170-254. Read JSONL logs via packages/workflows/src/logger.ts log path patterns.",
+      "dependsOn": ["US-005"],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-018",
+      "title": "Update default workflows with KB awareness",
+      "description": "As a developer, I want all default workflows to leverage the knowledge base so that workflows benefit from accumulated project knowledge",
+      "acceptanceCriteria": [
+        "All default workflows in .archon/workflows/defaults/ reference knowledge base for context where relevant",
+        "Workflows that perform analysis or planning include KB-aware prompts ('check the knowledge base for prior decisions on this topic')",
+        "Workflows that produce decisions or lessons contribute to KB via capture",
+        "No workflow is broken if KB is empty (graceful degradation)",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Modify YAML files in packages/workflows/src/defaults/ (or .archon/workflows/defaults/). Add KB context references to prompt sections. Knowledge is available via prompt builder injection (US-007), so workflows just need awareness prompts.",
+      "dependsOn": ["US-007", "US-017"],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-019",
+      "title": "Update workflow builder for KB awareness",
+      "description": "As a developer, I want the workflow builder to include KB awareness in new workflows by default so that custom workflows benefit from knowledge",
+      "acceptanceCriteria": [
+        "archon-workflow-builder workflow includes KB awareness instructions when generating new workflows",
+        "Generated workflows reference knowledge base for context in relevant nodes",
+        "Generated workflows include guidance for KB-aware prompts",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Modify the archon-workflow-builder workflow YAML in defaults. Add instructions about KB integration patterns for the builder to follow when generating workflows.",
+      "dependsOn": ["US-018"],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-020",
+      "title": "Add explicit knowledge-extract workflow node type",
+      "description": "As a workflow author, I want to add dedicated knowledge extraction nodes so that workflows can produce richer, targeted knowledge artifacts",
+      "acceptanceCriteria": [
+        "Workflows can include `knowledge-extract` nodes that run targeted knowledge extraction",
+        "Node accepts a prompt describing what knowledge to extract from the workflow's output",
+        "Node uses capture service infrastructure (Haiku model, daily log format)",
+        "Node output is appended to daily log with workflow context metadata",
+        "Existing workflows without knowledge-extract nodes continue to work unchanged",
+        "Type-check passes",
+        "Tests pass"
+      ],
+      "technicalNotes": "Extend DAG executor in packages/workflows/src/dag-executor.ts. Add 'knowledge-extract' as a recognized node type alongside 'command', 'prompt', 'bash', 'loop'. Node calls captureKnowledge() with custom extraction prompt.",
+      "dependsOn": ["US-017"],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
