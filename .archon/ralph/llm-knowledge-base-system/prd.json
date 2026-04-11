@@ -255,8 +255,8 @@
       "technicalNotes": "Extend capture and flush services to support global tier. Extend prompt builder to load both tiers. Precedence matching: same as config.yaml (packages/core/src/config/config-types.ts MergedConfig pattern).",
       "dependsOn": ["US-009"],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 13. Files: packages/core/src/services/knowledge-flush.ts, packages/core/src/services/knowledge-flush.test.ts, packages/core/src/services/knowledge-scheduler.ts, packages/core/src/services/knowledge-scheduler.test.ts."
     },
     {
       "id": "US-014",

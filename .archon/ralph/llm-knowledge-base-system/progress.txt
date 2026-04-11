@@ -345,3 +345,35 @@
 - Test timing with very short debounce (0.001 min = 60ms) works reliably in Bun
 
 ---
+
+### Shared Core Pattern
+- **Where**: `packages/core/src/services/knowledge-flush.ts:53-85`
+- **Pattern**: Extract shared logic into a `*Core()` function with an options interface (FlushCoreOptions). Public functions (`flushKnowledge`, `flushGlobalKnowledge`) are thin wrappers that set up options. The init callback is passed as a field to allow the enabled check to short-circuit before init.
+- **Example**: `flushKnowledgeCore({ label, knowledgePath, config, git, init })`
+
+## 2026-04-11 — US-013: Implement global KB tier with precedence
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Refactored to shared flushKnowledgeCore(), added flushGlobalKnowledge(), made updateLastFlush() owner/repo optional
+- packages/core/src/services/knowledge-flush.test.ts — Added 5 new tests for global flush (path, staleness skip, git SHA, independence, disabled)
+- packages/core/src/services/knowledge-scheduler.ts — Added scheduleGlobalFlush() using __global__ key
+- packages/core/src/services/knowledge-scheduler.test.ts — Added 3 new tests for global scheduling, added flushGlobalKnowledge mock
+
+**Acceptance criteria verified**:
+- [x] Global KB lives at ~/.archon/knowledge/ (uses getGlobalKnowledgePath())
+- [x] Global KB has same directory structure as project KB (initGlobalKnowledgeDir from US-003)
+- [x] Flush operates independently per tier (flushGlobalKnowledge uses global path, no git ops)
+- [x] At query time, load global index.md first, then project index.md (prompt-builder from US-007)
+- [x] Global KB initialization follows same pattern as project KB (shared createDirectoryStructure)
+- [x] Type-check passes
+- [x] Tests pass (5 new flush tests, 3 new scheduler tests)
+
+**Learnings**:
+- Most global KB infrastructure was already in place from US-001 (paths), US-003 (init), US-007/US-008 (prompt builder)
+- The main gap was flush — refactored to shared core with FlushCoreOptions to avoid duplication
+- Global flush skips staleness validation entirely (no git repo to compare against)
+- updateLastFlush uses empty string for gitSha when no owner/repo provided
+- mock.module must export ALL named exports that the importing module needs, or import fails
+
+---
