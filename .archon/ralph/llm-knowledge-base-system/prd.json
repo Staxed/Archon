@@ -21,8 +21,8 @@
       "technicalNotes": "Follow pattern at packages/paths/src/archon-paths.ts:235-277. All functions take (owner, repo) and return join(getProjectRoot(...), segment). Export from index.ts alongside existing path functions.",
       "dependsOn": [],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 1. Files: packages/paths/src/archon-paths.ts, packages/paths/src/index.ts, packages/paths/src/archon-paths.test.ts."
     },
     {
       "id": "US-002",
@@ -40,8 +40,8 @@
       "technicalNotes": "Modify packages/core/src/config/config-types.ts. Follow existing section patterns (docs, env, defaults) at lines 93-187. Add to MergedConfig at lines 193-243 with merge logic matching existing patterns.",
       "dependsOn": [],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 2. Files: packages/core/src/config/config-types.ts, packages/core/src/config/config-loader.ts."
     },
     {
       "id": "US-003",
