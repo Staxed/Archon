@@ -64,12 +64,14 @@ export interface KnowledgeCaptureReport {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param config - Optional pre-loaded config (avoids redundant loading)
+ * @param additionalTranscript - Optional extra context (e.g. workflow JSONL logs) appended to transcript
  */
 export async function captureKnowledge(
   conversationId: string,
   owner: string,
   repo: string,
-  config?: MergedConfig
+  config?: MergedConfig,
+  additionalTranscript?: string
 ): Promise<KnowledgeCaptureReport> {
   const log = getLog();
 
@@ -104,7 +106,7 @@ export async function captureKnowledge(
     }
 
     // Format transcript for extraction
-    const transcript = formatTranscript(messages);
+    const transcript = formatTranscript(messages) + (additionalTranscript ?? '');
 
     // Call AI model to extract knowledge
     const extractedContent = await extractKnowledge(

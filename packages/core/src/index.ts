@@ -119,6 +119,7 @@ export {
 } from './services/cleanup-service';
 
 export { generateAndSetTitle } from './services/title-generator';
+export { subscribeToWorkflowCapture } from './services/knowledge-workflow-capture';
 
 // =============================================================================
 // State
