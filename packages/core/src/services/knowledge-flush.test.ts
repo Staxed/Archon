@@ -79,8 +79,16 @@ const mockLogger = {
 mock.module('@archon/paths', () => ({
   getProjectKnowledgePath: (owner: string, repo: string) =>
     `/home/test/.archon/workspaces/${owner}/${repo}/knowledge`,
+  getProjectSourcePath: (owner: string, repo: string) =>
+    `/home/test/.archon/workspaces/${owner}/${repo}/source`,
   getGlobalKnowledgePath: () => '/home/test/.archon/knowledge',
   createLogger: mock(() => mockLogger),
+}));
+
+// Mock @archon/git
+const mockExecFileAsync = mock(async () => ({ stdout: '', stderr: '' }));
+mock.module('@archon/git', () => ({
+  execFileAsync: mockExecFileAsync,
 }));
 
 // Mock config loader
@@ -147,9 +155,11 @@ describe('knowledge-flush', () => {
     mockInitKnowledgeDir.mockClear();
     mockSendQuery.mockClear();
     mockGetAssistantClient.mockClear();
+    mockExecFileAsync.mockClear();
     Object.values(mockLogger).forEach(fn => fn.mockClear());
 
     // Reset default mock implementations
+    mockExecFileAsync.mockImplementation(async () => ({ stdout: '', stderr: '' }));
     mockSendQueryChunks = [];
     mockSendQuery.mockImplementation(function* () {
       for (const chunk of mockSendQueryChunks) {
@@ -744,5 +754,230 @@ describe('knowledge-flush', () => {
     // rm was called to clean up .tmp dir (at least twice — once before, once after)
     const tmpRmCalls = rmCalls.filter(p => p.includes('.tmp'));
     expect(tmpRmCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('stores git SHA in last-flush.json', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    // Mock git rev-parse HEAD to return a SHA
+    mockExecFileAsync.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes('rev-parse')) {
+        return { stdout: 'abc123def456\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    const flushWrite = writeFileCalls.find(c => c.path.includes('last-flush.json'));
+    expect(flushWrite).toBeDefined();
+    const meta = JSON.parse(flushWrite!.content) as { gitSha: string };
+    expect(meta.gitSha).toBe('abc123def456');
+  });
+
+  test('validates staleness when last flush has git SHA', async () => {
+    // Set up last-flush with a git SHA
+    fileSystem[`${KB_PATH}/meta/last-flush.json`] = JSON.stringify({
+      timestamp: '2026-04-09T12:00:00Z',
+      gitSha: 'oldsha123',
+      logsCaptured: ['2026-04-09.md'],
+    });
+
+    directories[`${KB_PATH}/logs`] = ['2026-04-10.md'];
+    directories[`${KB_PATH}/domains`] = ['decisions'];
+    directories[`${KB_PATH}/domains/decisions`] = ['_index.md', 'auth-strategy.md'];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-10.md`] = '## New info\n';
+    fileSystem[`${KB_PATH}/domains/decisions/_index.md`] = '# Decisions\n\n## Articles\n';
+    fileSystem[`${KB_PATH}/domains/decisions/auth-strategy.md`] =
+      '# Auth Strategy\n\nUse JWT with src/auth/tokens.ts.\n\n## Related\n';
+
+    // Mock git commands: rev-parse returns new SHA, diff returns changed files
+    mockExecFileAsync.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes('rev-parse')) {
+        return { stdout: 'newsha456\n', stderr: '' };
+      }
+      if (args.includes('diff')) {
+        return { stdout: 'src/auth/tokens.ts\nsrc/api/routes.ts\n', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+
+    // Synthesis call returns no new articles, staleness call returns stale articles
+    let callCount = 0;
+    mockSendQuery.mockImplementation(function* () {
+      callCount++;
+      if (callCount === 1) {
+        // Synthesis response
+        yield {
+          type: 'assistant',
+          content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+        };
+      } else {
+        // Staleness validation response
+        yield {
+          type: 'assistant',
+          content: JSON.stringify(['decisions/auth-strategy']),
+        };
+      }
+    });
+
+    const result = await flushKnowledge('acme', 'widget');
+
+    expect(result.articlesStale).toBe(1);
+
+    // Verify staleness marker was written to the article
+    const markerWrite = writeFileCalls.find(
+      c =>
+        c.path.includes('auth-strategy.md') &&
+        c.content.includes('> [!WARNING] This article may be stale')
+    );
+    expect(markerWrite).toBeDefined();
+  });
+
+  test('skips staleness check when no last flush SHA', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = ['patterns'];
+    directories[`${KB_PATH}/domains/patterns`] = ['_index.md', 'some-pattern.md'];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+    fileSystem[`${KB_PATH}/domains/patterns/_index.md`] = '# Patterns\n';
+    fileSystem[`${KB_PATH}/domains/patterns/some-pattern.md`] = '# Some Pattern\n\nContent.\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    const result = await flushKnowledge('acme', 'widget');
+
+    // No staleness check because no last flush SHA
+    expect(result.articlesStale).toBe(0);
+
+    // Only one sendQuery call (synthesis), no staleness call
+    expect(mockSendQuery).toHaveBeenCalledTimes(1);
+  });
+
+  test('detects broken wikilinks between articles', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = ['decisions', 'patterns'];
+    directories[`${KB_PATH}/domains/decisions`] = ['_index.md', 'auth-strategy.md'];
+    directories[`${KB_PATH}/domains/patterns`] = ['_index.md'];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+    fileSystem[`${KB_PATH}/domains/decisions/_index.md`] = '# Decisions\n';
+    fileSystem[`${KB_PATH}/domains/decisions/auth-strategy.md`] =
+      '# Auth Strategy\n\nSee [[patterns/nonexistent-pattern]] and [[decisions/auth-strategy]].\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    const result = await flushKnowledge('acme', 'widget');
+
+    // Validation logs should mention broken links
+    const validationLog = mockLogger.info.mock.calls.find(
+      (call: unknown[]) => (call[1] as string) === 'knowledge.flush_validation_completed'
+    );
+    expect(validationLog).toBeDefined();
+    const logData = validationLog![0] as { brokenLinks: number };
+    expect(logData.brokenLinks).toBe(1);
+  });
+
+  test('logs validation results', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = ['architecture'];
+    directories[`${KB_PATH}/domains/architecture`] = ['_index.md', 'api-design.md'];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+    fileSystem[`${KB_PATH}/domains/architecture/_index.md`] = '# Architecture\n';
+    fileSystem[`${KB_PATH}/domains/architecture/api-design.md`] =
+      '# API Design\n\nREST endpoints.\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    // Validation completed log should include articles checked, stale, broken links
+    const validationLog = mockLogger.info.mock.calls.find(
+      (call: unknown[]) => (call[1] as string) === 'knowledge.flush_validation_completed'
+    );
+    expect(validationLog).toBeDefined();
+    const data = validationLog![0] as {
+      articlesChecked: number;
+      articlesFlaggedStale: number;
+      brokenLinks: number;
+    };
+    expect(data.articlesChecked).toBe(1);
+    expect(data.articlesFlaggedStale).toBe(0);
+    expect(data.brokenLinks).toBe(0);
+  });
+
+  test('staleness marker is idempotent', async () => {
+    // Set up with a last flush SHA so staleness check runs
+    fileSystem[`${KB_PATH}/meta/last-flush.json`] = JSON.stringify({
+      timestamp: '2026-04-09T12:00:00Z',
+      gitSha: 'oldsha123',
+      logsCaptured: ['2026-04-09.md'],
+    });
+
+    directories[`${KB_PATH}/logs`] = ['2026-04-10.md'];
+    directories[`${KB_PATH}/domains`] = ['decisions'];
+    directories[`${KB_PATH}/domains/decisions`] = ['_index.md', 'auth-strategy.md'];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-10.md`] = '## New info\n';
+    fileSystem[`${KB_PATH}/domains/decisions/_index.md`] = '# Decisions\n';
+    // Article already has staleness marker
+    fileSystem[`${KB_PATH}/domains/decisions/auth-strategy.md`] =
+      '# Auth Strategy\n\n> [!WARNING] This article may be stale — referenced code has changed since last validation.\n\nContent.\n';
+
+    mockExecFileAsync.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes('rev-parse')) return { stdout: 'newsha\n', stderr: '' };
+      if (args.includes('diff')) return { stdout: 'src/auth.ts\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+
+    let callCount = 0;
+    mockSendQuery.mockImplementation(function* () {
+      callCount++;
+      if (callCount === 1) {
+        yield {
+          type: 'assistant',
+          content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+        };
+      } else {
+        yield { type: 'assistant', content: JSON.stringify(['decisions/auth-strategy']) };
+      }
+    });
+
+    await flushKnowledge('acme', 'widget');
+
+    // The marker write should NOT happen since article already has the marker
+    const markerWrites = writeFileCalls.filter(
+      c =>
+        c.path.includes('auth-strategy.md') &&
+        c.content.includes('> [!WARNING] This article may be stale')
+    );
+    // Article already had marker, so writeFile should not be called for marker addition
+    expect(markerWrites.length).toBe(0);
   });
 });

@@ -7,8 +7,9 @@
  */
 import { readFile, readdir, writeFile, mkdir, rename, unlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getProjectKnowledgePath } from '@archon/paths';
+import { getProjectKnowledgePath, getProjectSourcePath } from '@archon/paths';
 import { createLogger } from '@archon/paths';
+import { execFileAsync } from '@archon/git';
 import { getAssistantClient } from '../clients/factory';
 import { loadConfig } from '../config/config-loader';
 import { initKnowledgeDir } from './knowledge-init';
@@ -224,8 +225,18 @@ export async function flushKnowledge(
     // Write to temp dir first, then atomic rename to final paths
     const report = await writeFlushResultsAtomic(knowledgePath, synthesis, unprocessedLogs);
 
-    // Update last-flush metadata (also via temp + rename)
-    await updateLastFlush(knowledgePath, unprocessedLogs);
+    // Validate staleness of articles against git history and check wikilinks
+    const validation = await validateStaleness(
+      knowledgePath,
+      owner,
+      repo,
+      lastFlush?.gitSha || undefined,
+      mergedConfig.knowledge.captureModel
+    );
+    report.articlesStale = validation.articlesFlaggedStale;
+
+    // Update last-flush metadata with current git SHA (also via temp + rename)
+    await updateLastFlush(knowledgePath, unprocessedLogs, owner, repo);
 
     log.info(
       {
@@ -233,6 +244,7 @@ export async function flushKnowledge(
         repo,
         articlesCreated: report.articlesCreated,
         articlesUpdated: report.articlesUpdated,
+        articlesStale: report.articlesStale,
         domainsCreated: report.domainsCreated,
         logsProcessed: report.logsProcessed.length,
       },
@@ -627,15 +639,22 @@ ${domainSections.join('\n\n')}
 }
 
 /**
- * Update meta/last-flush.json with current timestamp via atomic temp+rename.
+ * Update meta/last-flush.json with current timestamp and git SHA via atomic temp+rename.
  */
-async function updateLastFlush(knowledgePath: string, processedLogs: string[]): Promise<void> {
+async function updateLastFlush(
+  knowledgePath: string,
+  processedLogs: string[],
+  owner: string,
+  repo: string
+): Promise<void> {
   const metaDir = join(knowledgePath, 'meta');
   await mkdir(metaDir, { recursive: true });
 
+  const gitSha = await getCurrentGitSha(owner, repo);
+
   const meta: LastFlushMeta = {
     timestamp: new Date().toISOString(),
-    gitSha: '', // Git SHA tracking deferred to US-011 (staleness validation)
+    gitSha,
     logsCaptured: processedLogs,
   };
 
@@ -643,6 +662,281 @@ async function updateLastFlush(knowledgePath: string, processedLogs: string[]): 
   const finalPath = join(metaDir, 'last-flush.json');
   await writeFile(tmpPath, JSON.stringify(meta, null, 2));
   await rename(tmpPath, finalPath);
+}
+
+/**
+ * Get the current HEAD SHA from the project source repository.
+ * Returns empty string if git is unavailable.
+ */
+async function getCurrentGitSha(owner: string, repo: string): Promise<string> {
+  try {
+    const sourcePath = getProjectSourcePath(owner, repo);
+    const { stdout } = await execFileAsync('git', ['-C', sourcePath, 'rev-parse', 'HEAD'], {
+      timeout: 10000,
+    });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Get git diff output (changed file names) between two SHAs.
+ * Returns empty string if git is unavailable or SHAs are invalid.
+ */
+async function getGitDiffNameOnly(owner: string, repo: string, fromSha: string): Promise<string> {
+  try {
+    const sourcePath = getProjectSourcePath(owner, repo);
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', sourcePath, 'diff', '--name-only', `${fromSha}..HEAD`],
+      { timeout: 30000 }
+    );
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Prompt for Haiku to perform staleness comparison */
+const STALENESS_PROMPT = `You are a knowledge base validator. Given a list of changed files from git and a set of knowledge articles, identify which articles reference files, functions, or patterns that have changed significantly.
+
+## Output Format
+
+Respond with a JSON array of article paths that are stale (no markdown fences, no explanation, just JSON):
+
+["domain/concept", "domain/concept2"]
+
+If no articles are stale, return an empty array: []
+
+## Rules
+- An article is stale if it specifically references files, functions, classes, or patterns that appear in the changed files list
+- General conceptual articles that don't reference specific code are NOT stale
+- Only flag articles where the changes are significant enough to potentially invalidate the article's content
+- Be conservative — only flag clearly affected articles
+
+---
+
+`;
+
+/** Staleness validation result */
+interface StalenessResult {
+  articlesChecked: number;
+  articlesFlaggedStale: number;
+  brokenLinks: number;
+  staleArticles: string[];
+  brokenWikilinks: { source: string; target: string }[];
+}
+
+/**
+ * Validate articles for staleness against git history and check for broken wikilinks.
+ */
+async function validateStaleness(
+  knowledgePath: string,
+  owner: string,
+  repo: string,
+  lastFlushSha: string | undefined,
+  captureModel: string
+): Promise<StalenessResult> {
+  const log = getLog();
+
+  // Collect all articles
+  const articles = await collectAllArticles(knowledgePath);
+
+  if (articles.length === 0) {
+    return {
+      articlesChecked: 0,
+      articlesFlaggedStale: 0,
+      brokenLinks: 0,
+      staleArticles: [],
+      brokenWikilinks: [],
+    };
+  }
+
+  // Check staleness via git diff + AI
+  let staleArticles: string[] = [];
+  if (lastFlushSha) {
+    const diffOutput = await getGitDiffNameOnly(owner, repo, lastFlushSha);
+    if (diffOutput) {
+      staleArticles = await identifyStaleArticles(articles, diffOutput, captureModel);
+    }
+  }
+
+  // Add staleness markers to flagged articles
+  for (const articleKey of staleArticles) {
+    const [domain, concept] = articleKey.split('/');
+    if (!domain || !concept) continue;
+    const articlePath = join(knowledgePath, 'domains', domain, `${concept}.md`);
+    await addStalenessMarker(articlePath);
+  }
+
+  // Check for broken wikilinks
+  const brokenWikilinks = checkBrokenWikilinks(articles);
+
+  log.info(
+    {
+      articlesChecked: articles.length,
+      articlesFlaggedStale: staleArticles.length,
+      brokenLinks: brokenWikilinks.length,
+    },
+    'knowledge.flush_validation_completed'
+  );
+
+  return {
+    articlesChecked: articles.length,
+    articlesFlaggedStale: staleArticles.length,
+    brokenLinks: brokenWikilinks.length,
+    staleArticles,
+    brokenWikilinks,
+  };
+}
+
+/** Collected article with domain/concept key and content */
+interface CollectedArticle {
+  key: string; // "domain/concept"
+  content: string;
+}
+
+/**
+ * Collect all articles from domains/ directory.
+ */
+async function collectAllArticles(knowledgePath: string): Promise<CollectedArticle[]> {
+  const domainsDir = join(knowledgePath, 'domains');
+  const articles: CollectedArticle[] = [];
+
+  let domains: string[];
+  try {
+    domains = await readdir(domainsDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+
+  for (const domain of domains) {
+    const domainDir = join(domainsDir, domain);
+    let files: string[];
+    try {
+      files = await readdir(domainDir);
+    } catch {
+      continue;
+    }
+
+    for (const file of files) {
+      if (file === '_index.md' || !file.endsWith('.md')) continue;
+      try {
+        const content = await readFile(join(domainDir, file), 'utf-8');
+        const concept = file.replace('.md', '');
+        articles.push({ key: `${domain}/${concept}`, content });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return articles;
+}
+
+/**
+ * Call Haiku to identify which articles are stale based on git diff.
+ */
+async function identifyStaleArticles(
+  articles: CollectedArticle[],
+  diffOutput: string,
+  captureModel: string
+): Promise<string[]> {
+  const client = getAssistantClient('claude');
+
+  const articlesSummary = articles.map(a => `### ${a.key}\n\n${a.content}`).join('\n\n---\n\n');
+
+  const prompt = `${STALENESS_PROMPT}## Changed Files\n\n${diffOutput}\n\n## Articles to Check\n\n${articlesSummary}`;
+
+  const chunks: string[] = [];
+  const generator = client.sendQuery(prompt, process.cwd(), undefined, {
+    model: captureModel,
+    tools: [],
+  });
+
+  for await (const chunk of generator) {
+    if (chunk.type === 'assistant') {
+      chunks.push(chunk.content);
+    }
+  }
+
+  const rawResponse = chunks.join('');
+  const jsonStr = rawResponse.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '');
+
+  try {
+    const result = JSON.parse(jsonStr) as string[];
+    return Array.isArray(result) ? result : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Add a staleness warning marker to an article file.
+ * Idempotent — won't add if already present.
+ */
+async function addStalenessMarker(articlePath: string): Promise<void> {
+  const STALENESS_MARKER =
+    '> [!WARNING] This article may be stale — referenced code has changed since last validation.';
+
+  try {
+    let content = await readFile(articlePath, 'utf-8');
+    if (content.includes('> [!WARNING] This article may be stale')) {
+      return; // Already marked
+    }
+
+    // Remove any existing staleness markers before adding fresh one
+    // Insert after the first heading line
+    const lines = content.split('\n');
+    const headingIdx = lines.findIndex(l => l.startsWith('# '));
+    if (headingIdx !== -1) {
+      lines.splice(headingIdx + 1, 0, '', STALENESS_MARKER, '');
+      content = lines.join('\n');
+    } else {
+      content = STALENESS_MARKER + '\n\n' + content;
+    }
+
+    await writeFile(articlePath, content);
+  } catch {
+    // Article may have been removed — skip silently
+  }
+}
+
+/**
+ * Check for broken [[wikilink]] cross-references between articles.
+ * Returns list of broken links with source article and target reference.
+ */
+function checkBrokenWikilinks(articles: CollectedArticle[]): { source: string; target: string }[] {
+  const articleKeys = new Set(articles.map(a => a.key));
+  const brokenLinks: { source: string; target: string }[] = [];
+
+  const wikilinkPattern = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+
+  for (const article of articles) {
+    let match: RegExpExecArray | null;
+    // Reset lastIndex for each article
+    wikilinkPattern.lastIndex = 0;
+
+    while ((match = wikilinkPattern.exec(article.content)) !== null) {
+      const target = match[1];
+      if (!target) continue;
+
+      // Skip links to _index files (domain-level links)
+      if (target.includes('_index')) continue;
+
+      // Normalize: strip domains/ prefix if present
+      const normalizedTarget = target.replace(/^domains\//, '');
+
+      // Check if target article exists
+      if (normalizedTarget.includes('/') && !articleKeys.has(normalizedTarget)) {
+        brokenLinks.push({ source: article.key, target: normalizedTarget });
+      }
+    }
+  }
+
+  return brokenLinks;
 }
 
 /**
