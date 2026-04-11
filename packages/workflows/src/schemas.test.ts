@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   isBashNode,
   isCancelNode,
+  isKnowledgeExtractNode,
   isTriggerRule,
   TRIGGER_RULES,
   approvalOnRejectSchema,
@@ -14,6 +15,7 @@ import type {
   PromptNode,
   BashNode,
   CancelNode,
+  KnowledgeExtractNode,
   TriggerRule,
 } from './schemas';
 
@@ -25,6 +27,10 @@ const commandNode: CommandNode = { id: 'n1', command: 'build' };
 const promptNode: PromptNode = { id: 'n2', prompt: 'Do this inline.' };
 const bashNode: BashNode = { id: 'n3', bash: 'echo hello' };
 const cancelNode: CancelNode = { id: 'n5', cancel: 'Precondition failed' };
+const knowledgeExtractNode: KnowledgeExtractNode = {
+  id: 'n6',
+  knowledge_extract: 'Extract architecture decisions from the output',
+};
 
 const dagWorkflow: WorkflowDefinition = {
   name: 'dag-workflow',
@@ -95,6 +101,32 @@ describe('isCancelNode', () => {
   test('returns false when cancel is not a string (malformed node)', () => {
     const malformed = { id: 'x', cancel: 42 } as unknown as DagNode;
     expect(isCancelNode(malformed)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isKnowledgeExtractNode
+// ---------------------------------------------------------------------------
+
+describe('isKnowledgeExtractNode', () => {
+  test('returns true for a knowledge-extract node', () => {
+    expect(isKnowledgeExtractNode(knowledgeExtractNode)).toBe(true);
+  });
+
+  test('returns false for a command node', () => {
+    expect(isKnowledgeExtractNode(commandNode)).toBe(false);
+  });
+
+  test('returns false for a prompt node', () => {
+    expect(isKnowledgeExtractNode(promptNode)).toBe(false);
+  });
+
+  test('returns false for a bash node', () => {
+    expect(isKnowledgeExtractNode(bashNode)).toBe(false);
+  });
+
+  test('returns false for a cancel node', () => {
+    expect(isKnowledgeExtractNode(cancelNode)).toBe(false);
   });
 });
 
@@ -270,6 +302,58 @@ describe('dagNodeSchema — empty bash/prompt', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0].message).toContain('must have either');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dagNodeSchema — knowledge_extract node type
+// ---------------------------------------------------------------------------
+
+describe('dagNodeSchema — knowledge_extract', () => {
+  test('parses valid knowledge_extract node', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'extract',
+      knowledge_extract: 'Extract architecture decisions from the output',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(isKnowledgeExtractNode(result.data)).toBe(true);
+      expect((result.data as KnowledgeExtractNode).knowledge_extract).toBe(
+        'Extract architecture decisions from the output'
+      );
+    }
+  });
+
+  test('rejects empty knowledge_extract prompt', () => {
+    const result = dagNodeSchema.safeParse({ id: 'extract', knowledge_extract: '' });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toContain('knowledge_extract prompt cannot be empty');
+    }
+  });
+
+  test('rejects knowledge_extract with other mode fields (mutual exclusivity)', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'extract',
+      knowledge_extract: 'Extract decisions',
+      prompt: 'Also do this',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toContain('mutually exclusive');
+    }
+  });
+
+  test('parses knowledge_extract with depends_on', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'extract',
+      knowledge_extract: 'Extract patterns from analysis',
+      depends_on: ['analyze'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.depends_on).toEqual(['analyze']);
     }
   });
 });

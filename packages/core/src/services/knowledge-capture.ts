@@ -216,6 +216,91 @@ async function appendToDailyLog(
 }
 
 /**
+ * Extract knowledge using a custom prompt and context.
+ * Used by knowledge-extract workflow nodes for targeted extraction.
+ *
+ * @param prompt - Custom extraction prompt describing what to extract
+ * @param context - Upstream context (e.g. workflow node outputs)
+ * @param cwd - Working directory (used to resolve owner/repo via git remote)
+ * @param metadata - Workflow run and node identifiers for log entries
+ * @returns Extracted knowledge content
+ */
+export async function extractKnowledgeFromContext(
+  prompt: string,
+  context: string,
+  cwd: string,
+  metadata: { workflowRunId: string; nodeId: string }
+): Promise<string> {
+  const log = getLog();
+
+  // Resolve owner/repo from cwd via git remote
+  const { toRepoPath, getRemoteUrl } = await import('@archon/git');
+  const repoPath = toRepoPath(cwd);
+  const remoteUrl = await getRemoteUrl(repoPath);
+  if (!remoteUrl) {
+    throw new Error('Cannot resolve owner/repo from git remote — no remote URL found');
+  }
+  const urlParts = remoteUrl.replace(/\.git$/, '').split(/[/:]/);
+  const repo = urlParts.pop();
+  const owner = urlParts.pop();
+  if (!owner || !repo) {
+    throw new Error(`Cannot parse owner/repo from remote URL: ${remoteUrl}`);
+  }
+
+  const mergedConfig = await loadConfig();
+  if (!mergedConfig.knowledge.enabled) {
+    log.debug('knowledge.extract_skipped_disabled');
+    return '';
+  }
+
+  log.info({ owner, repo, nodeId: metadata.nodeId }, 'knowledge.extract_started');
+
+  // Call AI with the custom prompt + context
+  const fullPrompt = `${prompt}\n\n---\n\nCONTEXT:\n${context}`;
+  const client = getAssistantClient('claude');
+  const chunks: string[] = [];
+  const generator = client.sendQuery(fullPrompt, cwd, undefined, {
+    model: mergedConfig.knowledge.captureModel,
+    tools: [],
+  });
+
+  for await (const chunk of generator) {
+    if (chunk.type === 'assistant') {
+      chunks.push(chunk.content);
+    }
+  }
+
+  const extracted = chunks.join('');
+  if (!extracted.trim()) {
+    log.info({ nodeId: metadata.nodeId }, 'knowledge.extract_completed_nothing');
+    return '';
+  }
+
+  // Append to daily log with workflow metadata
+  await initKnowledgeDir(owner, repo);
+  const knowledgePath = getProjectKnowledgePath(owner, repo);
+  const logsDir = join(knowledgePath, 'logs');
+  await mkdir(logsDir, { recursive: true });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const logFile = join(logsDir, `${today}.md`);
+  const timestamp = new Date().toISOString();
+  const entry = `\n---\n\n### Knowledge Extract: ${timestamp}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}\n\n${extracted}\n`;
+
+  await appendFile(logFile, entry);
+
+  log.info(
+    { owner, repo, nodeId: metadata.nodeId, logFile, contentLength: extracted.length },
+    'knowledge.extract_completed'
+  );
+
+  // Schedule debounced flush after extraction
+  await scheduleFlush(owner, repo);
+
+  return extracted;
+}
+
+/**
  * Fire-and-forget capture trigger for session transitions.
  * Resolves owner/repo from codebaseId, then calls captureKnowledge().
  * Logs errors but never throws — safe to call without await.

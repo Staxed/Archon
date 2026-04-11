@@ -270,8 +270,28 @@ export interface WorkflowConfig {
 // WorkflowDeps — the single injection point
 // ---------------------------------------------------------------------------
 
+/**
+ * Callback for knowledge-extract DAG nodes.
+ * Calls AI (Haiku) with a custom prompt + context, appends extracted knowledge
+ * to the daily log, and returns the extracted content as node output.
+ *
+ * @param prompt - Extraction prompt describing what knowledge to extract
+ * @param context - Upstream node outputs and workflow context
+ * @param cwd - Working directory (used to resolve owner/repo)
+ * @param metadata - Workflow run and node identifiers for log entries
+ * @returns Extracted knowledge content
+ */
+export type KnowledgeExtractFn = (
+  prompt: string,
+  context: string,
+  cwd: string,
+  metadata: { workflowRunId: string; nodeId: string }
+) => Promise<string>;
+
 export interface WorkflowDeps {
   store: IWorkflowStore;
   getAssistantClient: AssistantClientFactory;
   loadConfig: (cwd: string) => Promise<WorkflowConfig>;
+  /** Optional callback for knowledge-extract DAG nodes. If not provided, knowledge-extract nodes fail with an error. */
+  extractKnowledge?: KnowledgeExtractFn;
 }

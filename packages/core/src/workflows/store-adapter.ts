@@ -12,6 +12,7 @@ import * as codebaseDb from '../db/codebases';
 import * as envVarDb from '../db/env-vars';
 import { getAssistantClient } from '../clients/factory';
 import { loadConfig as loadMergedConfig } from '../config/config-loader';
+import { extractKnowledgeFromContext } from '../services/knowledge-capture';
 import { createLogger } from '@archon/paths';
 
 // Compile-time assertion: MergedConfig must remain a structural subtype of WorkflowConfig.
@@ -71,5 +72,6 @@ export function createWorkflowDeps(): WorkflowDeps {
     store: createWorkflowStore(),
     getAssistantClient,
     loadConfig: loadMergedConfig,
+    extractKnowledge: extractKnowledgeFromContext,
   };
 }
