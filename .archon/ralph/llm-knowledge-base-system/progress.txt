@@ -377,3 +377,35 @@
 - mock.module must export ALL named exports that the importing module needs, or import fails
 
 ---
+
+### CLI Knowledge Command Pattern
+- **Where**: `packages/cli/src/commands/knowledge.ts`
+- **Pattern**: CLI commands return exit codes (0 success, 1 failure). Use process.stderr.write for progress output (not console.log). Resolve owner/repo from --project flag or git remote URL. Respect --quiet flag.
+- **Example**: `return await knowledgeFlushCommand(effectiveCwd, projectFlag, quietFlag);`
+
+## 2026-04-11 — US-014: Add `knowledge flush` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/cli/src/commands/knowledge.ts — New file: knowledgeFlushCommand(), resolveOwnerRepo(), renderFlushReport()
+- packages/cli/src/commands/knowledge.test.ts — New file: 8 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered knowledge command with flush subcommand, added --project flag
+- packages/cli/package.json — Added knowledge.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge flush` subcommand to CLI
+- [x] Accepts optional `--project owner/repo` flag (defaults to current git repo)
+- [x] Calls `flushKnowledge()` and displays results (articles created/updated, domains, staleness)
+- [x] Shows progress output during flush (stderr.write for "Flushing..." and report)
+- [x] Respects `--quiet` and `--verbose` CLI flags (quiet suppresses all output; verbose via setLogLevel)
+- [x] Type-check passes
+- [x] Tests pass (8 tests, 24 expect calls)
+
+**Learnings**:
+- CLI commands return exit codes, registered in switch statement in cli.ts
+- process.stderr.write is used for progress (not console.log) — stdout reserved for data output
+- parseOwnerRepo from @archon/paths validates owner/repo format
+- git.getRemoteUrl + URL parsing is the fallback for --project flag
+- spyOn(process.stderr, 'write') captures Pino logger output too — filter with startsWith('{')
+
+---

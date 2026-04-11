@@ -274,8 +274,8 @@
       "technicalNotes": "New file: packages/cli/src/commands/knowledge.ts. Follow workflow.ts pattern at lines 4-46 (imports, lazy logger) and 79-112 (event rendering). Register in packages/cli/src/cli.ts alongside existing commands.",
       "dependsOn": ["US-009"],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 14. Files: packages/cli/src/commands/knowledge.ts, packages/cli/src/commands/knowledge.test.ts, packages/cli/src/cli.ts, packages/cli/package.json."
     },
     {
       "id": "US-015",
