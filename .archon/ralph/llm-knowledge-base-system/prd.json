@@ -178,8 +178,8 @@
       "technicalNotes": "New file: packages/core/src/services/knowledge-flush.ts. Follow cleanup-service.ts pattern. Use IAssistantClient factory. Write to temp files first, then atomic rename (flush atomicity). Prompt Sonnet with existing articles + new logs for merge/update decisions.",
       "dependsOn": ["US-005"],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 9. Files: packages/core/src/services/knowledge-flush.ts, packages/core/src/services/knowledge-flush.test.ts, packages/core/package.json."
     },
     {
       "id": "US-010",

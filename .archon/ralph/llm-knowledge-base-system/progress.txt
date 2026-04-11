@@ -20,6 +20,11 @@
 - **Pattern**: When a test uses `mockRejectedValue`, subsequent tests fail because mock state persists. Use `mockReset()` + `mockImplementation()` in beforeEach to restore default behavior.
 - **Example**: `mockWriteFile.mockReset(); mockWriteFile.mockImplementation(async (...) => { ... });`
 
+### FS Mock State Pattern
+- **Where**: `packages/core/src/services/knowledge-flush.test.ts:16-40`
+- **Pattern**: Use `Record<string, string>` for fileSystem and `Record<string, string[]>` for directories as mock state. Reset both in beforeEach. Mock readFile/readdir to check state maps and throw ENOENT for missing keys.
+- **Example**: `fileSystem[\`\${KB_PATH}/logs/2026-04-11.md\`] = '## Content\n'; directories[\`\${KB_PATH}/logs\`] = ['2026-04-11.md'];`
+
 ### Path Test Pattern
 - **Where**: `packages/paths/src/archon-paths.test.ts`
 - **Pattern**: Tests use `useEnvSnapshot()` for env var isolation, clear env vars before each test, test with default, ARCHON_HOME override, and Docker mode.
@@ -233,5 +238,36 @@
 - readdir mock needs to throw ENOENT by default (matching real fs behavior for missing dirs)
 - Project logs take precedence; global logs used as fallback only when no project logs exist
 - Logs are loaded newest-first (reversed sort) so most recent context appears first
+
+---
+
+## 2026-04-11 — US-009: Implement compile/flush service (daily logs to articles)
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — New file: flushKnowledge(), readLastFlush(), findUnprocessedLogs(), readLogContents(), readExistingArticles(), synthesizeLogs(), writeFlushResults(), updateDomainIndex(), updateTopLevelIndex(), updateLastFlush()
+- packages/core/src/services/knowledge-flush.test.ts — New file: 17 tests covering all acceptance criteria
+- packages/core/package.json — Added knowledge-flush.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Create flushKnowledge(owner, repo) function
+- [x] Reads all daily logs since meta/last-flush.json timestamp
+- [x] Calls Sonnet model via IAssistantClient to synthesize logs into domain articles
+- [x] Creates/updates concept articles in domains/{domain}/{concept}.md
+- [x] Updates domain _index.md files with new/modified article entries
+- [x] Updates top-level index.md with domain summaries
+- [x] Updates meta/last-flush.json with new timestamp and git SHA (sha deferred to US-011)
+- [x] Can create new domains beyond the starting set (organic domain creation)
+- [x] Articles use standard markdown with [[wikilink]] backlinks
+- [x] Logs flush events: knowledge.flush_started, knowledge.flush_completed, knowledge.flush_failed
+- [x] Type-check passes
+- [x] Tests pass (mock AI client) — 17 tests, 45 expect calls
+
+**Learnings**:
+- AI synthesis returns JSON; must handle markdown code fences around JSON response (strip ```json wrapper)
+- readFile/readdir mock pattern: use a Record<string, string> for fileSystem state, throw ENOENT for missing paths
+- Flush tracks articles created vs updated by checking if file exists before writing
+- Domain index updates use wikilink format [[domain/concept|Title Case]] matching init templates
+- Linting enforces T[] over Array<T> syntax
 
 ---
