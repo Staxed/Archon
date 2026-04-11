@@ -23,6 +23,7 @@ import type {
   CommandNode,
   PromptNode,
   LoopNode,
+  KnowledgeExtractNode,
   NodeOutput,
   TriggerRule,
   WorkflowRun,
@@ -31,7 +32,14 @@ import type {
   ThinkingConfig,
   SandboxSettings,
 } from './schemas';
-import { isBashNode, isLoopNode, isApprovalNode, isCancelNode, isApprovalContext } from './schemas';
+import {
+  isBashNode,
+  isLoopNode,
+  isApprovalNode,
+  isCancelNode,
+  isKnowledgeExtractNode,
+  isApprovalContext,
+} from './schemas';
 import { formatToolCall } from './utils/tool-formatter';
 import { createLogger } from '@archon/paths';
 import { getWorkflowEventEmitter } from './event-emitter';
@@ -1438,6 +1446,121 @@ async function executeBashNode(
 }
 
 /**
+ * Execute a knowledge-extract node — runs targeted knowledge extraction using
+ * the capture service infrastructure (Haiku model, daily log format).
+ *
+ * Collects upstream node outputs as context, substitutes workflow variables in the
+ * extraction prompt, and calls the injected `deps.extractKnowledge` callback.
+ */
+async function executeKnowledgeExtractNode(
+  deps: WorkflowDeps,
+  node: KnowledgeExtractNode,
+  cwd: string,
+  workflowRun: WorkflowRun,
+  nodeOutputs: Map<string, NodeOutput>,
+  artifactsDir: string,
+  logDir: string,
+  baseBranch: string,
+  docsDir: string,
+  issueContext?: string
+): Promise<NodeOutput> {
+  const log = getLog();
+
+  if (!deps.extractKnowledge) {
+    const errorMsg = `Knowledge-extract node '${node.id}' requires extractKnowledge in WorkflowDeps (not available in this context)`;
+    log.error({ nodeId: node.id }, 'dag_node_failed');
+    await logNodeError(logDir, workflowRun.id, node.id, errorMsg);
+    return { state: 'failed', output: '', error: errorMsg };
+  }
+
+  await logNodeStart(logDir, workflowRun.id, node.id, 'knowledge-extract');
+  const startTime = Date.now();
+  getWorkflowEventEmitter().emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+  });
+
+  try {
+    // Substitute workflow variables in the extraction prompt
+    const { prompt: substitutedPrompt } = substituteWorkflowVariables(
+      node.knowledge_extract,
+      workflowRun.id,
+      '',
+      artifactsDir,
+      baseBranch,
+      docsDir,
+      issueContext
+    );
+    const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
+
+    // Build context from upstream node outputs
+    const contextParts: string[] = [];
+    for (const [upstreamId, nodeOutput] of nodeOutputs.entries()) {
+      if (nodeOutput.state === 'completed' && nodeOutput.output) {
+        contextParts.push(`--- Output from node '${upstreamId}' ---\n${nodeOutput.output}`);
+      }
+    }
+    const context = contextParts.join('\n\n');
+
+    const extracted = await deps.extractKnowledge(finalPrompt, context, cwd, {
+      workflowRunId: workflowRun.id,
+      nodeId: node.id,
+    });
+
+    const duration = Date.now() - startTime;
+    await logNodeComplete(logDir, workflowRun.id, node.id, 'knowledge-extract', {
+      durationMs: duration,
+    });
+    getWorkflowEventEmitter().emit({
+      type: 'node_completed',
+      runId: workflowRun.id,
+      nodeId: node.id,
+      nodeName: node.id,
+      duration,
+    });
+
+    deps.store
+      .createWorkflowEvent({
+        workflow_run_id: workflowRun.id,
+        event_type: 'node_completed',
+        step_name: node.id,
+        data: { type: 'knowledge-extract', outputLength: extracted.length },
+      })
+      .catch((dbErr: Error) => {
+        log.error(
+          { err: dbErr, workflowRunId: workflowRun.id, eventType: 'node_completed' },
+          'workflow_event_persist_failed'
+        );
+      });
+
+    return { state: 'completed', output: extracted };
+  } catch (error) {
+    const err = error as Error;
+    const errorMsg = `Knowledge-extract node '${node.id}' failed: ${err.message}`;
+    log.error({ err, nodeId: node.id }, 'dag_node_failed');
+    await logNodeError(logDir, workflowRun.id, node.id, errorMsg);
+
+    deps.store
+      .createWorkflowEvent({
+        workflow_run_id: workflowRun.id,
+        event_type: 'node_failed',
+        step_name: node.id,
+        data: { error: errorMsg, type: 'knowledge-extract' },
+      })
+      .catch((dbErr: Error) => {
+        log.error(
+          { err: dbErr, workflowRunId: workflowRun.id, eventType: 'node_failed' },
+          'workflow_event_persist_failed'
+        );
+      });
+
+    return { state: 'failed', output: '', error: errorMsg };
+  }
+}
+
+/**
  * Build WorkflowAssistantOptions from resolved provider, model, and config.
  * Caller is responsible for resolving per-node overrides before passing model.
  */
@@ -2475,6 +2598,23 @@ export async function executeDagWorkflow(
             });
             // Return completed — the between-layer status check will see 'cancelled' and break.
             return { nodeId: node.id, output: { state: 'completed' as const, output: reason } };
+          }
+
+          // 3e. Knowledge-extract node dispatch — targeted knowledge extraction
+          if (isKnowledgeExtractNode(node)) {
+            const output = await executeKnowledgeExtractNode(
+              deps,
+              node,
+              cwd,
+              workflowRun,
+              nodeOutputs,
+              artifactsDir,
+              logDir,
+              baseBranch,
+              docsDir,
+              issueContext
+            );
+            return { nodeId: node.id, output };
           }
 
           // 4. Resolve per-node provider/model/options

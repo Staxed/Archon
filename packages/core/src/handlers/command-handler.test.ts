@@ -161,6 +161,12 @@ mock.module('@archon/isolation', () => ({
   }),
 }));
 
+// Mock knowledge capture service
+const mockTriggerCapture = mock(() => undefined);
+mock.module('../services/knowledge-capture', () => ({
+  triggerCapture: mockTriggerCapture,
+}));
+
 // Mock cleanup service
 const mockCleanupMergedWorktrees = mock(() =>
   Promise.resolve({
@@ -240,6 +246,8 @@ function clearAllMocks(): void {
   mockCleanupMergedWorktrees.mockClear();
   mockCleanupStaleWorktrees.mockClear();
   mockCountActiveByCodebase.mockClear();
+  // Knowledge capture mocks
+  mockTriggerCapture.mockClear();
 }
 
 // Setup spies for internal modules
@@ -642,6 +650,32 @@ describe('CommandHandler', () => {
         expect(result.success).toBe(true);
         expect(result.message).toContain('cleared');
         expect(mockDeactivateSession).toHaveBeenCalledWith('session-123', 'reset-requested');
+      });
+
+      test('should trigger knowledge capture on reset', async () => {
+        mockGetActiveSession.mockResolvedValue({
+          id: 'session-123',
+          conversation_id: 'conv-123',
+          codebase_id: 'cb-123',
+          ai_assistant_type: 'claude',
+          assistant_session_id: 'sdk-123',
+          active: true,
+          metadata: {},
+          started_at: new Date(),
+          ended_at: null,
+        });
+        mockDeactivateSession.mockResolvedValue(undefined);
+        const conversation = { ...baseConversation, codebase_id: 'cb-123' };
+
+        await handleCommand(conversation, '/reset');
+        expect(mockTriggerCapture).toHaveBeenCalledWith('conv-123', 'cb-123');
+      });
+
+      test('should not trigger knowledge capture when no active session', async () => {
+        mockGetActiveSession.mockResolvedValue(null);
+
+        await handleCommand(baseConversation, '/reset');
+        expect(mockTriggerCapture).not.toHaveBeenCalled();
       });
 
       test('should handle no active session gracefully', async () => {

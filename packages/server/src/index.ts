@@ -70,6 +70,7 @@ import {
   logConfig,
   getPort,
   createWorkflowStore,
+  subscribeToWorkflowCapture,
 } from '@archon/core';
 import type { IPlatformAdapter } from '@archon/core';
 import { createLogger, logArchonPaths, validateAppDefaultsPaths } from '@archon/paths';
@@ -191,6 +192,9 @@ async function main(): Promise<void> {
     .catch(err => {
       getLog().error({ err }, 'workflow.fail_orphans_failed');
     });
+
+  // Subscribe to workflow completion events for knowledge capture
+  subscribeToWorkflowCapture();
 
   // Log Archon paths configuration
   logArchonPaths();

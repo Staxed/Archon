@@ -62,6 +62,10 @@ nodes:
 
       Be specific and concrete. Each proposed node should have a clear type
       (bash, prompt, command, or loop) and a one-line description of what it does.
+
+      For prompt nodes that perform analysis, planning, or decision-making, note that
+      they should include knowledge base awareness (the KB index is auto-injected into
+      the agent context, so these nodes just need a "check knowledge base" instruction).
     model: haiku
     allowed_tools: []
     output_format:
@@ -153,6 +157,31 @@ nodes:
       - `$<nodeId>.output.field` — JSON field from a node with output_format
       - `$BASE_BRANCH` — base git branch
 
+      ## Knowledge Base Integration
+
+      Generated workflows should leverage the project knowledge base when relevant.
+      The knowledge base index is automatically injected into the AI agent's context at
+      session start (via the prompt builder), so workflows do not need to load it manually.
+
+      For prompt nodes that perform analysis, planning, or decision-making, include a
+      "Knowledge Base" section like this:
+
+      ```
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for prior decisions,
+      lessons, and patterns relevant to this task. Use past knowledge to inform your approach
+      and avoid repeating past mistakes.
+      ```
+
+      Guidelines:
+      - Add KB references to nodes that benefit from historical context (analysis, planning,
+        architecture, refactoring) — not to simple bash or classification nodes
+      - KB references should gracefully degrade — always use "if available" phrasing so
+        workflows work fine when the KB is empty
+      - Focus on the type of knowledge most relevant to the node's purpose (e.g., architecture
+        decisions for refactoring nodes, past lessons for review nodes)
+
       ## Rules
       1. The `name:` field MUST match: $extract-intent.output.workflow_name
       2. The `description:` MUST follow the "Use when / Triggers / Does / NOT for" pattern
@@ -164,6 +193,8 @@ nodes:
       8. Use `allowed_tools: []` on classification/analysis nodes that don't need tools
       9. Use `denied_tools: [Edit, Bash]` when a node should only use Write (not edit existing files)
       10. Prefer `model: haiku` for simple classification tasks to save cost
+      11. Add a "Knowledge Base" section to prompt nodes that perform analysis, planning, or
+          decision-making — use "if available" phrasing for graceful degradation
 
       ## Output
 

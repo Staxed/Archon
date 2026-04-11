@@ -198,6 +198,13 @@ function getDefaults(): MergedConfig {
       loadDefaultCommands: true,
       loadDefaultWorkflows: true,
     },
+    knowledge: {
+      enabled: true,
+      captureModel: 'haiku',
+      compileModel: 'sonnet',
+      flushDebounceMinutes: 10,
+      domains: ['architecture', 'decisions', 'patterns', 'lessons', 'connections'],
+    },
   };
 }
 
@@ -302,6 +309,11 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.concurrency.maxConversations = global.concurrency.maxConversations;
   }
 
+  // Knowledge preferences
+  if (global.knowledge) {
+    result.knowledge = { ...result.knowledge, ...global.knowledge };
+  }
+
   return result;
 }
 
@@ -368,6 +380,11 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     } else {
       getLog().warn({ rawValue: repo.docs.path }, 'config.docs_path_whitespace_ignored');
     }
+  }
+
+  // Knowledge configuration (repo overrides global)
+  if (repo.knowledge) {
+    result.knowledge = { ...result.knowledge, ...repo.knowledge };
   }
 
   // Propagate per-project env vars from repo config

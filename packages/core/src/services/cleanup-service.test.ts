@@ -88,6 +88,12 @@ mock.module('../db/codebases', () => ({
   getCodebase: mockGetCodebase,
 }));
 
+// Mock knowledge capture service
+const mockTriggerCapture = mock(() => undefined);
+mock.module('./knowledge-capture', () => ({
+  triggerCapture: mockTriggerCapture,
+}));
+
 import {
   runScheduledCleanup,
   startCleanupScheduler,
@@ -113,6 +119,7 @@ describe('cleanup-service', () => {
     mockUpdateStatus.mockClear();
     mockGetById.mockClear();
     mockGetCodebase.mockClear();
+    mockTriggerCapture.mockClear();
     // Reset defaults
     mockHasUncommittedChanges.mockResolvedValue(false);
     mockWorktreeExists.mockResolvedValue(false);
@@ -930,9 +937,56 @@ describe('onConversationClosed', () => {
     mockUpdateConversation.mockClear();
     mockWorktreeExists.mockClear();
     mockHasUncommittedChanges.mockClear();
+    mockTriggerCapture.mockClear();
     // Reset defaults
     mockWorktreeExists.mockResolvedValue(false);
     mockHasUncommittedChanges.mockResolvedValue(false);
+  });
+
+  test('triggers knowledge capture on conversation closed', async () => {
+    mockGetConversationByPlatformId.mockResolvedValueOnce({
+      id: 'conv-capture',
+      codebase_id: 'cb-capture',
+      isolation_env_id: 'env-capture',
+    });
+
+    mockGetActiveSession.mockResolvedValueOnce(null);
+
+    mockGetById.mockResolvedValueOnce({
+      id: 'env-capture',
+      codebase_id: 'cb-capture',
+      working_path: '/workspace/worktrees/pr-300',
+      branch_name: 'feature-z',
+      status: 'active',
+    });
+
+    mockGetConversationsUsingEnv.mockResolvedValueOnce([]);
+
+    mockGetById.mockResolvedValueOnce({
+      id: 'env-capture',
+      codebase_id: 'cb-capture',
+      working_path: '/workspace/worktrees/pr-300',
+      branch_name: 'feature-z',
+      status: 'active',
+    });
+
+    mockGetCodebase.mockResolvedValueOnce({
+      id: 'cb-capture',
+      name: 'test-repo',
+      default_cwd: '/workspace/repo',
+    });
+
+    await onConversationClosed('github', 'owner/repo#300');
+
+    expect(mockTriggerCapture).toHaveBeenCalledWith('conv-capture', 'cb-capture');
+  });
+
+  test('does not trigger knowledge capture when no conversation found', async () => {
+    mockGetConversationByPlatformId.mockResolvedValueOnce(null);
+
+    await onConversationClosed('github', 'owner/repo#404');
+
+    expect(mockTriggerCapture).not.toHaveBeenCalled();
   });
 
   test('deactivates session with conversation-closed reason', async () => {

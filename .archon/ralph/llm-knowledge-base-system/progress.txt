@@ -1,0 +1,584 @@
+## Codebase Patterns
+
+### Path Function Pattern
+- **Where**: `packages/paths/src/archon-paths.ts:235-277`
+- **Pattern**: Pure path construction functions take (owner, repo), return `join(getProjectRoot(owner, repo), segment)`. Global functions use `join(getArchonHome(), segment)`.
+- **Example**: `export function getProjectKnowledgePath(owner: string, repo: string): string { return join(getProjectRoot(owner, repo), 'knowledge'); }`
+
+### Config Merge Pattern
+- **Where**: `packages/core/src/config/config-loader.ts:255-320`
+- **Pattern**: mergeGlobalConfig and mergeRepoConfig spread existing result, then conditionally override with non-undefined values. New config sections need: 1) defaults in getDefaults(), 2) merge in mergeGlobalConfig(), 3) merge in mergeRepoConfig().
+- **Example**: `if (global.knowledge) { result.knowledge = { ...result.knowledge, ...global.knowledge }; }`
+
+### Write-If-Not-Exists Pattern
+- **Where**: `packages/core/src/services/knowledge-init.ts:136-145`
+- **Pattern**: Use `writeFile(path, content, { flag: 'wx' })` for exclusive create; catch EEXIST to silently skip existing files.
+- **Example**: `try { await writeFile(path, content, { flag: 'wx' }); } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err; }`
+
+### Mock Reset Pattern
+- **Where**: `packages/core/src/services/knowledge-init.test.ts:39-49`
+- **Pattern**: When a test uses `mockRejectedValue`, subsequent tests fail because mock state persists. Use `mockReset()` + `mockImplementation()` in beforeEach to restore default behavior.
+- **Example**: `mockWriteFile.mockReset(); mockWriteFile.mockImplementation(async (...) => { ... });`
+
+### FS Mock State Pattern
+- **Where**: `packages/core/src/services/knowledge-flush.test.ts:16-40`
+- **Pattern**: Use `Record<string, string>` for fileSystem and `Record<string, string[]>` for directories as mock state. Reset both in beforeEach. Mock readFile/readdir to check state maps and throw ENOENT for missing keys.
+- **Example**: `fileSystem[\`\${KB_PATH}/logs/2026-04-11.md\`] = '## Content\n'; directories[\`\${KB_PATH}/logs\`] = ['2026-04-11.md'];`
+
+### Path Test Pattern
+- **Where**: `packages/paths/src/archon-paths.test.ts`
+- **Pattern**: Tests use `useEnvSnapshot()` for env var isolation, clear env vars before each test, test with default, ARCHON_HOME override, and Docker mode.
+- **Example**: `delete process.env.WORKSPACE_PATH; delete process.env.ARCHON_HOME; delete process.env.ARCHON_DOCKER; expect(fn('acme', 'widget')).toBe(join(homedir(), '.archon', 'workspaces', 'acme', 'widget', 'knowledge'));`
+
+---
+
+## 2026-04-11 — US-001: Add knowledge path resolution functions
+
+**Status**: PASSED
+**Files changed**:
+- packages/paths/src/archon-paths.ts — Added 4 knowledge path functions (getProjectKnowledgePath, getGlobalKnowledgePath, getKnowledgeLogsPath, getKnowledgeDomainsPath)
+- packages/paths/src/index.ts — Exported the 4 new functions
+- packages/paths/src/archon-paths.test.ts — Added tests for all 4 functions
+
+**Acceptance criteria verified**:
+- [x] getProjectKnowledgePath(owner, repo) returns ~/.archon/workspaces/{owner}/{repo}/knowledge/
+- [x] getGlobalKnowledgePath() returns ~/.archon/knowledge/
+- [x] getKnowledgeLogsPath(owner, repo) returns .../knowledge/logs/
+- [x] getKnowledgeDomainsPath(owner, repo) returns .../knowledge/domains/
+- [x] Functions follow existing pattern: pure path construction, no I/O, use getProjectRoot() as base
+- [x] Functions exported from packages/paths/src/index.ts
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- Pattern is straightforward: all project path functions compose on getProjectRoot(), global on getArchonHome()
+- No surprises in the codebase — well-structured and consistent
+
+---
+
+### Service File Pattern
+- **Where**: `packages/core/src/services/knowledge-init.ts`
+- **Pattern**: New service files in core/services need a separate test batch in packages/core/package.json test script to avoid mock.module() pollution
+- **Example**: `&& bun test src/services/knowledge-init.test.ts`
+
+## 2026-04-11 — US-002: Add knowledge config types
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/config/config-types.ts — Added KnowledgeConfig interface, added knowledge field to GlobalConfig, RepoConfig, and MergedConfig
+- packages/core/src/config/config-loader.ts — Added knowledge defaults in getDefaults(), merge logic in mergeGlobalConfig() and mergeRepoConfig()
+
+**Acceptance criteria verified**:
+- [x] KnowledgeConfig interface with enabled, captureModel, compileModel, flushDebounceMinutes, domains fields (all optional with defaults)
+- [x] knowledge?: KnowledgeConfig added to RepoConfig
+- [x] knowledge?: KnowledgeConfig added to GlobalConfig
+- [x] knowledge field added to MergedConfig with Required<KnowledgeConfig> and merge logic (repo overrides global via spread)
+- [x] JSDoc with @default annotations for each field
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- MergedConfig uses Required<KnowledgeConfig> so all fields are guaranteed present after merge
+- Merge pattern: spread defaults, then global overrides, then repo overrides — same as other config sections
+- Config types file has no tests of its own; merge logic is tested in config-loader.test.ts
+
+---
+
+## 2026-04-11 — US-003: Create knowledge directory initialization
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-init.ts — New file: initKnowledgeDir(), initGlobalKnowledgeDir(), DEFAULT_DOMAINS
+- packages/core/src/services/knowledge-init.test.ts — New file: 6 tests covering both functions and DEFAULT_DOMAINS
+- packages/core/package.json — Added knowledge-init.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] initKnowledgeDir(owner, repo) creates knowledge/, meta/, logs/, domains/, and 5 domain subdirs
+- [x] initGlobalKnowledgeDir() creates same structure at global path
+- [x] Both functions are idempotent (mkdir recursive: true)
+- [x] Directories created with standard permissions (default)
+- [x] Type-check passes
+- [x] Tests pass (6 tests, 43 expect calls)
+
+**Learnings**:
+- Service tests need mock.module for node:fs/promises and @archon/paths — must be in separate batch
+- Kept implementation simple: shared createDirectoryStructure() for both project and global variants
+- No need for getKnowledgeLogsPath/getKnowledgeDomainsPath in init — join() with base path is cleaner
+
+---
+
+## 2026-04-11 — US-004: Create KB meta templates and initial index structure
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-init.ts — Added SCHEMA_TEMPLATE, INDEX_TEMPLATE, DOMAIN_INDEX_TEMPLATES constants; added writeIfNotExists() helper; extended createDirectoryStructure() to write templates
+- packages/core/src/services/knowledge-init.test.ts — Added 6 new tests for template writing, content verification, EEXIST handling, error propagation, and template content validation
+
+**Acceptance criteria verified**:
+- [x] schema.md template describes KB structure, domain purposes, and navigation instructions
+- [x] index.md template with sections for each starting domain and placeholder content
+- [x] Domain _index.md templates for architecture, decisions, patterns, lessons, connections
+- [x] Templates written during initKnowledgeDir() only if files don't already exist (wx flag + EEXIST catch)
+- [x] Templates use standard markdown with [[wikilink]] backlink syntax for Obsidian compatibility
+- [x] Type-check passes
+- [x] Tests pass (14 tests, 97 expect calls)
+
+**Learnings**:
+- Used writeFile with flag 'wx' (exclusive create) — fails with EEXIST if file exists, which we catch and silently skip
+- mockRejectedValue persists across tests — need mockReset() + mockImplementation() in beforeEach to restore default behavior
+- Templates exported as named constants for use in tests and future consumers
+
+---
+
+### Async Prompt Builder Pattern
+- **Where**: `packages/core/src/orchestrator/prompt-builder.ts:118-135`
+- **Pattern**: `buildOrchestratorPrompt` and `buildProjectScopedPrompt` are async (return `Promise<string>`) to support file I/O for knowledge loading. Callers must `await`. Test mocks returning plain strings still work because `await 'string'` === `'string'`.
+- **Example**: `const systemPrompt = await buildProjectScopedPrompt(scopedCodebase, codebases, workflows);`
+
+### Capture Service Pattern
+- **Where**: `packages/core/src/services/knowledge-capture.ts`
+- **Pattern**: IAssistantClient.sendQuery() returns AsyncGenerator<MessageChunk>. Collect `assistant` type chunks into string. Use `tools: []` to disable tools for extraction-only calls. Model name passed via `options.model`.
+- **Example**: `const generator = client.sendQuery(prompt, cwd, undefined, { model: 'haiku', tools: [] }); for await (const chunk of generator) { if (chunk.type === 'assistant') chunks.push(chunk.content); }`
+
+## 2026-04-11 — US-005: Implement capture service (transcript to daily log)
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-capture.ts — New file: captureKnowledge(), formatTranscript(), extractKnowledge(), appendToDailyLog()
+- packages/core/src/services/knowledge-capture.test.ts — New file: 12 tests covering all acceptance criteria
+- packages/core/package.json — Added knowledge-capture.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Create captureKnowledge(conversationId, owner, repo) function
+- [x] Reads conversation transcript via listMessages() from packages/core/src/db/messages.ts
+- [x] Calls Haiku model via IAssistantClient factory to extract structured knowledge
+- [x] Appends extracted knowledge to knowledge/logs/YYYY-MM-DD.md (daily log format)
+- [x] Falls back to available model if Haiku unavailable (uses configurable captureModel)
+- [x] Respects knowledge.enabled config (skip if false)
+- [x] Logs capture events: knowledge.capture_started, knowledge.capture_completed, knowledge.capture_failed
+- [x] Type-check passes
+- [x] Tests pass (mock AI client and DB) — 12 tests, 31 expect calls
+
+**Learnings**:
+- IAssistantClient only has streaming sendQuery(), no simple completion — must collect chunks
+- Used `tools: []` to disable tools for extraction (different semantics from `undefined`)
+- Mock generator functions need `function*` syntax, not arrow functions
+- Config provides Required<KnowledgeConfig> at merged level, so all fields guaranteed present
+
+---
+
+## 2026-04-11 — US-007: Inject knowledge index into prompt builder
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/orchestrator/prompt-builder.ts — Made buildOrchestratorPrompt/buildProjectScopedPrompt async, added loadKnowledgeIndex(), formatKnowledgeSection()
+- packages/core/src/orchestrator/orchestrator-agent.ts — Updated buildFullPrompt to async, await prompt builder calls
+- packages/core/src/orchestrator/prompt-builder-knowledge.test.ts — New file: 13 tests for knowledge loading
+- packages/core/package.json — Added prompt-builder test batches
+
+**Acceptance criteria verified**:
+- [x] Extend buildProjectScopedPrompt() to load project knowledge/index.md content
+- [x] Extend buildOrchestratorPrompt() to load global knowledge/index.md content
+- [x] Project index overrides global when both exist (project loaded after global)
+- [x] Gracefully skip if no index.md exists (empty KB state)
+- [x] Added content stays within ~500 token budget for index (2000 char truncation)
+- [x] Type-check passes
+- [x] Tests pass (13 new tests, 33 expect calls)
+
+**Learnings**:
+- Making sync functions async is safe when all callers are in async contexts and test mocks return plain values
+- parseOwnerRepo(codebase.name) is the standard way to extract owner/repo from a Codebase
+- Codebase names that don't match owner/repo format (e.g., 'local-project') gracefully skip project KB loading
+
+---
+
+## 2026-04-11 — US-006: Wire capture triggers to session transitions
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-capture.ts — Added triggerCapture() fire-and-forget helper with codebase lookup
+- packages/core/src/services/cleanup-service.ts — Imported triggerCapture, wired into onConversationClosed()
+- packages/core/src/handlers/command-handler.ts — Imported triggerCapture, wired into /reset command
+- packages/core/src/services/cleanup-service.test.ts — Added mock for knowledge-capture, 2 new tests
+- packages/core/src/handlers/command-handler.test.ts — Added mock for knowledge-capture, 2 new tests
+
+**Acceptance criteria verified**:
+- [x] Capture triggers on `conversation-closed` session transition
+- [x] Capture triggers on `reset-requested` session transition
+- [x] Capture does NOT trigger on `isolation-changed` (no wiring to isolation path)
+- [x] Capture is fire-and-forget (triggerCapture returns void, uses void+catch internally)
+- [x] Errors logged but never surface to user or block session flow
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- triggerCapture() is the clean pattern: takes conversationId + codebaseId, does codebase lookup + parseOwnerRepo internally
+- Both cleanup-service.test.ts and command-handler.test.ts needed mock.module for knowledge-capture added
+- Technical notes suggested wiring into session-transitions.ts but that's a pure type/behavior module; actual wiring goes to the callers
+
+---
+
+## 2026-04-11 — US-008: Implement fresh log fallback for unprocessed logs
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/orchestrator/prompt-builder.ts — Added loadUnprocessedLogs(), KNOWLEDGE_LOGS_MAX_CHARS, extended formatKnowledgeSection() with unprocessedLogs param, wired into both prompt builders
+- packages/core/src/orchestrator/prompt-builder-knowledge.test.ts — Added mockReaddir, 6 new tests for unprocessed log loading
+
+**Acceptance criteria verified**:
+- [x] At session start, check for daily logs newer than meta/last-flush.json timestamp
+- [x] If unprocessed logs exist, include them as supplementary raw context after the index
+- [x] Limit raw log injection to reasonable token budget (~2,000 tokens max = 8000 chars)
+- [x] If no last-flush.json exists, include all daily logs (KB is pre-first-flush)
+- [x] Type-check passes
+- [x] Tests pass (6 new tests, 19 total in file)
+
+**Learnings**:
+- Daily log filenames (YYYY-MM-DD.md) can be compared lexicographically against the flush date string
+- readdir mock needs to throw ENOENT by default (matching real fs behavior for missing dirs)
+- Project logs take precedence; global logs used as fallback only when no project logs exist
+- Logs are loaded newest-first (reversed sort) so most recent context appears first
+
+---
+
+## 2026-04-11 — US-009: Implement compile/flush service (daily logs to articles)
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — New file: flushKnowledge(), readLastFlush(), findUnprocessedLogs(), readLogContents(), readExistingArticles(), synthesizeLogs(), writeFlushResults(), updateDomainIndex(), updateTopLevelIndex(), updateLastFlush()
+- packages/core/src/services/knowledge-flush.test.ts — New file: 17 tests covering all acceptance criteria
+- packages/core/package.json — Added knowledge-flush.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Create flushKnowledge(owner, repo) function
+- [x] Reads all daily logs since meta/last-flush.json timestamp
+- [x] Calls Sonnet model via IAssistantClient to synthesize logs into domain articles
+- [x] Creates/updates concept articles in domains/{domain}/{concept}.md
+- [x] Updates domain _index.md files with new/modified article entries
+- [x] Updates top-level index.md with domain summaries
+- [x] Updates meta/last-flush.json with new timestamp and git SHA (sha deferred to US-011)
+- [x] Can create new domains beyond the starting set (organic domain creation)
+- [x] Articles use standard markdown with [[wikilink]] backlinks
+- [x] Logs flush events: knowledge.flush_started, knowledge.flush_completed, knowledge.flush_failed
+- [x] Type-check passes
+- [x] Tests pass (mock AI client) — 17 tests, 45 expect calls
+
+**Learnings**:
+- AI synthesis returns JSON; must handle markdown code fences around JSON response (strip ```json wrapper)
+- readFile/readdir mock pattern: use a Record<string, string> for fileSystem state, throw ENOENT for missing paths
+- Flush tracks articles created vs updated by checking if file exists before writing
+- Domain index updates use wikilink format [[domain/concept|Title Case]] matching init templates
+- Linting enforces T[] over Array<T> syntax
+
+---
+
+## 2026-04-11 — US-010: Implement flush locking and atomicity
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Added acquireFlushLock(), releaseFlushLock(); replaced writeFlushResults with writeFlushResultsAtomic() using .tmp/ dir + rename; updated updateLastFlush() with temp+rename; added finally block for lock release
+- packages/core/src/services/knowledge-flush.test.ts — Added rename/unlink/rm mocks; updated existing index test for atomic pattern; added 8 new tests for lock and atomicity
+
+**Acceptance criteria verified**:
+- [x] Implement file-based lock at knowledge/meta/flush.lock with PID
+- [x] Flush acquires lock before writing, releases on completion or error (finally block)
+- [x] If lock held by another process, flush skips with a warning log
+- [x] If lock held by dead process (stale PID), lock is reclaimed (process.kill(pid, 0))
+- [x] All writes go to temp files first, then atomic rename into final paths (.tmp/ dir pattern)
+- [x] If flush crashes mid-write, next flush re-runs from scratch (rm .tmp/ at start, idempotent)
+- [x] Type-check passes
+- [x] Tests pass (24 tests, 61 expect calls)
+
+**Learnings**:
+- process.kill(pid, 0) throws if process is dead — use try/catch to detect stale locks
+- Atomic rename pattern: mkdir .tmp, write there, rename each file individually, rm .tmp
+- Lock file must be released in finally{} to handle both success and error paths
+- Existing test for index.md needed updating since writes now go through .tmp/ first
+
+---
+
+## 2026-04-11 — US-011: Implement staleness validation in flush
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Added validateStaleness(), checkBrokenWikilinks(), addStalenessMarker(), identifyStaleArticles(), collectAllArticles(), getCurrentGitSha(), getGitDiffNameOnly(); updated updateLastFlush() to store git SHA
+- packages/core/src/services/knowledge-flush.test.ts — Added @archon/git mock, 6 new tests for staleness validation, wikilink checking, git SHA storage, idempotent markers
+
+**Acceptance criteria verified**:
+- [x] During flush, run Haiku model to compare existing articles against git diff since last-flush SHA
+- [x] Flag articles that reference files/functions/patterns that have changed significantly
+- [x] Add staleness markers to flagged articles (> [!WARNING] This article may be stale)
+- [x] Check for broken [[wikilink]] cross-references between articles
+- [x] Log validation results: articles checked, flagged stale, links broken
+- [x] Type-check passes
+- [x] Tests pass (30 tests, 74 expect calls)
+
+**Learnings**:
+- execFileAsync from @archon/git works well for running git commands; use -C flag for specifying repo directory
+- Staleness check is skipped when no lastFlushSha exists (empty string is falsy), so most existing tests don't trigger it
+- Multiple sendQuery calls in one test need callCount tracking to return different responses
+- Wikilink regex with global flag needs lastIndex reset for each article iteration
+
+---
+
+## 2026-04-11 — US-012: Implement debounced flush trigger
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-scheduler.ts — New file: scheduleFlush(), cancelScheduledFlush(), isFlushScheduled(), cancelAllScheduledFlushes() with per-project Map<string, Timeout>
+- packages/core/src/services/knowledge-scheduler.test.ts — New file: 7 tests covering debounce, reset, per-project isolation, config loading, cancellation
+- packages/core/src/services/knowledge-capture.ts — Wired scheduleFlush into triggerCapture after successful capture
+- packages/core/package.json — Added knowledge-scheduler.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] After capture completes, schedule a flush with configurable debounce (default ~10 minutes)
+- [x] If another capture fires within debounce window, reset the timer
+- [x] Debounce is per-project (different projects flush independently)
+- [x] Use knowledge.flushDebounceMinutes from config
+- [x] Debounce timer survives within server process lifetime (not persisted across restarts)
+- [x] Type-check passes
+- [x] Tests pass (7 tests, 22 expect calls)
+
+**Learnings**:
+- Created separate knowledge-scheduler.ts rather than adding to knowledge-flush.ts for SRP
+- Timer.unref() prevents the debounce timer from keeping the Node process alive during shutdown
+- Test timing with very short debounce (0.001 min = 60ms) works reliably in Bun
+
+---
+
+### Shared Core Pattern
+- **Where**: `packages/core/src/services/knowledge-flush.ts:53-85`
+- **Pattern**: Extract shared logic into a `*Core()` function with an options interface (FlushCoreOptions). Public functions (`flushKnowledge`, `flushGlobalKnowledge`) are thin wrappers that set up options. The init callback is passed as a field to allow the enabled check to short-circuit before init.
+- **Example**: `flushKnowledgeCore({ label, knowledgePath, config, git, init })`
+
+## 2026-04-11 — US-013: Implement global KB tier with precedence
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Refactored to shared flushKnowledgeCore(), added flushGlobalKnowledge(), made updateLastFlush() owner/repo optional
+- packages/core/src/services/knowledge-flush.test.ts — Added 5 new tests for global flush (path, staleness skip, git SHA, independence, disabled)
+- packages/core/src/services/knowledge-scheduler.ts — Added scheduleGlobalFlush() using __global__ key
+- packages/core/src/services/knowledge-scheduler.test.ts — Added 3 new tests for global scheduling, added flushGlobalKnowledge mock
+
+**Acceptance criteria verified**:
+- [x] Global KB lives at ~/.archon/knowledge/ (uses getGlobalKnowledgePath())
+- [x] Global KB has same directory structure as project KB (initGlobalKnowledgeDir from US-003)
+- [x] Flush operates independently per tier (flushGlobalKnowledge uses global path, no git ops)
+- [x] At query time, load global index.md first, then project index.md (prompt-builder from US-007)
+- [x] Global KB initialization follows same pattern as project KB (shared createDirectoryStructure)
+- [x] Type-check passes
+- [x] Tests pass (5 new flush tests, 3 new scheduler tests)
+
+**Learnings**:
+- Most global KB infrastructure was already in place from US-001 (paths), US-003 (init), US-007/US-008 (prompt builder)
+- The main gap was flush — refactored to shared core with FlushCoreOptions to avoid duplication
+- Global flush skips staleness validation entirely (no git repo to compare against)
+- updateLastFlush uses empty string for gitSha when no owner/repo provided
+- mock.module must export ALL named exports that the importing module needs, or import fails
+
+---
+
+### Workflow Event Subscription Pattern
+- **Where**: `packages/core/src/services/knowledge-workflow-capture.ts`
+- **Pattern**: Subscribe to workflow events from @archon/core (NOT @archon/workflows — would create circular dep). Use emitter.subscribe() with type guard, emitter.getConversationId(runId) for conversation lookup, then DB lookups for codebase. Fire-and-forget with void+catch.
+- **Example**: `const unsubscribe = emitter.subscribe((event) => { if (event.type !== 'workflow_completed') return; void handleWorkflowCompleted(event.runId, conversationId).catch(...); });`
+
+### CLI Knowledge Command Pattern
+- **Where**: `packages/cli/src/commands/knowledge.ts`
+- **Pattern**: CLI commands return exit codes (0 success, 1 failure). Use process.stderr.write for progress output (not console.log). Resolve owner/repo from --project flag or git remote URL. Respect --quiet flag.
+- **Example**: `return await knowledgeFlushCommand(effectiveCwd, projectFlag, quietFlag);`
+
+## 2026-04-11 — US-014: Add `knowledge flush` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/cli/src/commands/knowledge.ts — New file: knowledgeFlushCommand(), resolveOwnerRepo(), renderFlushReport()
+- packages/cli/src/commands/knowledge.test.ts — New file: 8 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered knowledge command with flush subcommand, added --project flag
+- packages/cli/package.json — Added knowledge.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge flush` subcommand to CLI
+- [x] Accepts optional `--project owner/repo` flag (defaults to current git repo)
+- [x] Calls `flushKnowledge()` and displays results (articles created/updated, domains, staleness)
+- [x] Shows progress output during flush (stderr.write for "Flushing..." and report)
+- [x] Respects `--quiet` and `--verbose` CLI flags (quiet suppresses all output; verbose via setLogLevel)
+- [x] Type-check passes
+- [x] Tests pass (8 tests, 24 expect calls)
+
+**Learnings**:
+- CLI commands return exit codes, registered in switch statement in cli.ts
+- process.stderr.write is used for progress (not console.log) — stdout reserved for data output
+- parseOwnerRepo from @archon/paths validates owner/repo format
+- git.getRemoteUrl + URL parsing is the fallback for --project flag
+- spyOn(process.stderr, 'write') captures Pino logger output too — filter with startsWith('{')
+
+---
+
+## 2026-04-11 — US-015: Add `knowledge status` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/cli/src/commands/knowledge.ts — Added knowledgeStatusCommand(), gatherKBStats(), renderKBStats(), KBStats interface; added readFile/readdir/join/path imports
+- packages/cli/src/commands/knowledge-status.test.ts — New file: 10 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered `knowledge status` subcommand, imported knowledgeStatusCommand, updated help text
+- packages/cli/package.json — Added knowledge-status.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge status` subcommand to CLI
+- [x] Displays: total articles, articles per domain, last flush timestamp, unprocessed log count, staleness stats
+- [x] Accepts optional `--project owner/repo` flag
+- [x] Supports `--json` flag for machine-readable output
+- [x] Shows global KB stats alongside project KB stats
+- [x] Type-check passes
+- [x] Tests pass (10 tests, 34 expect calls)
+
+**Learnings**:
+- Status is pure filesystem inspection — no AI or DB calls needed
+- Separate test file needed because it mocks node:fs/promises and node:path which flush tests don't
+- gatherKBStats reusable for both project and global tiers with just a path argument
+- Staleness detection by scanning article content for the WARNING marker string
+
+---
+
+## 2026-04-11 — US-016: Add `knowledge lint` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Exported 7 validation functions and 2 types (collectAllArticles, CollectedArticle, checkBrokenWikilinks, identifyStaleArticles, getGitDiffNameOnly, getCurrentGitSha, readLastFlush, LastFlushMeta)
+- packages/cli/src/commands/knowledge.ts — Added knowledgeLintCommand(), lintKB(), findOrphanedArticles(), renderLintResult(), KBLintResult interface
+- packages/cli/src/commands/knowledge-lint.test.ts — New file: 10 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered `knowledge lint` subcommand, imported knowledgeLintCommand, updated help text and error message
+- packages/cli/package.json — Added knowledge-lint.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge lint` subcommand to CLI
+- [x] Validates all articles against current git state (runs staleness check via identifyStaleArticles when git SHA exists)
+- [x] Checks for broken [[wikilink]] cross-references (reuses checkBrokenWikilinks from flush)
+- [x] Checks for orphaned articles (not referenced in any index) via findOrphanedArticles
+- [x] Displays results with actionable output (which articles are stale, which links are broken, which are orphaned)
+- [x] Supports `--json` flag for machine-readable output
+- [x] Type-check passes
+- [x] Tests pass (10 tests, 34 expect calls)
+
+**Learnings**:
+- Exported private functions from knowledge-flush.ts rather than duplicating — keeps logic in one place
+- Orphan detection checks if concept name appears anywhere in _index.md (not just wikilink format) for flexibility
+- Lint returns exit code 1 when any issues found (stale, broken, orphaned) — useful for CI integration
+- Test mocks replicate the real collectAllArticles/checkBrokenWikilinks logic using the shared fileSystem/directories state
+
+---
+
+## 2026-04-11 — US-017: Add engine-level post-workflow capture
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-workflow-capture.ts — New file: subscribeToWorkflowCapture(), handleWorkflowCompleted(), readWorkflowLogs(), resetWorkflowCaptureSubscription()
+- packages/core/src/services/knowledge-workflow-capture.test.ts — New file: 8 tests covering all acceptance criteria
+- packages/core/src/services/knowledge-capture.ts — Added optional additionalTranscript parameter to captureKnowledge()
+- packages/server/src/index.ts — Wired subscribeToWorkflowCapture() into server startup
+- packages/core/src/index.ts — Exported subscribeToWorkflowCapture
+- packages/core/package.json — Added knowledge-workflow-capture.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Subscribe to `workflow_completed` events via `getWorkflowEventEmitter()`
+- [x] Trigger `captureKnowledge()` for the conversation associated with the completed workflow
+- [x] Also read JSONL workflow logs (from packages/workflows/src/logger.ts) as additional capture source
+- [x] Capture is fire-and-forget (does not block workflow completion reporting)
+- [x] Errors logged but never surface to user
+- [x] Type-check passes
+- [x] Tests pass (8 tests, 20 expect calls)
+
+**Learnings**:
+- Cannot put capture in @archon/workflows (circular dep with @archon/core) — subscribe from @archon/core side instead
+- WorkflowEmitterEvent has getConversationId(runId) for mapping runs to conversations
+- JSONL logs parsed line-by-line; extract assistant+tool+workflow_start events for meaningful context
+- Module-level `subscribed` flag prevents double-subscribe; reset function needed for test isolation
+- Empty arrow function triggers @typescript-eslint/no-empty-function — use `/* noop */` comment
+
+---
+
+## 2026-04-11 — US-018: Update default workflows with KB awareness
+
+**Status**: PASSED
+**Files changed**:
+- .archon/workflows/defaults/archon-interactive-prd.yaml — Added KB references to research and technical nodes
+- .archon/workflows/defaults/archon-piv-loop.yaml — Added KB references to explore loop and create-plan nodes
+- .archon/workflows/defaults/archon-adversarial-dev.yaml — Added KB reference to plan node
+- .archon/workflows/defaults/archon-architect.yaml — Added KB reference to analyze node
+- .archon/workflows/defaults/archon-refactor-safely.yaml — Added KB reference to analyze-impact node
+- .archon/workflows/defaults/archon-create-issue.yaml — Added KB reference to investigate node
+
+**Acceptance criteria verified**:
+- [x] All default workflows reference KB where relevant (6 workflows with inline analysis/planning prompts updated; command-only workflows already get KB via prompt builder injection from US-007)
+- [x] Workflows that perform analysis or planning include KB-aware prompts
+- [x] Workflows that produce decisions or lessons contribute to KB via capture (handled by US-017 post-workflow capture)
+- [x] No workflow is broken if KB is empty (all references use "if available in your context" language)
+- [x] Type-check passes
+- [x] Tests pass (bundled-defaults.test.ts: 14 tests, 250 expect calls)
+
+**Learnings**:
+- Workflows using only command: nodes don't need explicit KB prompts — the prompt builder injects KB into the system prompt automatically
+- Only workflows with inline prompt: nodes for analysis/planning benefit from explicit KB references
+- Graceful degradation pattern: "If a knowledge base index is available in your context" — works whether KB exists or not
+- YAML files in .archon/workflows/defaults/ are imported as text in bundled-defaults.ts — changes are automatically reflected
+
+---
+
+## 2026-04-11 — US-019: Update workflow builder for KB awareness
+
+**Status**: PASSED
+**Files changed**:
+- .archon/workflows/defaults/archon-workflow-builder.yaml — Added KB Integration section to generate-yaml node, KB awareness hint to extract-intent node, Rule 11 for KB sections
+
+**Acceptance criteria verified**:
+- [x] archon-workflow-builder workflow includes KB awareness instructions when generating new workflows
+- [x] Generated workflows reference knowledge base for context in relevant nodes (Rule 11 + detailed guidance)
+- [x] Generated workflows include guidance for KB-aware prompts (Knowledge Base Integration section with template)
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- Workflow builder only needed YAML prompt changes — no code changes required
+- KB awareness is injected at two levels: extract-intent (design phase) and generate-yaml (implementation phase)
+- The "if available" graceful degradation pattern from US-018 is now codified as a rule for generated workflows
+
+---
+
+### Knowledge-Extract Node Pattern
+- **Where**: `packages/workflows/src/dag-executor.ts:1448-1560`
+- **Pattern**: Non-AI node types that need @archon/core functionality use injected callbacks on WorkflowDeps. The callback is optional (undefined check before use) so existing code without it continues to work. Pattern: add type to deps.ts, add implementation in store-adapter.ts.
+- **Example**: `deps.extractKnowledge?: KnowledgeExtractFn` — optional on WorkflowDeps, wired in createWorkflowDeps()
+
+## 2026-04-11 — US-020: Add explicit knowledge-extract workflow node type
+
+**Status**: PASSED
+**Files changed**:
+- packages/workflows/src/schemas/dag-node.ts — Added KnowledgeExtractNode type, schema, type guard; updated DagNode union, mutual exclusivity checks, and transform
+- packages/workflows/src/schemas/index.ts — Exported new types and type guard
+- packages/workflows/src/deps.ts — Added KnowledgeExtractFn type and optional extractKnowledge to WorkflowDeps
+- packages/workflows/src/dag-executor.ts — Added executeKnowledgeExtractNode function with variable substitution, upstream output collection, and event emission
+- packages/workflows/src/loader.ts — Added knowledge-extract to non-AI node warnings and $nodeId.output ref validation
+- packages/core/src/services/knowledge-capture.ts — Added extractKnowledgeFromContext() for standalone extraction via custom prompt
+- packages/core/src/workflows/store-adapter.ts — Wired extractKnowledgeFromContext into createWorkflowDeps()
+- packages/workflows/src/knowledge-extract-node.test.ts — 6 tests for node execution
+- packages/core/src/services/knowledge-extract.test.ts — 5 tests for extraction function
+- packages/workflows/src/schemas.test.ts — 9 new tests for type guard and schema parsing
+
+**Acceptance criteria verified**:
+- [x] Workflows can include `knowledge-extract` nodes that run targeted knowledge extraction (new schema type, dispatch in dag-executor)
+- [x] Node accepts a prompt describing what knowledge to extract from the workflow's output (knowledge_extract field with variable substitution)
+- [x] Node uses capture service infrastructure (Haiku model, daily log format) (extractKnowledgeFromContext uses captureModel config and daily log)
+- [x] Node output is appended to daily log with workflow context metadata (includes workflowRunId and nodeId in log entry)
+- [x] Existing workflows without knowledge-extract nodes continue to work unchanged (extractKnowledge is optional on WorkflowDeps)
+- [x] Type-check passes
+- [x] Tests pass (20 new tests across 3 files)
+
+**Learnings**:
+- @archon/workflows cannot import @archon/core — must use dependency injection via WorkflowDeps for any @archon/core functionality
+- Optional callbacks on WorkflowDeps is the pattern for extending node types without breaking existing callers
+- Dynamic import (`await import('@archon/git')`) in @archon/core services allows using @archon/git without static import conflicts in test mocking
+- priorCompletedNodes parameter on executeDagWorkflow is useful for testing downstream nodes without actually running upstream bash nodes
+- The node type schema uses flat superRefine + transform pattern (not z.union) because YAML nodes lack explicit type discriminants
+
+---

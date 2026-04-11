@@ -36,6 +36,7 @@ import {
 import { getTriggerForCommand, type DeactivatingCommand } from '../state/session-transitions';
 import { SessionNotFoundError } from '../db/sessions';
 import { createLogger } from '@archon/paths';
+import { triggerCapture } from '../services/knowledge-capture';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -1046,6 +1047,8 @@ Talk naturally — the orchestrator routes your requests to the right workflow a
     case 'reset': {
       const session = await sessionDb.getActiveSession(conversation.id);
       if (session) {
+        // Trigger knowledge capture before deactivation (fire-and-forget)
+        triggerCapture(conversation.id, conversation.codebase_id);
         await safeDeactivateSession(session.id, 'reset');
         return {
           success: true,

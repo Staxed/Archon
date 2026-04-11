@@ -2,8 +2,9 @@
  * Zod schemas for DAG node types.
  *
  * Design: a flat "raw" schema validates all fields (with mutual exclusivity enforced via
- * superRefine), then a transform produces one of the six concrete variant types
- * (CommandNode, PromptNode, BashNode, LoopNode, ApprovalNode, CancelNode) as the DagNode union.
+ * superRefine), then a transform produces one of the seven concrete variant types
+ * (CommandNode, PromptNode, BashNode, LoopNode, ApprovalNode, CancelNode, KnowledgeExtractNode)
+ * as the DagNode union.
  * Per-variant schemas (commandNodeSchema etc.) are exported for type derivation only —
  * use dagNodeSchema for validation.
  *
@@ -155,6 +156,7 @@ export type CommandNode = z.infer<typeof commandNodeSchema> & {
   loop?: never;
   approval?: never;
   cancel?: never;
+  knowledge_extract?: never;
 };
 
 export const promptNodeSchema = dagNodeBaseSchema.extend({
@@ -168,6 +170,7 @@ export type PromptNode = z.infer<typeof promptNodeSchema> & {
   loop?: never;
   approval?: never;
   cancel?: never;
+  knowledge_extract?: never;
 };
 
 /**
@@ -186,6 +189,7 @@ export type BashNode = z.infer<typeof bashNodeSchema> & {
   loop?: never;
   approval?: never;
   cancel?: never;
+  knowledge_extract?: never;
 };
 
 /**
@@ -204,6 +208,7 @@ export type LoopNode = z.infer<typeof loopNodeSchema> & {
   bash?: never;
   approval?: never;
   cancel?: never;
+  knowledge_extract?: never;
 };
 
 /** Schema for the `on_reject` sub-object on approval nodes. */
@@ -233,6 +238,7 @@ export type ApprovalNode = z.infer<typeof approvalNodeSchema> & {
   bash?: never;
   loop?: never;
   cancel?: never;
+  knowledge_extract?: never;
 };
 
 /**
@@ -250,10 +256,37 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
   bash?: never;
   loop?: never;
   approval?: never;
+  knowledge_extract?: never;
 };
 
-/** A single node in a DAG workflow. command, prompt, bash, loop, approval, and cancel are mutually exclusive. */
-export type DagNode = CommandNode | PromptNode | BashNode | LoopNode | ApprovalNode | CancelNode;
+/**
+ * Knowledge-extract node schema — extends base with `knowledge_extract` (extraction prompt).
+ * Runs targeted knowledge extraction using the capture service infrastructure.
+ * AI-specific fields from the base are present in the type but ignored at runtime with a warning.
+ */
+export const knowledgeExtractNodeSchema = dagNodeBaseSchema.extend({
+  knowledge_extract: z.string().min(1, "'knowledge_extract' prompt must not be empty"),
+});
+
+/** DAG node that runs targeted knowledge extraction and appends to the daily log */
+export type KnowledgeExtractNode = z.infer<typeof knowledgeExtractNodeSchema> & {
+  command?: never;
+  prompt?: never;
+  bash?: never;
+  loop?: never;
+  approval?: never;
+  cancel?: never;
+};
+
+/** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and knowledge_extract are mutually exclusive. */
+export type DagNode =
+  | CommandNode
+  | PromptNode
+  | BashNode
+  | LoopNode
+  | ApprovalNode
+  | CancelNode
+  | KnowledgeExtractNode;
 
 // ---------------------------------------------------------------------------
 // AI-specific fields that are meaningless on bash/loop nodes
@@ -310,6 +343,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       })
       .optional(),
     cancel: z.string().optional(),
+    knowledge_extract: z.string().optional(),
     // Bash-only
     timeout: z.number().optional(),
   })
@@ -332,16 +366,24 @@ export const dagNodeSchema = dagNodeBaseSchema
     const hasLoop = data.loop !== undefined;
     const hasApproval = data.approval !== undefined;
     const hasCancel = typeof data.cancel === 'string' && data.cancel.trim().length > 0;
+    const hasKnowledgeExtract =
+      typeof data.knowledge_extract === 'string' && data.knowledge_extract.trim().length > 0;
 
-    const modeCount = [hasCommand, hasPrompt, hasBash, hasLoop, hasApproval, hasCancel].filter(
-      Boolean
-    ).length;
+    const modeCount = [
+      hasCommand,
+      hasPrompt,
+      hasBash,
+      hasLoop,
+      hasApproval,
+      hasCancel,
+      hasKnowledgeExtract,
+    ].filter(Boolean).length;
 
     if (modeCount > 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "'command', 'prompt', 'bash', 'loop', 'approval', and 'cancel' are mutually exclusive",
+          "'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', and 'knowledge_extract' are mutually exclusive",
       });
       return z.NEVER;
     }
@@ -362,9 +404,18 @@ export const dagNodeSchema = dagNodeBaseSchema
         });
         return z.NEVER;
       }
+      if (typeof data.knowledge_extract === 'string') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'knowledge_extract prompt cannot be empty',
+          path: ['knowledge_extract'],
+        });
+        return z.NEVER;
+      }
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "must have either 'command', 'prompt', 'bash', 'loop', 'approval', or 'cancel'",
+        message:
+          "must have either 'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', or 'knowledge_extract'",
       });
       return z.NEVER;
     }
@@ -411,7 +462,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     }
 
     // Provider/model compatibility (AI nodes only)
-    if (!hasBash && !hasLoop && data.provider && data.model) {
+    if (!hasBash && !hasLoop && !hasKnowledgeExtract && data.provider && data.model) {
       if (!isModelCompatible(data.provider, data.model)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -479,6 +530,13 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.cancel !== undefined && data.cancel.trim().length > 0) {
       return { ...base, ...shared, cancel: data.cancel.trim() } as CancelNode;
     }
+    if (data.knowledge_extract !== undefined && data.knowledge_extract.trim().length > 0) {
+      return {
+        ...base,
+        ...shared,
+        knowledge_extract: data.knowledge_extract.trim(),
+      } as KnowledgeExtractNode;
+    }
     // loop — guaranteed by superRefine to be defined at this point
     if (!data.loop) throw new Error('unreachable: loop must be defined after superRefine');
     return { ...base, loop: data.loop } as LoopNode;
@@ -507,6 +565,11 @@ export function isApprovalNode(node: DagNode): node is ApprovalNode {
 /** Type guard: check if a DAG node is a cancel (workflow termination) node */
 export function isCancelNode(node: DagNode): node is CancelNode {
   return 'cancel' in node && typeof node.cancel === 'string';
+}
+
+/** Type guard: check if a DAG node is a knowledge-extract node */
+export function isKnowledgeExtractNode(node: DagNode): node is KnowledgeExtractNode {
+  return 'knowledge_extract' in node && typeof node.knowledge_extract === 'string';
 }
 
 /** Type guard: validates a value is a known TriggerRule */

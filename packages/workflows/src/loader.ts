@@ -2,7 +2,7 @@
  * Workflow loader - discovers and parses workflow YAML files
  */
 import type { WorkflowDefinition, WorkflowLoadError, DagNode, WorkflowNodeHooks } from './schemas';
-import { isLoopNode, isApprovalNode, isCancelNode } from './schemas';
+import { isLoopNode, isApprovalNode, isCancelNode, isKnowledgeExtractNode } from './schemas';
 import { createLogger } from '@archon/paths';
 import { isModelCompatible } from './model-validation';
 import { dagNodeSchema, BASH_NODE_AI_FIELDS } from './schemas/dag-node';
@@ -55,15 +55,18 @@ function parseDagNode(raw: unknown, index: number, errors: string[]): DagNode | 
 
   const node = result.data;
 
-  // Warn about AI-specific fields on bash/loop nodes (runtime behavior, not schema errors)
+  // Warn about AI-specific fields on non-AI nodes (runtime behavior, not schema errors)
   const isNonAiNode =
     ('bash' in node && typeof node.bash === 'string') ||
     isLoopNode(node) ||
     isApprovalNode(node) ||
-    isCancelNode(node);
+    isCancelNode(node) ||
+    isKnowledgeExtractNode(node);
   if (isNonAiNode) {
     let nodeType: string;
-    if (isCancelNode(node)) {
+    if (isKnowledgeExtractNode(node)) {
+      nodeType = 'knowledge-extract';
+    } else if (isCancelNode(node)) {
       nodeType = 'cancel';
     } else if (isApprovalNode(node)) {
       nodeType = 'approval';
@@ -146,6 +149,9 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     if ('prompt' in node && typeof node.prompt === 'string') sources.push(node.prompt);
     if (isLoopNode(node)) {
       sources.push(node.loop.prompt);
+    }
+    if (isKnowledgeExtractNode(node)) {
+      sources.push(node.knowledge_extract);
     }
     for (const source of sources) {
       let m: RegExpExecArray | null;
