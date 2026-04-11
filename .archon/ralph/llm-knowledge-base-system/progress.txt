@@ -435,3 +435,31 @@
 - Staleness detection by scanning article content for the WARNING marker string
 
 ---
+
+## 2026-04-11 — US-016: Add `knowledge lint` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-flush.ts — Exported 7 validation functions and 2 types (collectAllArticles, CollectedArticle, checkBrokenWikilinks, identifyStaleArticles, getGitDiffNameOnly, getCurrentGitSha, readLastFlush, LastFlushMeta)
+- packages/cli/src/commands/knowledge.ts — Added knowledgeLintCommand(), lintKB(), findOrphanedArticles(), renderLintResult(), KBLintResult interface
+- packages/cli/src/commands/knowledge-lint.test.ts — New file: 10 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered `knowledge lint` subcommand, imported knowledgeLintCommand, updated help text and error message
+- packages/cli/package.json — Added knowledge-lint.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge lint` subcommand to CLI
+- [x] Validates all articles against current git state (runs staleness check via identifyStaleArticles when git SHA exists)
+- [x] Checks for broken [[wikilink]] cross-references (reuses checkBrokenWikilinks from flush)
+- [x] Checks for orphaned articles (not referenced in any index) via findOrphanedArticles
+- [x] Displays results with actionable output (which articles are stale, which links are broken, which are orphaned)
+- [x] Supports `--json` flag for machine-readable output
+- [x] Type-check passes
+- [x] Tests pass (10 tests, 34 expect calls)
+
+**Learnings**:
+- Exported private functions from knowledge-flush.ts rather than duplicating — keeps logic in one place
+- Orphan detection checks if concept name appears anywhere in _index.md (not just wikilink format) for flexibility
+- Lint returns exit code 1 when any issues found (stale, broken, orphaned) — useful for CI integration
+- Test mocks replicate the real collectAllArticles/checkBrokenWikilinks logic using the shared fileSystem/directories state
+
+---

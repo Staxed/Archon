@@ -313,8 +313,8 @@
       "technicalNotes": "Add to packages/cli/src/commands/knowledge.ts. Reuses validation logic from US-011 (staleness check). Additional checks: parse [[wikilinks]] from all articles, verify targets exist; scan _index.md files for completeness.",
       "dependsOn": ["US-011"],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 16. Files: packages/cli/src/commands/knowledge.ts, packages/cli/src/commands/knowledge-lint.test.ts, packages/cli/src/cli.ts, packages/cli/package.json, packages/core/src/services/knowledge-flush.ts."
     },
     {
       "id": "US-017",
