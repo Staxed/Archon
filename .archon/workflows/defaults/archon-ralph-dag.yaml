@@ -94,6 +94,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: generate-prd
+    model: claude-opus-4-6[1m]
     depends_on: [detect-input]
     when: "$detect-input.output.input_type != 'ready'"
     command: archon-ralph-generate
@@ -660,6 +661,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: report
+    model: haiku
     depends_on: [implement]
     prompt: |
       # Completion Report

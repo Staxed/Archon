@@ -27,6 +27,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: explore
+    model: claude-opus-4-6[1m]
     loop:
       prompt: |
         # PIV Loop — Exploration

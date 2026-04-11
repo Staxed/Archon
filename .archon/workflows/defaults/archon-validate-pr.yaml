@@ -11,7 +11,6 @@ description: |
   to avoid conflicts. Produces artifacts in $ARTIFACTS_DIR/ and posts a validation report.
 
 provider: claude
-model: opus
 
 nodes:
   # ═══════════════════════════════════════════════════════════════
@@ -19,6 +18,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: fetch-pr
+    model: haiku
     bash: |
       # Extract PR number from arguments
       PR_NUMBER=$(echo "$ARGUMENTS" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
@@ -42,6 +42,7 @@ nodes:
       gh pr view "$PR_NUMBER" --json number,title,body,url,headRefName,baseRefName,files,additions,deletions,changedFiles,state,author,labels,isDraft
 
   - id: find-ports
+    model: haiku
     bash: |
       # Use Bun to let the OS pick truly free ports (cross-platform: Linux, macOS, Windows)
       BACKEND_PORT=$(bun -e "const s = Bun.serve({port: 0, fetch: () => new Response('')}); console.log(s.port); s.stop()")
@@ -54,6 +55,7 @@ nodes:
       echo "FRONTEND_PORT=$FRONTEND_PORT"
 
   - id: resolve-paths
+    model: haiku
     bash: |
       # Resolve canonical repo path (main branch) vs worktree path (feature branch)
       CANONICAL_REPO=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
@@ -83,11 +85,13 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: code-review-main
+    model: sonnet
     command: archon-validate-pr-code-review-main
     depends_on: [fetch-pr, resolve-paths]
     context: fresh
 
   - id: code-review-feature
+    model: sonnet
     command: archon-validate-pr-code-review-feature
     depends_on: [fetch-pr, resolve-paths, code-review-main]
     context: fresh
@@ -138,6 +142,7 @@ nodes:
       required: [testable, reasoning, test_plan]
 
   - id: e2e-test-main
+    model: claude-opus-4-6[1m]
     command: archon-validate-pr-e2e-main
     depends_on: [classify-testability, find-ports, resolve-paths, code-review-main, code-review-feature]
     when: "$classify-testability.output.testable == 'e2e_testable'"
@@ -145,6 +150,7 @@ nodes:
     idle_timeout: 1800000
 
   - id: e2e-test-feature
+    model: claude-opus-4-6[1m]
     command: archon-validate-pr-e2e-feature
     depends_on: [e2e-test-main, find-ports, resolve-paths]
     when: "$classify-testability.output.testable == 'e2e_testable'"
@@ -156,6 +162,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: cleanup-processes
+    model: haiku
     bash: |
       # Safety net: kill any orphaned processes from E2E testing
       # This runs after E2E nodes complete (or timeout/fail) to prevent process accumulation
@@ -211,6 +218,7 @@ nodes:
     trigger_rule: all_done
 
   - id: final-report
+    model: sonnet
     command: archon-validate-pr-report
     depends_on: [code-review-main, code-review-feature, e2e-test-main, e2e-test-feature, classify-testability, cleanup-processes]
     trigger_rule: all_done

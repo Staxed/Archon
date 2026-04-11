@@ -26,6 +26,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: extract-issue-number
+    model: haiku
     prompt: |
       Find the GitHub issue number for this request.
 

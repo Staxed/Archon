@@ -11,6 +11,7 @@ description: |
 
 nodes:
   - id: setup-pr
+    model: haiku
     bash: |
       #!/bin/bash
       set -e

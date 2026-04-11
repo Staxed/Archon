@@ -86,6 +86,7 @@ nodes:
     depends_on: [scan-codebase]
 
   - id: generate-yaml
+    model: claude-opus-4-6[1m]
     prompt: |
       You are an Archon workflow author. Generate a complete, valid workflow YAML file
       based on the structured intent provided.
@@ -206,6 +207,7 @@ nodes:
     depends_on: [extract-intent]
 
   - id: validate-yaml
+    model: haiku
     bash: |
       FILE="$ARTIFACTS_DIR/generated-workflow.yaml"
 
@@ -233,6 +235,7 @@ nodes:
     depends_on: [generate-yaml]
 
   - id: save-or-report
+    model: haiku
     prompt: |
       You are a workflow installer. Save the generated workflow and report to the user.
 
