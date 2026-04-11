@@ -29,13 +29,10 @@
 - `TRIGGER_RULES` and `WORKFLOW_HOOK_EVENTS` are derived from schema `.options` — never duplicate as a plain array (exception: `@archon/web` must define a local constant since `api.generated.d.ts` is type-only and cannot export runtime values)
 - `loader.ts` uses `dagNodeSchema.safeParse()` for node validation; graph-level checks (cycles, deps, `$nodeId.output` refs) remain as imperative code in `validateDagStructure()`
 
-**Git Workflow and Releases**
-- `main` is the release branch. Never commit directly to `main`.
-- `dev` is the working branch. All feature work branches off `dev` and merges back into `dev`.
-- To release, use the `/release` skill. It compares `dev` to `main`, generates changelog entries, bumps the version, and creates a PR to merge `dev` into `main`.
-- Releases follow Semantic Versioning: `/release` (patch), `/release minor`, `/release major`.
-- Changelog lives in `CHANGELOG.md` and follows Keep a Changelog format.
-- Version is the single `version` field in the root `package.json`.
+**Git Workflow**
+- `main` is the only mainline branch. All feature work branches off `main` and merges back via PR.
+- Feature branches are created automatically by Archon workflows (worktree-based isolation).
+- No `dev`, `test`, or `production` branches — Archon is not versioned or released.
 
 **Git as First-Class Citizen**
 - Let git handle what git does best (conflicts, uncommitted changes, branch management)

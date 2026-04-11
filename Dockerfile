@@ -135,7 +135,10 @@ COPY packages/web/package.json ./packages/web/
 COPY packages/workflows/package.json ./packages/workflows/
 
 # Install production dependencies only (--ignore-scripts skips husky prepare hook)
-RUN bun install --frozen-lockfile --production --ignore-scripts --linker=hoisted
+RUN bun install --frozen-lockfile --production --ignore-scripts --linker=hoisted \
+    # Fix execute permissions on Claude SDK vendor binaries (ripgrep, etc.)
+    # bun install --ignore-scripts doesn't set +x on vendored native binaries
+    && find packages/core/node_modules/@anthropic-ai/claude-agent-sdk/vendor -type f \( -name 'rg' -o -name 'rg.exe' -o -name '*.node' \) -exec chmod +x {} + 2>/dev/null || true
 
 # Copy application source (Bun runs TypeScript directly, no compile step needed)
 COPY packages/adapters/ ./packages/adapters/
