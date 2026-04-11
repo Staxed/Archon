@@ -186,3 +186,29 @@
 - Codebase names that don't match owner/repo format (e.g., 'local-project') gracefully skip project KB loading
 
 ---
+
+## 2026-04-11 — US-006: Wire capture triggers to session transitions
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-capture.ts — Added triggerCapture() fire-and-forget helper with codebase lookup
+- packages/core/src/services/cleanup-service.ts — Imported triggerCapture, wired into onConversationClosed()
+- packages/core/src/handlers/command-handler.ts — Imported triggerCapture, wired into /reset command
+- packages/core/src/services/cleanup-service.test.ts — Added mock for knowledge-capture, 2 new tests
+- packages/core/src/handlers/command-handler.test.ts — Added mock for knowledge-capture, 2 new tests
+
+**Acceptance criteria verified**:
+- [x] Capture triggers on `conversation-closed` session transition
+- [x] Capture triggers on `reset-requested` session transition
+- [x] Capture does NOT trigger on `isolation-changed` (no wiring to isolation path)
+- [x] Capture is fire-and-forget (triggerCapture returns void, uses void+catch internally)
+- [x] Errors logged but never surface to user or block session flow
+- [x] Type-check passes
+- [x] Tests pass
+
+**Learnings**:
+- triggerCapture() is the clean pattern: takes conversationId + codebaseId, does codebase lookup + parseOwnerRepo internally
+- Both cleanup-service.test.ts and command-handler.test.ts needed mock.module for knowledge-capture added
+- Technical notes suggested wiring into session-transitions.ts but that's a pure type/behavior module; actual wiring goes to the callers
+
+---

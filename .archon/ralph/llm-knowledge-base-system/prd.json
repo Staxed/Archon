@@ -117,8 +117,8 @@
       "technicalNotes": "Wire into packages/core/src/services/cleanup-service.ts onConversationClosed() and session deactivation in packages/core/src/state/session-transitions.ts. TransitionTrigger type at session-transitions.ts includes all 6 variants. Fire-and-forget with .catch() error logging.",
       "dependsOn": ["US-005"],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 7. Files: packages/core/src/services/knowledge-capture.ts, packages/core/src/services/cleanup-service.ts, packages/core/src/handlers/command-handler.ts, plus tests."
     },
     {
       "id": "US-007",
