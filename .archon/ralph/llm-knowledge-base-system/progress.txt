@@ -320,3 +320,28 @@
 - Wikilink regex with global flag needs lastIndex reset for each article iteration
 
 ---
+
+## 2026-04-11 — US-012: Implement debounced flush trigger
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-scheduler.ts — New file: scheduleFlush(), cancelScheduledFlush(), isFlushScheduled(), cancelAllScheduledFlushes() with per-project Map<string, Timeout>
+- packages/core/src/services/knowledge-scheduler.test.ts — New file: 7 tests covering debounce, reset, per-project isolation, config loading, cancellation
+- packages/core/src/services/knowledge-capture.ts — Wired scheduleFlush into triggerCapture after successful capture
+- packages/core/package.json — Added knowledge-scheduler.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] After capture completes, schedule a flush with configurable debounce (default ~10 minutes)
+- [x] If another capture fires within debounce window, reset the timer
+- [x] Debounce is per-project (different projects flush independently)
+- [x] Use knowledge.flushDebounceMinutes from config
+- [x] Debounce timer survives within server process lifetime (not persisted across restarts)
+- [x] Type-check passes
+- [x] Tests pass (7 tests, 22 expect calls)
+
+**Learnings**:
+- Created separate knowledge-scheduler.ts rather than adding to knowledge-flush.ts for SRP
+- Timer.unref() prevents the debounce timer from keeping the Node process alive during shutdown
+- Test timing with very short debounce (0.001 min = 60ms) works reliably in Bun
+
+---

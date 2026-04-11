@@ -236,8 +236,8 @@
       "technicalNotes": "Add to knowledge-flush.ts or create knowledge-scheduler.ts. Use setTimeout with Map<projectKey, NodeJS.Timeout> for per-project debounce. Follow cleanup-service.ts scheduler pattern at lines 555-595.",
       "dependsOn": ["US-010"],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 12. Files: packages/core/src/services/knowledge-scheduler.ts, packages/core/src/services/knowledge-scheduler.test.ts, packages/core/src/services/knowledge-capture.ts, packages/core/package.json."
     },
     {
       "id": "US-013",
