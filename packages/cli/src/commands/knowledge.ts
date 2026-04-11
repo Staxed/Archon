@@ -10,7 +10,14 @@ import {
   getGlobalKnowledgePath,
 } from '@archon/paths';
 import * as git from '@archon/git';
-import { flushKnowledge } from '@archon/core/services/knowledge-flush';
+import {
+  flushKnowledge,
+  collectAllArticles,
+  checkBrokenWikilinks,
+  identifyStaleArticles,
+  getGitDiffNameOnly,
+  readLastFlush,
+} from '@archon/core/services/knowledge-flush';
 import { loadConfig } from '@archon/core';
 import type { KnowledgeFlushReport } from '@archon/core/services/knowledge-flush';
 
@@ -238,6 +245,190 @@ function renderKBStats(label: string, stats: KBStats): void {
   process.stderr.write(`  Last flush:           ${stats.lastFlushTimestamp ?? 'never'}\n`);
   process.stderr.write(`  Unprocessed logs:     ${stats.unprocessedLogCount}\n`);
   process.stderr.write(`  Stale articles:       ${stats.staleArticleCount}\n`);
+}
+
+/** Lint result for a single KB tier */
+interface KBLintResult {
+  articlesChecked: number;
+  staleArticles: string[];
+  brokenWikilinks: { source: string; target: string }[];
+  orphanedArticles: string[];
+}
+
+/**
+ * Find orphaned articles — articles that exist in domains/ but are not
+ * referenced from any _index.md file in the KB.
+ */
+async function findOrphanedArticles(knowledgePath: string): Promise<string[]> {
+  const domainsDir = join(knowledgePath, 'domains');
+  const orphans: string[] = [];
+
+  let domains: string[];
+  try {
+    domains = await readdir(domainsDir);
+  } catch {
+    return [];
+  }
+
+  for (const domain of domains) {
+    const domainDir = join(domainsDir, domain);
+    let files: string[];
+    try {
+      files = await readdir(domainDir);
+    } catch {
+      continue;
+    }
+
+    // Read _index.md to find referenced articles
+    let indexContent = '';
+    try {
+      indexContent = await readFile(join(domainDir, '_index.md'), 'utf-8');
+    } catch {
+      // No index — all articles in this domain are orphaned
+    }
+
+    const articles = files.filter(f => f.endsWith('.md') && f !== '_index.md');
+    for (const file of articles) {
+      const concept = file.replace('.md', '');
+      // Check if the article is referenced in the _index.md (by wikilink or plain name)
+      if (!indexContent.includes(concept)) {
+        orphans.push(`${domain}/${concept}`);
+      }
+    }
+  }
+
+  return orphans;
+}
+
+/**
+ * `knowledge lint` — validate KB integrity (staleness, broken links, orphans).
+ */
+export async function knowledgeLintCommand(
+  cwd: string,
+  project?: string,
+  jsonFlag?: boolean,
+  quiet?: boolean
+): Promise<number> {
+  const log = getLog();
+  const ownerRepo = await resolveOwnerRepo(cwd, project);
+  if (!ownerRepo) return 1;
+
+  const { owner, repo } = ownerRepo;
+  const knowledgePath = getProjectKnowledgePath(owner, repo);
+
+  if (!quiet) {
+    process.stderr.write(`Linting knowledge base for ${owner}/${repo}...\n`);
+  }
+
+  try {
+    const config = await loadConfig();
+    const result = await lintKB(knowledgePath, owner, repo, config.knowledge.captureModel);
+
+    if (jsonFlag) {
+      console.log(JSON.stringify(result, null, 2));
+      return result.staleArticles.length > 0 ||
+        result.brokenWikilinks.length > 0 ||
+        result.orphanedArticles.length > 0
+        ? 1
+        : 0;
+    }
+
+    if (!quiet) {
+      renderLintResult(result);
+    }
+
+    // Return 1 if any issues found
+    return result.staleArticles.length > 0 ||
+      result.brokenWikilinks.length > 0 ||
+      result.orphanedArticles.length > 0
+      ? 1
+      : 0;
+  } catch (error) {
+    const err = error as Error;
+    log.error({ err, owner, repo }, 'knowledge.lint_command_failed');
+    console.error(`Error: Lint failed — ${err.message}`);
+    return 1;
+  }
+}
+
+/**
+ * Run all lint checks on a KB directory.
+ */
+async function lintKB(
+  knowledgePath: string,
+  owner: string,
+  repo: string,
+  captureModel: string
+): Promise<KBLintResult> {
+  // Collect all articles
+  const articles = await collectAllArticles(knowledgePath);
+
+  if (articles.length === 0) {
+    return {
+      articlesChecked: 0,
+      staleArticles: [],
+      brokenWikilinks: [],
+      orphanedArticles: [],
+    };
+  }
+
+  // Check staleness via git diff + AI
+  let staleArticles: string[] = [];
+  const lastFlush = await readLastFlush(knowledgePath);
+  if (lastFlush?.gitSha) {
+    const diffOutput = await getGitDiffNameOnly(owner, repo, lastFlush.gitSha);
+    if (diffOutput) {
+      staleArticles = await identifyStaleArticles(articles, diffOutput, captureModel);
+    }
+  }
+
+  // Check broken wikilinks
+  const brokenWikilinks = checkBrokenWikilinks(articles);
+
+  // Check orphaned articles
+  const orphanedArticles = await findOrphanedArticles(knowledgePath);
+
+  return {
+    articlesChecked: articles.length,
+    staleArticles,
+    brokenWikilinks,
+    orphanedArticles,
+  };
+}
+
+/**
+ * Render lint results to stderr.
+ */
+function renderLintResult(result: KBLintResult): void {
+  process.stderr.write('\nLint results:\n');
+  process.stderr.write(`  Articles checked:    ${result.articlesChecked}\n`);
+
+  if (result.staleArticles.length > 0) {
+    process.stderr.write(`  Stale articles (${result.staleArticles.length}):\n`);
+    for (const article of result.staleArticles) {
+      process.stderr.write(`    - ${article}\n`);
+    }
+  } else {
+    process.stderr.write('  Stale articles:      0\n');
+  }
+
+  if (result.brokenWikilinks.length > 0) {
+    process.stderr.write(`  Broken wikilinks (${result.brokenWikilinks.length}):\n`);
+    for (const link of result.brokenWikilinks) {
+      process.stderr.write(`    - ${link.source} → [[${link.target}]]\n`);
+    }
+  } else {
+    process.stderr.write('  Broken wikilinks:    0\n');
+  }
+
+  if (result.orphanedArticles.length > 0) {
+    process.stderr.write(`  Orphaned articles (${result.orphanedArticles.length}):\n`);
+    for (const article of result.orphanedArticles) {
+      process.stderr.write(`    - ${article}\n`);
+    }
+  } else {
+    process.stderr.write('  Orphaned articles:   0\n');
+  }
 }
 
 /**

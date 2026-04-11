@@ -27,7 +27,7 @@ function getLog(): ReturnType<typeof createLogger> {
 }
 
 /** Shape of meta/last-flush.json */
-interface LastFlushMeta {
+export interface LastFlushMeta {
   timestamp: string;
   gitSha: string;
   logsCaptured: string[];
@@ -321,7 +321,7 @@ export async function flushGlobalKnowledge(config?: MergedConfig): Promise<Knowl
 /**
  * Read meta/last-flush.json. Returns null if it doesn't exist.
  */
-async function readLastFlush(knowledgePath: string): Promise<LastFlushMeta | null> {
+export async function readLastFlush(knowledgePath: string): Promise<LastFlushMeta | null> {
   try {
     const content = await readFile(join(knowledgePath, 'meta', 'last-flush.json'), 'utf-8');
     return JSON.parse(content) as LastFlushMeta;
@@ -716,7 +716,7 @@ async function updateLastFlush(
  * Get the current HEAD SHA from the project source repository.
  * Returns empty string if git is unavailable.
  */
-async function getCurrentGitSha(owner: string, repo: string): Promise<string> {
+export async function getCurrentGitSha(owner: string, repo: string): Promise<string> {
   try {
     const sourcePath = getProjectSourcePath(owner, repo);
     const { stdout } = await execFileAsync('git', ['-C', sourcePath, 'rev-parse', 'HEAD'], {
@@ -732,7 +732,11 @@ async function getCurrentGitSha(owner: string, repo: string): Promise<string> {
  * Get git diff output (changed file names) between two SHAs.
  * Returns empty string if git is unavailable or SHAs are invalid.
  */
-async function getGitDiffNameOnly(owner: string, repo: string, fromSha: string): Promise<string> {
+export async function getGitDiffNameOnly(
+  owner: string,
+  repo: string,
+  fromSha: string
+): Promise<string> {
   try {
     const sourcePath = getProjectSourcePath(owner, repo);
     const { stdout } = await execFileAsync(
@@ -840,7 +844,7 @@ async function validateStaleness(
 }
 
 /** Collected article with domain/concept key and content */
-interface CollectedArticle {
+export interface CollectedArticle {
   key: string; // "domain/concept"
   content: string;
 }
@@ -848,7 +852,7 @@ interface CollectedArticle {
 /**
  * Collect all articles from domains/ directory.
  */
-async function collectAllArticles(knowledgePath: string): Promise<CollectedArticle[]> {
+export async function collectAllArticles(knowledgePath: string): Promise<CollectedArticle[]> {
   const domainsDir = join(knowledgePath, 'domains');
   const articles: CollectedArticle[] = [];
 
@@ -887,7 +891,7 @@ async function collectAllArticles(knowledgePath: string): Promise<CollectedArtic
 /**
  * Call Haiku to identify which articles are stale based on git diff.
  */
-async function identifyStaleArticles(
+export async function identifyStaleArticles(
   articles: CollectedArticle[],
   diffOutput: string,
   captureModel: string
@@ -956,7 +960,9 @@ async function addStalenessMarker(articlePath: string): Promise<void> {
  * Check for broken [[wikilink]] cross-references between articles.
  * Returns list of broken links with source article and target reference.
  */
-function checkBrokenWikilinks(articles: CollectedArticle[]): { source: string; target: string }[] {
+export function checkBrokenWikilinks(
+  articles: CollectedArticle[]
+): { source: string; target: string }[] {
   const articleKeys = new Set(articles.map(a => a.key));
   const brokenLinks: { source: string; target: string }[] = [];
 

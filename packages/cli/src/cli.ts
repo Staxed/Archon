@@ -78,7 +78,11 @@ import { continueCommand } from './commands/continue';
 import { chatCommand } from './commands/chat';
 import { setupCommand } from './commands/setup';
 import { validateWorkflowsCommand, validateCommandsCommand } from './commands/validate';
-import { knowledgeFlushCommand, knowledgeStatusCommand } from './commands/knowledge';
+import {
+  knowledgeFlushCommand,
+  knowledgeStatusCommand,
+  knowledgeLintCommand,
+} from './commands/knowledge';
 import { closeDatabase } from '@archon/core';
 import { setLogLevel, createLogger } from '@archon/paths';
 import * as git from '@archon/git';
@@ -111,6 +115,7 @@ Commands:
   isolation cleanup --merged Remove environments with branches merged into main
   knowledge flush            Compile daily capture logs into KB articles
   knowledge status           Show KB stats (articles, last flush, staleness)
+  knowledge lint             Validate KB integrity (staleness, broken links, orphans)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   validate workflows [name]  Validate workflow definitions and their references
@@ -546,13 +551,19 @@ async function main(): Promise<number> {
             return await knowledgeStatusCommand(effectiveCwd, projectFlag, jsonFlag, quietFlag);
           }
 
+          case 'lint': {
+            const projectFlag = values.project as string | undefined;
+            const quietFlag = values.quiet as boolean | undefined;
+            return await knowledgeLintCommand(effectiveCwd, projectFlag, jsonFlag, quietFlag);
+          }
+
           default:
             if (subcommand === undefined) {
               console.error('Missing knowledge subcommand');
             } else {
               console.error(`Unknown knowledge subcommand: ${subcommand}`);
             }
-            console.error('Available: flush, status');
+            console.error('Available: flush, status, lint');
             return 1;
         }
 
