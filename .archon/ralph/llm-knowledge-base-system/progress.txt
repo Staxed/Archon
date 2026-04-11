@@ -409,3 +409,29 @@
 - spyOn(process.stderr, 'write') captures Pino logger output too — filter with startsWith('{')
 
 ---
+
+## 2026-04-11 — US-015: Add `knowledge status` CLI command
+
+**Status**: PASSED
+**Files changed**:
+- packages/cli/src/commands/knowledge.ts — Added knowledgeStatusCommand(), gatherKBStats(), renderKBStats(), KBStats interface; added readFile/readdir/join/path imports
+- packages/cli/src/commands/knowledge-status.test.ts — New file: 10 tests covering all acceptance criteria
+- packages/cli/src/cli.ts — Registered `knowledge status` subcommand, imported knowledgeStatusCommand, updated help text
+- packages/cli/package.json — Added knowledge-status.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Add `knowledge status` subcommand to CLI
+- [x] Displays: total articles, articles per domain, last flush timestamp, unprocessed log count, staleness stats
+- [x] Accepts optional `--project owner/repo` flag
+- [x] Supports `--json` flag for machine-readable output
+- [x] Shows global KB stats alongside project KB stats
+- [x] Type-check passes
+- [x] Tests pass (10 tests, 34 expect calls)
+
+**Learnings**:
+- Status is pure filesystem inspection — no AI or DB calls needed
+- Separate test file needed because it mocks node:fs/promises and node:path which flush tests don't
+- gatherKBStats reusable for both project and global tiers with just a path argument
+- Staleness detection by scanning article content for the WARNING marker string
+
+---

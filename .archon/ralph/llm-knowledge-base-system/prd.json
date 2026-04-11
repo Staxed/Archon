@@ -293,8 +293,8 @@
       "technicalNotes": "Add to packages/cli/src/commands/knowledge.ts from US-014. Reads knowledge/ directory tree, meta/last-flush.json, counts files. No AI calls needed — pure filesystem inspection.",
       "dependsOn": ["US-003"],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 15. Files: packages/cli/src/commands/knowledge.ts, packages/cli/src/commands/knowledge-status.test.ts, packages/cli/src/cli.ts, packages/cli/package.json."
     },
     {
       "id": "US-016",
