@@ -350,8 +350,8 @@
       "technicalNotes": "Modify YAML files in packages/workflows/src/defaults/ (or .archon/workflows/defaults/). Add KB context references to prompt sections. Knowledge is available via prompt builder injection (US-007), so workflows just need awareness prompts.",
       "dependsOn": ["US-007", "US-017"],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 18. Files: .archon/workflows/defaults/archon-interactive-prd.yaml, archon-piv-loop.yaml, archon-adversarial-dev.yaml, archon-architect.yaml, archon-refactor-safely.yaml, archon-create-issue.yaml."
     },
     {
       "id": "US-019",

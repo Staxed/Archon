@@ -497,3 +497,30 @@
 - Empty arrow function triggers @typescript-eslint/no-empty-function — use `/* noop */` comment
 
 ---
+
+## 2026-04-11 — US-018: Update default workflows with KB awareness
+
+**Status**: PASSED
+**Files changed**:
+- .archon/workflows/defaults/archon-interactive-prd.yaml — Added KB references to research and technical nodes
+- .archon/workflows/defaults/archon-piv-loop.yaml — Added KB references to explore loop and create-plan nodes
+- .archon/workflows/defaults/archon-adversarial-dev.yaml — Added KB reference to plan node
+- .archon/workflows/defaults/archon-architect.yaml — Added KB reference to analyze node
+- .archon/workflows/defaults/archon-refactor-safely.yaml — Added KB reference to analyze-impact node
+- .archon/workflows/defaults/archon-create-issue.yaml — Added KB reference to investigate node
+
+**Acceptance criteria verified**:
+- [x] All default workflows reference KB where relevant (6 workflows with inline analysis/planning prompts updated; command-only workflows already get KB via prompt builder injection from US-007)
+- [x] Workflows that perform analysis or planning include KB-aware prompts
+- [x] Workflows that produce decisions or lessons contribute to KB via capture (handled by US-017 post-workflow capture)
+- [x] No workflow is broken if KB is empty (all references use "if available in your context" language)
+- [x] Type-check passes
+- [x] Tests pass (bundled-defaults.test.ts: 14 tests, 250 expect calls)
+
+**Learnings**:
+- Workflows using only command: nodes don't need explicit KB prompts — the prompt builder injects KB into the system prompt automatically
+- Only workflows with inline prompt: nodes for analysis/planning benefit from explicit KB references
+- Graceful degradation pattern: "If a knowledge base index is available in your context" — works whether KB exists or not
+- YAML files in .archon/workflows/defaults/ are imported as text in bundled-defaults.ts — changes are automatically reflected
+
+---
