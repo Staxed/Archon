@@ -332,8 +332,8 @@
       "technicalNotes": "Add to packages/workflows/src/executor.ts at line 644 (after completion check). Use emitter.subscribe() pattern from packages/workflows/src/event-emitter.ts:170-254. Read JSONL logs via packages/workflows/src/logger.ts log path patterns.",
       "dependsOn": ["US-005"],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 17. Files: packages/core/src/services/knowledge-workflow-capture.ts, packages/core/src/services/knowledge-workflow-capture.test.ts, packages/core/src/services/knowledge-capture.ts, packages/server/src/index.ts, packages/core/src/index.ts, packages/core/package.json."
     },
     {
       "id": "US-018",

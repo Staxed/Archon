@@ -378,6 +378,11 @@
 
 ---
 
+### Workflow Event Subscription Pattern
+- **Where**: `packages/core/src/services/knowledge-workflow-capture.ts`
+- **Pattern**: Subscribe to workflow events from @archon/core (NOT @archon/workflows — would create circular dep). Use emitter.subscribe() with type guard, emitter.getConversationId(runId) for conversation lookup, then DB lookups for codebase. Fire-and-forget with void+catch.
+- **Example**: `const unsubscribe = emitter.subscribe((event) => { if (event.type !== 'workflow_completed') return; void handleWorkflowCompleted(event.runId, conversationId).catch(...); });`
+
 ### CLI Knowledge Command Pattern
 - **Where**: `packages/cli/src/commands/knowledge.ts`
 - **Pattern**: CLI commands return exit codes (0 success, 1 failure). Use process.stderr.write for progress output (not console.log). Resolve owner/repo from --project flag or git remote URL. Respect --quiet flag.
@@ -461,5 +466,34 @@
 - Orphan detection checks if concept name appears anywhere in _index.md (not just wikilink format) for flexibility
 - Lint returns exit code 1 when any issues found (stale, broken, orphaned) — useful for CI integration
 - Test mocks replicate the real collectAllArticles/checkBrokenWikilinks logic using the shared fileSystem/directories state
+
+---
+
+## 2026-04-11 — US-017: Add engine-level post-workflow capture
+
+**Status**: PASSED
+**Files changed**:
+- packages/core/src/services/knowledge-workflow-capture.ts — New file: subscribeToWorkflowCapture(), handleWorkflowCompleted(), readWorkflowLogs(), resetWorkflowCaptureSubscription()
+- packages/core/src/services/knowledge-workflow-capture.test.ts — New file: 8 tests covering all acceptance criteria
+- packages/core/src/services/knowledge-capture.ts — Added optional additionalTranscript parameter to captureKnowledge()
+- packages/server/src/index.ts — Wired subscribeToWorkflowCapture() into server startup
+- packages/core/src/index.ts — Exported subscribeToWorkflowCapture
+- packages/core/package.json — Added knowledge-workflow-capture.test.ts as separate test batch
+
+**Acceptance criteria verified**:
+- [x] Subscribe to `workflow_completed` events via `getWorkflowEventEmitter()`
+- [x] Trigger `captureKnowledge()` for the conversation associated with the completed workflow
+- [x] Also read JSONL workflow logs (from packages/workflows/src/logger.ts) as additional capture source
+- [x] Capture is fire-and-forget (does not block workflow completion reporting)
+- [x] Errors logged but never surface to user
+- [x] Type-check passes
+- [x] Tests pass (8 tests, 20 expect calls)
+
+**Learnings**:
+- Cannot put capture in @archon/workflows (circular dep with @archon/core) — subscribe from @archon/core side instead
+- WorkflowEmitterEvent has getConversationId(runId) for mapping runs to conversations
+- JSONL logs parsed line-by-line; extract assistant+tool+workflow_start events for meaningful context
+- Module-level `subscribed` flag prevents double-subscribe; reset function needed for test isolation
+- Empty arrow function triggers @typescript-eslint/no-empty-function — use `/* noop */` comment
 
 ---
