@@ -28,6 +28,10 @@ nodes:
 
       ## Your Task
 
+      **Knowledge base**: If a knowledge base index is available in your context, check it for
+      prior architecture decisions, tech stack choices, patterns, and lessons learned that should
+      inform this specification. Incorporate relevant constraints from past work.
+
       Write a comprehensive product specification to the file `$ARTIFACTS_DIR/spec.md` using the Write tool.
 
       The spec MUST include ALL of the following sections:

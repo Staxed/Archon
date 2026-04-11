@@ -76,6 +76,12 @@ nodes:
 
       $ARGUMENTS
 
+      ## Knowledge Base
+
+      If a knowledge base index is available in your context, check it for prior architecture
+      decisions, past refactoring lessons, and known patterns. Past decisions about module
+      boundaries and complexity trade-offs should inform your assessment.
+
       ## Instructions
 
       1. Read the top 10-15 files flagged by the metrics above (largest, most imports, most exports)

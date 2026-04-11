@@ -71,11 +71,14 @@ nodes:
 
       Research the landscape:
 
-      1. Search the web for similar products, competitors, and how others solve this problem
-      2. **Explore the codebase deeply** — find related existing functionality, APIs, UI components,
+      1. **Check the knowledge base** — if a knowledge base index is available in your context,
+         review it for prior decisions, architecture patterns, and lessons learned that relate
+         to this feature. Note any relevant constraints or past approaches.
+      2. Search the web for similar products, competitors, and how others solve this problem
+      3. **Explore the codebase deeply** — find related existing functionality, APIs, UI components,
          database tables, and patterns. Read actual files, don't assume. Note exact file paths and
          what each file does.
-      3. Look for common patterns, anti-patterns, and recent trends
+      4. Look for common patterns, anti-patterns, and recent trends
 
       **First principles rule**: Before suggesting anything new, verify what already exists.
       If there's an existing API endpoint, UI page, or component that partially solves the
@@ -124,6 +127,10 @@ nodes:
 
       **CRITICAL**: Explore the codebase by READING actual files. Do not guess or assume.
       For every claim you make about the codebase, cite the exact file and line.
+
+      **Knowledge base**: If a knowledge base index is available in your context, check it
+      for architecture decisions, technical constraints, and patterns that may affect feasibility.
+      Past decisions about similar features or components should inform your assessment.
 
       1. **What already exists** that partially solves this problem?
          - Read existing API endpoints, DB queries, UI components

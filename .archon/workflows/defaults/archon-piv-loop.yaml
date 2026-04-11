@@ -62,9 +62,12 @@ nodes:
         Before asking questions, DO YOUR HOMEWORK:
 
         1. **Read CLAUDE.md** — understand project conventions, architecture, and constraints
-        2. **Search for related code** — find existing implementations similar to what the user wants
-        3. **Read key files** — understand the current state of code the user wants to change
-        4. **Check recent git history** — `git log --oneline -20` for recent changes in the area
+        2. **Check the knowledge base** — if a knowledge base index is available in your context,
+           review it for prior decisions, architecture patterns, lessons learned, and constraints
+           relevant to the user's request. Reference specific KB articles when presenting findings.
+        3. **Search for related code** — find existing implementations similar to what the user wants
+        4. **Read key files** — understand the current state of code the user wants to change
+        5. **Check recent git history** — `git log --oneline -20` for recent changes in the area
 
         ### Step 3: Present Your Understanding
 
@@ -194,9 +197,12 @@ nodes:
       Before writing the plan, verify your understanding is current:
 
       1. **Read CLAUDE.md** — capture all relevant conventions
-      2. **Read every file you plan to change** — note exact current state
-      3. **Read example test files** — understand testing patterns
-      4. **Check for any recent changes** — `git log --oneline -10`
+      2. **Check the knowledge base** — if a knowledge base index is available in your context,
+         review it for prior decisions, patterns, and lessons that should inform the plan.
+         Incorporate relevant constraints and approaches from past work.
+      3. **Read every file you plan to change** — note exact current state
+      4. **Read example test files** — understand testing patterns
+      5. **Check for any recent changes** — `git log --oneline -10`
 
       ## Step 2: Determine Plan Location
 
