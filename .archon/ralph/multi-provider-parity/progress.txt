@@ -428,3 +428,29 @@
 - No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
 
 ---
+
+## 2026-04-12 — US-015: Llama.cpp client
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/llamacpp.ts` — New file: LlamaCppClient extending OpenAICompatibleClient with local endpoint config, GBNF grammar override, connection error classification
+- `packages/core/src/clients/llamacpp.test.ts` — 17 tests: endpoint config (4 cases), no-API-key (2 cases), model field (2 cases), GBNF grammar (2 cases), connection errors (3 cases), fromConfig (2 cases), streaming (1 case), getType (1 case)
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/llamacpp.ts`
+- [x] Extends/composes `OpenAICompatibleClient` from US-013
+- [x] Implements `IAssistantClient` with `getType()` returning 'llamacpp'
+- [x] Uses `LLAMACPP_ENDPOINT` env var or `endpoint` config (default `http://localhost:8080`)
+- [x] No API key required (local server) — no Authorization header sent
+- [x] Model loaded server-side; `model` field is informational (defaults to 'local')
+- [x] Uses GBNF grammar translator from US-010 for `output_format` (passes via `grammar` field, not `response_format`)
+- [x] Throws classified error when endpoint is unreachable (LlamaCppEndpointUnreachableError)
+- [x] Type-check passes
+- [x] Tests pass (17/17, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Llama.cpp client is very thin — similar to OpenRouter client. Override `buildExtraBody` for GBNF grammar, override `sendQuery` for connection error classification.
+- ESLint catches unnecessary type assertions — `outputFormat.schema` is already `Record<string, unknown>`, no cast needed.
+- No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
+
+---

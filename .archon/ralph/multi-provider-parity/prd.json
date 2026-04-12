@@ -355,8 +355,8 @@
         "US-010"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented. Files: packages/core/src/clients/llamacpp.ts, llamacpp.test.ts"
     },
     {
       "id": "US-016",
