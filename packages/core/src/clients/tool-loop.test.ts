@@ -929,4 +929,349 @@ describe('executeToolLoop', () => {
       expect(capturedSessionId).toBe('');
     });
   });
+
+  // ─── MCP + Skills integration tests (US-021) ─────────────────────────────
+
+  describe('mcpProvider integration', () => {
+    /** Minimal mock McpToolProvider. */
+    function createMockMcpProvider(
+      tools: import('./tool-definitions').ToolDefinition[],
+      callResult?: string
+    ) {
+      return {
+        getToolDefinitions: () => tools,
+        callTool: async (_name: string, _args: Record<string, unknown>) =>
+          callResult ?? 'mcp-result',
+        connect: async () => {},
+        shutdown: async () => {},
+      } as unknown as import('./mcp-client').McpToolProvider;
+    }
+
+    test('MCP tools merged into tool list sent to API', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__myserver__search',
+          description: 'MCP search',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      };
+      const mcpProvider = createMockMcpProvider([mcpTool]);
+
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ mcpProvider }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      const names = tools.map(t => t.function.name);
+      // 8 canonical + 1 MCP
+      expect(names).toContain('mcp__myserver__search');
+      expect(names).toContain('Read');
+      expect(tools.length).toBe(9);
+    });
+
+    test('MCP tool call dispatched to provider', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__db__query',
+          description: 'Run SQL',
+          parameters: {
+            type: 'object',
+            properties: { sql: { type: 'string' } },
+            required: ['sql'],
+          },
+        },
+      };
+
+      const callArgs: { name: string; args: Record<string, unknown> }[] = [];
+      const mcpProvider = {
+        getToolDefinitions: () => [mcpTool],
+        callTool: async (name: string, args: Record<string, unknown>) => {
+          callArgs.push({ name, args });
+          return 'query result: 42';
+        },
+        connect: async () => {},
+        shutdown: async () => {},
+      } as unknown as import('./mcp-client').McpToolProvider;
+
+      const mcpArgs = JSON.stringify({ sql: 'SELECT 1' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(
+            toolCallResponse([{ id: 'call_mcp', name: 'mcp__db__query', arguments: mcpArgs }])
+          )
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      const chunks = await collectChunks(baseConfig({ mcpProvider }));
+
+      // Verify MCP callTool was invoked
+      expect(callArgs).toHaveLength(1);
+      expect(callArgs[0].name).toBe('mcp__db__query');
+      expect(callArgs[0].args).toEqual({ sql: 'SELECT 1' });
+
+      // Verify tool_result chunk emitted
+      const resultChunk = chunks.find(
+        c => c.type === 'tool_result' && c.toolName === 'mcp__db__query'
+      );
+      expect(resultChunk).toBeDefined();
+      expect(resultChunk!.toolOutput).toBe('query result: 42');
+    });
+
+    test('MCP tool error formatted as error result', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__srv__fail',
+          description: 'Fails',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      };
+      const mcpProvider = {
+        getToolDefinitions: () => [mcpTool],
+        callTool: async () => {
+          throw new Error('connection refused');
+        },
+        connect: async () => {},
+        shutdown: async () => {},
+      } as unknown as import('./mcp-client').McpToolProvider;
+
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(
+            toolCallResponse([{ id: 'call_f', name: 'mcp__srv__fail', arguments: '{}' }])
+          )
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('recovered')));
+
+      const chunks = await collectChunks(baseConfig({ mcpProvider }));
+
+      const resultChunk = chunks.find(
+        c => c.type === 'tool_result' && c.toolName === 'mcp__srv__fail'
+      );
+      expect(resultChunk).toBeDefined();
+      expect(resultChunk!.toolOutput).toContain('Error executing MCP tool');
+      expect(resultChunk!.toolOutput).toContain('connection refused');
+    });
+
+    test('MCP tools filtered by allowedTools', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__srv__search',
+          description: 'Search',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      };
+      const mcpProvider = createMockMcpProvider([mcpTool]);
+
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      // allowedTools includes the MCP tool + Read
+      await collectChunks(baseConfig({ mcpProvider, allowedTools: ['Read', 'mcp__srv__search'] }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(2);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Read', 'mcp__srv__search']);
+    });
+
+    test('MCP tools filtered by deniedTools', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__srv__dangerous',
+          description: 'Dangerous',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      };
+      const mcpProvider = createMockMcpProvider([mcpTool]);
+
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ mcpProvider, deniedTools: ['mcp__srv__dangerous'] }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      const names = tools.map(t => t.function.name);
+      expect(names).not.toContain('mcp__srv__dangerous');
+      // 8 canonical only
+      expect(tools).toHaveLength(8);
+    });
+  });
+
+  describe('skillContext integration', () => {
+    test('skill system prompt additions appended to messages', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: ['You are a SQL expert.', 'Always use safe queries.'],
+        toolAllowlist: [],
+      };
+
+      await collectChunks(baseConfig({ skillContext }));
+
+      const messages = body!.messages as { role: string; content: string }[];
+      // user message + 2 skill system messages
+      expect(messages).toHaveLength(3);
+      expect(messages[0]).toMatchObject({ role: 'user', content: 'hello' });
+      expect(messages[1]).toMatchObject({ role: 'system', content: 'You are a SQL expert.' });
+      expect(messages[2]).toMatchObject({
+        role: 'system',
+        content: 'Always use safe queries.',
+      });
+    });
+
+    test('skill system prompt + systemPrompt both injected', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: ['Skill prompt here'],
+        toolAllowlist: [],
+      };
+
+      await collectChunks(baseConfig({ systemPrompt: 'Base system', skillContext }));
+
+      const messages = body!.messages as { role: string; content: string }[];
+      // systemPrompt first, user, then skill
+      expect(messages[0]).toMatchObject({ role: 'system', content: 'Base system' });
+      expect(messages[1]).toMatchObject({ role: 'user', content: 'hello' });
+      expect(messages[2]).toMatchObject({ role: 'system', content: 'Skill prompt here' });
+    });
+
+    test('skill toolAllowlist restricts tools when no allowedTools set', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: [],
+        toolAllowlist: ['Read', 'Write', 'Edit'],
+      };
+
+      await collectChunks(baseConfig({ skillContext }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(3);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Edit', 'Read', 'Write']);
+    });
+
+    test('skill toolAllowlist intersected with allowedTools', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: [],
+        toolAllowlist: ['Read', 'Write', 'Bash'],
+      };
+
+      // allowedTools: Read, Write, Glob — intersect with skill: Read, Write, Bash → Read, Write
+      await collectChunks(baseConfig({ allowedTools: ['Read', 'Write', 'Glob'], skillContext }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(2);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Read', 'Write']);
+    });
+
+    test('empty skill toolAllowlist means no skill restrictions', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: [],
+        toolAllowlist: [],
+      };
+
+      await collectChunks(baseConfig({ skillContext }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      // No restriction — all 8 canonical tools
+      expect(tools).toHaveLength(8);
+    });
+  });
+
+  describe('MCP + skills combined', () => {
+    test('MCP tools + skill context work together', async () => {
+      const mcpTool: import('./tool-definitions').ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'mcp__api__fetch',
+          description: 'Fetch API',
+          parameters: { type: 'object', properties: {}, required: [] },
+        },
+      };
+      const mcpProvider = {
+        getToolDefinitions: () => [mcpTool],
+        callTool: async () => 'api result',
+        connect: async () => {},
+        shutdown: async () => {},
+      } as unknown as import('./mcp-client').McpToolProvider;
+
+      const skillContext: import('./skill-loader').SkillContext = {
+        systemPromptAdditions: ['Use the API tool when possible.'],
+        toolAllowlist: ['Read', 'mcp__api__fetch'],
+      };
+
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ mcpProvider, skillContext }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      // skill allowlist: Read + mcp__api__fetch
+      expect(tools).toHaveLength(2);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Read', 'mcp__api__fetch']);
+
+      const messages = body!.messages as { role: string; content: string }[];
+      expect(messages.some(m => m.content === 'Use the API tool when possible.')).toBe(true);
+    });
+  });
 });

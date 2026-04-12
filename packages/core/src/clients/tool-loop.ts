@@ -13,6 +13,8 @@
 
 import type { ToolDefinition } from './tool-definitions';
 import type { MessageChunk } from '../types';
+import type { McpToolProvider } from './mcp-client';
+import type { SkillContext } from './skill-loader';
 import { createLogger } from '@archon/paths';
 import { jsonSchemaToGbnf } from './grammar/json-schema-to-gbnf';
 
@@ -165,6 +167,18 @@ export interface ToolLoopConfig {
    * Matches Claude SDK's session_id field.
    */
   sessionId?: string;
+  /**
+   * MCP tool provider. If set, MCP tools are merged into the tool list
+   * and MCP tool calls are dispatched to the provider for execution.
+   * Caller is responsible for connecting before and shutting down after the loop.
+   */
+  mcpProvider?: McpToolProvider;
+  /**
+   * Skill context from the skill loader. If set:
+   * - `systemPromptAdditions` are appended to the system prompt.
+   * - `toolAllowlist` is intersected with `allowedTools` (if both are set).
+   */
+  skillContext?: SkillContext;
 }
 
 // ─── Hook Types ─────────────────────────────────────────────────────────────
@@ -495,8 +509,29 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
   const streaming = config.endpoint.stream !== false;
   const headers = buildHeaders(config.endpoint);
 
+  // ── Merge MCP tool definitions into the tool list ──
+  let allTools = [...config.tools];
+  if (config.mcpProvider) {
+    const mcpTools = config.mcpProvider.getToolDefinitions();
+    allTools = [...allTools, ...mcpTools];
+    log.debug({ mcpToolCount: mcpTools.length }, 'tool-loop.mcp_tools_merged');
+  }
+
+  // ── Compute effective allowedTools (intersect with skill allowlist) ──
+  let effectiveAllowedTools = config.allowedTools;
+  if (config.skillContext?.toolAllowlist && config.skillContext.toolAllowlist.length > 0) {
+    if (effectiveAllowedTools && effectiveAllowedTools.length > 0) {
+      // Intersection: only tools present in both lists
+      const skillSet = new Set(config.skillContext.toolAllowlist);
+      effectiveAllowedTools = effectiveAllowedTools.filter(t => skillSet.has(t));
+    } else {
+      // Skill allowlist becomes the effective allowlist
+      effectiveAllowedTools = config.skillContext.toolAllowlist;
+    }
+  }
+
   // ── Apply allowedTools / deniedTools filters ──
-  const effectiveTools = filterTools(config.tools, config.allowedTools, config.deniedTools);
+  const effectiveTools = filterTools(allTools, effectiveAllowedTools, config.deniedTools);
   const availableTools = new Set(effectiveTools.map(t => t.function.name));
 
   // ── Build effective extraBody (merge outputFormat + caller-provided extraBody) ──
@@ -509,10 +544,18 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
     Object.assign(effectiveExtraBody, outputBody);
   }
 
-  // ── Build messages with systemPrompt prepended ──
+  // ── Build messages with systemPrompt + skill prompt additions prepended ──
   const messages = [...config.messages];
   if (config.systemPrompt) {
     messages.unshift({ role: 'system', content: config.systemPrompt });
+  }
+  if (
+    config.skillContext?.systemPromptAdditions &&
+    config.skillContext.systemPromptAdditions.length > 0
+  ) {
+    for (const addition of config.skillContext.systemPromptAdditions) {
+      messages.push({ role: 'system', content: addition });
+    }
   }
 
   let consecutiveMalformed = 0;
@@ -756,6 +799,46 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
       let result: string;
       if (effectiveArgs === null) {
         result = `Error: Malformed tool call for "${tc.function.name}". Arguments must be valid JSON.`;
+      } else if (tc.function.name.startsWith('mcp__') && config.mcpProvider) {
+        // ── MCP tool dispatch ──
+        try {
+          result = await config.mcpProvider.callTool(tc.function.name, effectiveArgs);
+
+          // ── PostToolUse hook ──
+          if (config.hooks?.PostToolUse) {
+            const postInput: PostToolUseHookInput = {
+              hook_event_name: 'PostToolUse',
+              tool_name: tc.function.name,
+              tool_input: effectiveArgs,
+              tool_response: result,
+              tool_use_id: tc.id,
+              session_id: sessionId,
+              cwd: config.cwd,
+            };
+            await runHooks(config.hooks.PostToolUse, postInput);
+          }
+        } catch (err) {
+          const error = err as Error;
+          result = `Error executing MCP tool ${tc.function.name}: ${error.message}`;
+          log.warn(
+            { toolName: tc.function.name, error: error.message },
+            'tool-loop.mcp_tool_execution_failed'
+          );
+
+          // ── PostToolUseFailure hook ──
+          if (config.hooks?.PostToolUseFailure) {
+            const failInput: PostToolUseFailureHookInput = {
+              hook_event_name: 'PostToolUseFailure',
+              tool_name: tc.function.name,
+              tool_input: effectiveArgs,
+              tool_use_id: tc.id,
+              error: error.message,
+              session_id: sessionId,
+              cwd: config.cwd,
+            };
+            await runHooks(config.hooks.PostToolUseFailure, failInput);
+          }
+        }
       } else {
         const executor = toolRegistry.get(tc.function.name);
         if (!executor) {

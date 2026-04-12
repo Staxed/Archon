@@ -24,6 +24,8 @@ import {
 } from './tool-loop';
 import { ContextWindowManager } from './context-window';
 import { toolDefinitions, type ToolDefinition } from './tool-definitions';
+import { McpToolProvider, type McpServerConfig } from './mcp-client';
+import { loadSkills, type SkillContext } from './skill-loader';
 
 import { createLogger } from '@archon/paths';
 
@@ -110,6 +112,32 @@ export class OpenAICompatibleClient implements IAssistantClient {
     // ── Build extra body (provider-specific fields, NOT outputFormat) ──
     const extraBody = this.buildExtraBody(options);
 
+    // ── MCP lifecycle: connect before loop, shutdown after ──
+    let mcpProvider: McpToolProvider | undefined;
+    if (options?.mcpConfigs && Object.keys(options.mcpConfigs).length > 0) {
+      mcpProvider = new McpToolProvider(options.mcpConfigs as Record<string, McpServerConfig>);
+      await mcpProvider.connect();
+      log.info(
+        { mcpToolCount: mcpProvider.getToolDefinitions().length, provider: this.providerName },
+        'openai-compatible.mcp_connected'
+      );
+    }
+
+    // ── Load skills ──
+    let skillContext: SkillContext | undefined;
+    if (options?.skills && options.skills.length > 0) {
+      skillContext = await loadSkills(options.skills, cwd);
+      log.info(
+        {
+          skillCount: options.skills.length,
+          promptAdditions: skillContext.systemPromptAdditions.length,
+          toolAllowlist: skillContext.toolAllowlist.length,
+          provider: this.providerName,
+        },
+        'openai-compatible.skills_loaded'
+      );
+    }
+
     // ── Context window management ──
     const ctxManager = new ContextWindowManager({ model, endpoint });
     let finalMessages = messages;
@@ -122,21 +150,36 @@ export class OpenAICompatibleClient implements IAssistantClient {
       finalMessages = summarized;
     }
 
-    // ── Execute with rate-limit retry ──
-    yield* this.executeWithRetry({
-      endpoint,
-      messages: finalMessages,
-      tools,
-      cwd,
-      model,
-      abortSignal: options?.abortSignal,
-      extraBody: Object.keys(extraBody).length > 0 ? extraBody : undefined,
-      // Feature params delegated to tool loop
-      allowedTools: options?.tools,
-      deniedTools: options?.disallowedTools,
-      outputFormat: options?.outputFormat ? { schema: options.outputFormat.schema } : undefined,
-      outputFormatStyle: this.getOutputFormatStyle(),
-    });
+    try {
+      // ── Execute with rate-limit retry ──
+      yield* this.executeWithRetry({
+        endpoint,
+        messages: finalMessages,
+        tools,
+        cwd,
+        model,
+        abortSignal: options?.abortSignal,
+        extraBody: Object.keys(extraBody).length > 0 ? extraBody : undefined,
+        // Feature params delegated to tool loop
+        allowedTools: options?.tools,
+        deniedTools: options?.disallowedTools,
+        outputFormat: options?.outputFormat ? { schema: options.outputFormat.schema } : undefined,
+        outputFormatStyle: this.getOutputFormatStyle(),
+        // MCP + Skills integration
+        mcpProvider,
+        skillContext,
+      });
+    } finally {
+      // ── MCP lifecycle: shutdown after loop ──
+      if (mcpProvider) {
+        await mcpProvider.shutdown().catch((err: unknown) => {
+          log.warn(
+            { error: (err as Error).message, provider: this.providerName },
+            'openai-compatible.mcp_shutdown_error'
+          );
+        });
+      }
+    }
   }
 
   // ─── Protected hooks for subclasses ─────────────────────────────────────
