@@ -3,3 +3,88 @@ worktree:
 
 docs:
   path: packages/docs-web/src/content/docs
+
+# =============================================================================
+# AI Assistant Providers
+# =============================================================================
+# Four providers are supported: claude, codex, openrouter, llamacpp.
+# Every workflow node can override provider / model independently — the values
+# below are defaults used only when a node doesn't specify its own.
+#
+# API keys and endpoints come from environment variables (.env) and override
+# anything set here. Config values are a fallback for local customization.
+# =============================================================================
+
+assistants:
+  # ---------------------------------------------------------------------------
+  # OpenRouter — cloud gateway to 300+ models (Anthropic, Google, Meta, etc.)
+  # ---------------------------------------------------------------------------
+  # API key: read from OPENROUTER_API_KEY env var (already set in .env).
+  # Endpoint is hardcoded to https://openrouter.ai/api/v1/chat/completions.
+  #
+  # Model naming: "<vendor>/<model>" format. Browse available models at
+  # https://openrouter.ai/models. Add ":free" suffix for free-tier variants.
+  # ---------------------------------------------------------------------------
+  openrouter:
+    # Default model if a workflow node uses provider: openrouter without
+    # specifying model. Sonnet is a solid, known-quantity default.
+    model: anthropic/claude-3.5-sonnet
+
+    # Optional headers for OpenRouter's dashboard attribution (lets you see
+    # per-app cost breakdowns at https://openrouter.ai/activity).
+    siteUrl: https://github.com/Staxed/Archon
+    siteName: Archon
+
+  # ---------------------------------------------------------------------------
+  # Llama.cpp — local llama-swap server on port 8093
+  # ---------------------------------------------------------------------------
+  # Endpoint: read from LLAMACPP_ENDPOINT env var (set in .env to
+  # http://localhost:8093 — the llamacpp Docker container).
+  #
+  # This setup uses llama-swap with on-demand model loading. The `model` field
+  # in each request selects which preset to load. Available model IDs on your
+  # server (from `curl http://localhost:8093/v1/models`):
+  #
+  #   General-purpose:
+  #     - Qwen2.5-72B-Instruct-Q4_K_M       (strong tool calling, 72B)
+  #     - Qwen_Qwen3.5-27B-Q8_0             (faster, 27B, Q8 quality)
+  #     - Qwen3.5-35B-A3B-Q4_K_M            (MoE, fast)
+  #
+  #   Reasoning:
+  #     - DeepSeek-R1-Distill-Llama-70B-Q4_K_M
+  #     - Qwen_QwQ-32B-Q6_K
+  #
+  #   App-specific (leave alone — these are for the trade-claude app):
+  #     - crypto-dense-coder
+  #     - crypto-strategist     (only preset with --jinja enabled)
+  #     - heavy-crypto-analyst
+  #
+  # Important note on tool calling: only `crypto-strategist` has `--jinja`
+  # enabled, which is what makes llama-server emit OpenAI-format tool_calls
+  # correctly. Other presets will work fine for PROMPT-ONLY nodes (KB capture,
+  # classification, summarization) but tool-using nodes may need a preset with
+  # jinja enabled. If you want a general-purpose preset with jinja on, edit
+  # the llamacpp container's model config and add `--jinja` to the args list.
+  # ---------------------------------------------------------------------------
+  llamacpp:
+    # Default model when a node uses provider: llamacpp without specifying one.
+    # Passed as the `model` field in chat/completions requests, so it drives
+    # llama-swap's on-demand model selection.
+    model: Qwen2.5-72B-Instruct-Q4_K_M
+
+# =============================================================================
+# Knowledge Base (commented out — enable when ready to offload KB work)
+# =============================================================================
+# captureProvider / compileProvider select which AI provider runs KB extraction
+# and article synthesis. Both default to 'claude' when omitted, which is the
+# current behavior. Uncomment the block below to route KB work to cheaper
+# providers — a real cost win since KB fires on every workflow run.
+# =============================================================================
+#
+# knowledge:
+#   enabled: true
+#   captureProvider: openrouter
+#   captureModel: anthropic/claude-3.5-haiku
+#   compileProvider: openrouter
+#   compileModel: anthropic/claude-3.5-sonnet
+#   flushDebounceMinutes: 10
