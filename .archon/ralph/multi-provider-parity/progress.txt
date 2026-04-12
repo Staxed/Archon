@@ -836,3 +836,25 @@
 - Client test pattern: globalThis.fetch override with beforeEach/afterEach save/restore avoids mock.module() pollution entirely.
 
 ---
+
+## 2026-04-12 — US-030: Tests: Codex dispatch + KB + token tracking
+
+**Status**: PASSED
+**Files changed**:
+- No new files — verification-only story
+
+**Acceptance criteria verified**:
+- [x] Codex dispatch tests: SDK-native path when all features supported (test at line 1086), tool-loop path when unsupported features requested (6 tests: allowed_tools, hooks, systemPrompt, denied_tools, skills, mcpConfigs) — 48 tests total
+- [x] Codex dispatch tests: existing workflows without unsupported features unchanged (test at line 1227)
+- [x] KB tests: captureProvider/compileProvider config respected (test at line 541), default-to-claude backward compat (test at line 531)
+- [x] KB tests: invalid provider values rejected at config load time (test at line 517)
+- [x] Token tracking tests: recordTokenUsage persists correctly (test at line 37), getTokenUsageByRun returns correct records (test at line 106)
+- [x] Token tracking tests: missing/nullable token data handled (test at line 65 — null cost_usd, null node_id, etc.)
+- [x] Test files co-located as `*.test.ts` (codex.test.ts, config-loader.test.ts, token-usage.test.ts)
+- [x] Mock isolation respected — codex tests use mock.module() in their own batch; token-usage tests use mock.module('./connection') in db batch
+- [x] All 102 tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- All test files were comprehensive from initial implementation stories (US-022, US-002, US-018). US-030 is a verification story — no new test code needed.
+
+---

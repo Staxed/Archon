@@ -706,8 +706,8 @@
         "US-026"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Verified in iteration 30. Tests already existed from US-022 (48 codex tests), US-002 (44 config-loader tests incl captureProvider/compileProvider), US-018 (10 token-usage tests). All 102 tests pass. Mock isolation respected."
     },
     {
       "id": "US-031",
