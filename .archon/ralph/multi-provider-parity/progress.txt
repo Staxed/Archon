@@ -478,3 +478,29 @@
 - Very small story — 3 files changed, minimal risk.
 
 ---
+
+## 2026-04-12 — US-017: Message history replay for stateless providers
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/db/messages.ts` — Extended addMessage() with AddMessageOptions (kind, toolCallId, toolName, toolCalls, summaryOf); added markMessagesSummarized(), listMessagesForReplay(), buildReplayMessages(), inferKind(), parseMetadata() functions; widened MessageRow.role to include 'system' | 'tool'
+- `packages/core/src/db/messages.test.ts` — Added 15 new tests (27 total): system/tool/summary message persistence, markMessagesSummarized, listMessagesForReplay query, buildReplayMessages (8 cases including tool_call round-trip, malformed metadata, system prompts)
+
+**Acceptance criteria verified**:
+- [x] Extended addMessage() handles: system, user, assistant (with tool_calls), tool (with tool_call_id), summary messages
+- [x] Extended listMessages() returns messages with kind, summarized, summary_of columns (already available from US-012 migration)
+- [x] New listMessagesForReplay() function returns non-summarized messages plus ordered summary messages
+- [x] Replay constructs OpenAI-format messages[] array: system prompt -> summaries in position -> verbatim turns (buildReplayMessages)
+- [x] Claude/Codex paths unaffected (no imports from SDK clients; existing addMessage callers continue to work with 4-param signature)
+- [x] Tool call metadata round-trips through JSONB correctly (test verifies multi-tool-call round-trip)
+- [x] Type-check passes
+- [x] Tests pass (27/27, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- addMessage() 5th parameter (AddMessageOptions) is optional — existing callers with 4 params continue to work unchanged (backward compatible).
+- kind inference is automatic: role=tool → tool_result, assistant+toolCalls → tool_call, summaryOf present → summary, else text.
+- buildReplayMessages() is a pure function operating on MessageRow[] — no DB dependency, easy to test without mocks.
+- Tool messages without toolCallId are skipped with a warning (not thrown) since this could be legacy data.
+- No mock.module() needed for buildReplayMessages tests — it's pure. DB tests reuse existing mock.module('./connection') in messages.test.ts.
+
+---

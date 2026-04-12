@@ -399,8 +399,8 @@
         "US-013"
       ],
       "priority": 17,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 17. Files: messages.ts, messages.test.ts"
     },
     {
       "id": "US-018",
