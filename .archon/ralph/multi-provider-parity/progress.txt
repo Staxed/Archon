@@ -34,6 +34,17 @@
 - **Pattern**: `getOutputFormatStyle()` protected hook returns `'response_format'` (default) or `'grammar'` (Llama.cpp). Passed to tool loop's `outputFormatStyle` config field. The tool loop handles the actual mapping.
 - **Example**: `protected override getOutputFormatStyle(): 'response_format' | 'grammar' { return 'grammar'; }`
 
+### Codex dual-path dispatch pattern
+- **Where**: `packages/core/src/clients/codex.ts`
+- **Pattern**: `needsToolLoopFallback(options)` checks if any unsupported features are requested. If yes, `sendQueryViaToolLoop()` uses the OpenAI API directly with the Codex model. If no, the native SDK path runs.
+- **Unsupported features**: tools, disallowedTools, hooks, mcpConfigs, skills, systemPrompt, effort, thinking, maxBudgetUsd, fallbackModel, betas, sandbox
+- **Natively supported**: model, modelReasoningEffort, webSearchMode, additionalDirectories, outputFormat (as outputSchema), abortSignal
+
+### Codex test batch isolation
+- **Where**: `packages/core/package.json`
+- **Pattern**: `codex.test.ts` runs in its own `bun test` batch because it `mock.module()`s `./tool-loop`, `./mcp-client`, `./skill-loader`, `./context-window`, `./tool-definitions` which would pollute those modules' own tests.
+- **Example**: `bun test src/clients/claude.test.ts && bun test src/clients/codex.test.ts && bun test src/clients/context-window.test.ts ...`
+
 ### Pre-existing test failures
 - `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
 - `packages/cli/src/commands/workflow-run.test.ts`: 6 workflowRunCommand tests fail on main branch
@@ -619,5 +630,32 @@
 - Skill system prompt additions appended AFTER user messages (not before) to match Claude SDK behavior where skills are additional system context.
 - `mcpConfigs` on AssistantRequestOptions uses inline type definition (not importing from mcp-client.ts) to avoid coupling the types interface to the implementation.
 - No mock.module() needed — mock McpToolProvider is just a plain object cast, and SkillContext is a simple data interface.
+
+---
+
+## 2026-04-12 — US-022: Codex feature parity (SDK-native + tool-loop fallback)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/codex.ts` — Added dual-path dispatch: needsToolLoopFallback(), sendQueryViaToolLoop(), getUnsupportedFeatures(). Imports tool-loop, tool-definitions, mcp-client, skill-loader, context-window.
+- `packages/core/src/clients/codex.test.ts` — Added 12 dispatch tests, mock.module for tool-loop/mcp-client/skill-loader/context-window/tool-definitions
+- `packages/core/package.json` — Split codex.test.ts into its own bun test batch to prevent mock.module pollution
+
+**Acceptance criteria verified**:
+- [x] Research completed: Codex SDK v0.116.0 supports model, modelReasoningEffort, webSearchMode, additionalDirectories, outputFormat, abortSignal natively. Does NOT support: allowed_tools, denied_tools, hooks, mcp, skills, systemPrompt, effort, thinking, maxBudgetUsd, fallbackModel, betas, sandbox.
+- [x] Features the Codex SDK supports natively are wired up directly
+- [x] Features the Codex SDK does NOT support are routed through Archon's tool loop (calling OpenAI API directly with Codex model ID)
+- [x] CodexClient.sendQuery() dispatches: SDK path when all features supported, tool-loop path otherwise
+- [x] Dispatch is transparent to callers (getType() still returns 'codex')
+- [x] Workflow event emitted tagging whether a Codex node ran SDK or tool-loop path ([codex:tool-loop] system message)
+- [x] Existing Codex workflows without unsupported features run unchanged on SDK path
+- [x] Type-check passes
+- [x] Tests pass (48/48 codex tests, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Codex SDK v0.116.0 is a subprocess wrapper around `codex exec` CLI — no API surface for tool filtering, hooks, system prompt, or skills.
+- Tool-loop fallback composes with existing infrastructure (executeToolLoop, McpToolProvider, loadSkills, ContextWindowManager) — no new abstractions needed.
+- codex.test.ts must run in its own batch because it mock.module()s ./tool-loop, ./mcp-client, ./skill-loader, ./context-window, ./tool-definitions which would pollute those modules' own tests running in the same batch.
+- "Claude-only" warning branches in dag-executor.ts are NOT removed in this story — that's US-023's scope (DAG executor branching + validator cleanup).
 
 ---

@@ -515,8 +515,8 @@
         "US-021"
       ],
       "priority": 22,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 22. Files: codex.ts, codex.test.ts, package.json. SDK supports: model, modelReasoningEffort, webSearchMode, additionalDirectories, outputFormat, abortSignal. Tool-loop fallback for: allowed_tools, denied_tools, hooks, mcp, skills, systemPrompt, effort, thinking, maxBudgetUsd, fallbackModel, betas, sandbox."
     },
     {
       "id": "US-023",
