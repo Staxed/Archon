@@ -681,8 +681,8 @@
         "US-017"
       ],
       "priority": 29,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Verified in iteration 29. Tests already existed from US-013 (22 openai-compatible tests), US-014 (17 openrouter tests), US-015 (17 llamacpp tests), US-017 (27 messages/replay tests). All 83 tests pass. No mock.module() used in client tests — mock isolation respected."
     },
     {
       "id": "US-030",

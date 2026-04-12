@@ -49,6 +49,11 @@
 - `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
 - `packages/cli/src/commands/workflow-run.test.ts`: 6 workflowRunCommand tests fail on main branch
 
+### Verification-only test stories pattern
+- **Where**: US-027, US-028, US-029
+- **Pattern**: Test stories that only verify existing tests (created during implementation stories) don't need new code. Verify test counts and coverage against acceptance criteria, then mark as passed.
+- **Example**: US-029 verified 83 existing tests across 4 test files — no new test code needed.
+
 ---
 
 ## 2026-04-12 — US-001: Provider enum + type expansion
@@ -807,5 +812,27 @@
 **Learnings**:
 - All 3 test files were comprehensive from initial implementation. US-028 is a verification story — no new test code needed.
 - Tool loop tests cover all the features added in US-019/020/021 (allowed_tools, denied_tools, hooks, MCP, skills, outputFormat, systemPrompt).
+
+---
+
+## 2026-04-12 — US-029: Tests: provider clients + message replay + resume
+
+**Status**: PASSED
+**Files changed**:
+- No new files — verification-only story
+
+**Acceptance criteria verified**:
+- [x] OpenRouter client tests: API key handling (5 tests), custom headers HTTP-Referer/X-Title (4 tests), model routing (3 tests), cost extraction (streaming usage tokens) — 17 tests total
+- [x] Llama.cpp client tests: endpoint config (4 tests), no-API-key path (2 tests), GBNF grammar injection for output_format (2 tests) — 17 tests total
+- [x] OpenAI-compatible base tests: SSE streaming parsing (via sendQuery), rate limiting (3 tests), error classification (1 test) — 22 tests total
+- [x] Message replay tests: round-trip through addMessage/listMessagesForReplay, summary insertion, tool call metadata — 27 tests total
+- [x] Resume tests: buildReplayMessages constructs correct OpenAI messages array, summarized turns excluded via listMessagesForReplay filter
+- [x] Test files co-located as `*.test.ts` (openrouter.test.ts, llamacpp.test.ts, openai-compatible.test.ts, messages.test.ts)
+- [x] Mock isolation respected — client tests use globalThis.fetch override (no mock.module()); messages tests use mock.module('./connection') in their own batch
+- [x] All 83 tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- All 4 test files were comprehensive from initial implementation stories (US-013, US-014, US-015, US-017). US-029 is a verification story — no new test code needed.
+- Client test pattern: globalThis.fetch override with beforeEach/afterEach save/restore avoids mock.module() pollution entirely.
 
 ---
