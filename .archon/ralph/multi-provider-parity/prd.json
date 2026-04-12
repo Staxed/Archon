@@ -732,8 +732,8 @@
         "US-030"
       ],
       "priority": 31,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 31. Files: CLAUDE.md. All validation passes. Documented 4 providers, new env vars, config examples, token_usage table, messages columns."
     }
   ]
 }

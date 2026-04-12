@@ -858,3 +858,25 @@
 - All test files were comprehensive from initial implementation stories (US-022, US-002, US-018). US-030 is a verification story — no new test code needed.
 
 ---
+
+## 2026-04-12 — US-031: Integration validation + docs update
+
+**Status**: PASSED
+**Files changed**:
+- `CLAUDE.md` — Updated AI Assistant Clients section (4 providers + tool loop), config examples (openrouter/llamacpp), Database Schema (token_usage table, messages columns), Model Validation (all providers), environment variables, quick reference
+
+**Acceptance criteria verified**:
+- [x] `bun run validate` passes — type-check ✓, lint ✓ (0 warnings), format ✓, tests ✓ (only pre-existing failures)
+- [x] CLAUDE.md updated: AI clients section documents all 4 providers, config examples include openrouter/llamacpp, env vars documented
+- [x] New provider-specific rules: not needed — all features work identically on all providers, no provider-specific rules required
+- [x] All bundled workflows validate (20/20 ok; 1 repo-specific workflow has pre-existing missing MCP config)
+- [x] Mock-isolation splits in package.json correct — codex.test.ts in own batch, client tests in shared batch (no mock.module()), token-usage in db batch
+- [x] No `any` types without justified inline comments (verified via lint pass)
+- [x] No `/* eslint-disable */` at file scope (grep found none)
+- [x] Zero ESLint warnings (lint pass with --max-warnings 0)
+
+**Learnings**:
+- The archon-smart-pr-review workflow error is pre-existing (missing .archon/mcp/ntfy.json) — not a regression from our changes.
+- All 31 stories now pass — PRD implementation is complete.
+
+---
