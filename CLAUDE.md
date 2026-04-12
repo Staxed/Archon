@@ -368,15 +368,16 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 
 ### Database Schema
 
-**8 Tables (all prefixed with `remote_agent_`):**
+**9 Tables (all prefixed with `remote_agent_`):**
 1. **`codebases`** - Repository metadata and commands (JSONB)
 2. **`conversations`** - Track platform conversations with titles and soft-delete support
 3. **`sessions`** - Track AI SDK sessions with resume capability
 4. **`isolation_environments`** - Git worktree isolation tracking
 5. **`workflow_runs`** - Workflow execution tracking and state
 6. **`workflow_events`** - Step-level workflow event log (step transitions, artifacts, errors)
-7. **`messages`** - Conversation message history with tool call metadata (JSONB)
+7. **`messages`** - Conversation message history with tool call metadata (JSONB), `kind` (text/tool_call/tool_result/summary), `summarized` flag, `summary_of` array for context-window management
 8. **`codebase_env_vars`** - Per-project env vars injected into Claude SDK subprocess env (managed via Web UI or `env:` in config)
+9. **`token_usage`** - Token usage and cost tracking per workflow node (provider, model, input/output/total tokens, cost_usd)
 
 **Key Patterns:**
 - Conversation ID format: Platform-specific (`thread_ts`, `chat_id`, `user/repo#123`)
@@ -434,9 +435,14 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 
 **4. AI Assistant Clients** (`packages/core/src/clients/`)
 - Implement `IAssistantClient` interface
-- **ClaudeClient**: `@anthropic-ai/claude-agent-sdk`
-- **CodexClient**: `@openai/codex-sdk`
+- **ClaudeClient**: `@anthropic-ai/claude-agent-sdk` — full agentic SDK, premium cost
+- **CodexClient**: `@openai/codex-sdk` — OpenAI SDK with tool-loop fallback for unsupported features
+- **OpenRouterClient**: OpenAI-compatible chat/completions via `https://openrouter.ai/api/v1` — cloud gateway to 300+ models
+- **LlamaCppClient**: OpenAI-compatible chat/completions via local `llama-server` endpoint — zero marginal cost
+- **OpenAICompatibleClient**: Shared base for OpenRouter and Llama.cpp with tool-loop integration, context-window management, and rate limiting
 - Streaming: `for await (const event of events) { await platform.send(event) }`
+- **Agentic tool-execution loop** (`tool-loop.ts`): Manages tool_calls → execution → re-submission cycle for stateless providers (OpenRouter, Llama.cpp, Codex fallback)
+- **Canonical tools** (`tool-definitions.ts`): Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch in OpenAI function-call format
 
 ### Configuration
 
@@ -462,6 +468,14 @@ assistants:
     webSearchMode: live  # 'disabled' | 'cached' | 'live'
     additionalDirectories:
       - /absolute/path/to/other/repo
+  openrouter:
+    model: anthropic/claude-3-haiku  # vendor/model format
+    apiKey: sk-or-...                # Or set OPENROUTER_API_KEY env var
+    siteUrl: https://mysite.com      # Optional: HTTP-Referer header
+    siteName: My App                 # Optional: X-Title header
+  llamacpp:
+    model: llama-3.1-70b             # Informational; model loaded server-side
+    endpoint: http://localhost:8080   # Or set LLAMACPP_ENDPOINT env var
 
 # docs:
 #   path: docs  # Optional: default is docs/
@@ -469,7 +483,9 @@ assistants:
 # Knowledge base configuration
 knowledge:
   enabled: true                  # Enable/disable KB capture and flush
+  captureProvider: claude        # Provider for KB extraction (claude, codex, openrouter, llamacpp)
   captureModel: haiku            # Model for extracting knowledge from conversations
+  compileProvider: claude        # Provider for KB article compilation
   compileModel: sonnet           # Model for synthesizing articles during flush
   flushDebounceMinutes: 10       # Minutes to wait after capture before auto-flush
   domains:                       # Starting domain categories
@@ -489,7 +505,14 @@ knowledge:
 - Workflows are validated at load time for provider/model compatibility
 - Claude models: `sonnet`, `opus`, `haiku`, `claude-*`, `inherit`
 - Codex models: Any model except Claude-specific aliases
+- OpenRouter models: `vendor/model` format (e.g., `anthropic/claude-3-haiku`, `meta-llama/llama-4-scout`)
+- Llama.cpp models: Any string (model loaded server-side)
+- Claude aliases (`sonnet`, `opus`, `haiku`) rejected for non-Claude providers
 - Invalid combinations fail workflow loading with clear error messages
+
+**Environment Variables (new providers):**
+- `OPENROUTER_API_KEY` — API key for OpenRouter
+- `LLAMACPP_ENDPOINT` — Llama.cpp server URL (default: `http://localhost:8080`)
 
 ### Running the App in Worktrees
 
@@ -574,7 +597,7 @@ curl http://localhost:3637/api/conversations/<conversationId>/messages
 
 **Quick reference:**
 - **Platform Adapters**: Implement `IPlatformAdapter`, handle auth, polling/webhooks
-- **AI Clients**: Implement `IAssistantClient`, session management, streaming
+- **AI Clients**: Implement `IAssistantClient`, session management, streaming. For OpenAI-compatible providers, extend `OpenAICompatibleClient` (shared tool-loop, context-window, rate-limiting). Four providers: `claude`, `codex`, `openrouter`, `llamacpp`
 - **Slash Commands**: Add to command-handler.ts, update database, no AI
 - **Database Operations**: Use `IDatabase` interface (supports PostgreSQL and SQLite via adapters)
 
