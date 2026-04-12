@@ -782,3 +782,30 @@
 - No mock.module() needed — tool definitions are pure data exports, no external dependencies.
 
 ---
+
+## 2026-04-12 — US-028: Tests: tool loop + context-window + GBNF
+
+**Status**: PASSED (no new code — tests already existed)
+**Files changed**: None — all tests were created alongside implementations in US-007, US-010, US-011.
+
+**Existing test coverage**:
+- `packages/core/src/clients/tool-loop.test.ts` — 45 tests: single-turn, multi-turn, malformed detection (3 cases), streaming (2 cases), abort, HTTP errors, configurable threshold, token accumulation, allowedTools (2), deniedTools (2), systemPrompt (2), outputFormat (4), hooks (10), MCP integration (5), skills integration (5), MCP+skills combined (1)
+- `packages/core/src/clients/context-window.test.ts` — 24 tests: estimateStringTokens (3), estimateMessageTokens (4), estimateToolTokens (2), estimateRequestTokens (1), getModelWindowSize (3), ContextWindowManager (11 including summarization success/failure/edge cases)
+- `packages/core/src/clients/grammar/json-schema-to-gbnf.test.ts` — 28 tests: all primitive types (5), enums (3), objects (5), arrays (2), edge cases (3), unsupported features (7), GBNF structure validation (1)
+
+**Acceptance criteria verified**:
+- [x] Tool loop tests: single-turn (no tool_calls), multi-turn tool execution, malformed tool-call detection (fail after 3)
+- [x] Tool loop tests: streaming chunk emission, abort signal cancellation
+- [x] Context-window tests: token estimation, summarization trigger, summary insertion, replay construction
+- [x] Context-window tests: summarization failure throws loud classified error
+- [x] GBNF tests: round-trip for every JSON Schema type (object, string, number, boolean, enum, array, nested)
+- [x] GBNF tests: unsupported JSON Schema features throw classified error
+- [x] Test files co-located as `*.test.ts`
+- [x] Mock isolation respected (no mock.module() in any of the 3 files — uses spyOn/globalThis.fetch override)
+- [x] All tests pass (97 total: 45+24+28, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- All 3 test files were comprehensive from initial implementation. US-028 is a verification story — no new test code needed.
+- Tool loop tests cover all the features added in US-019/020/021 (allowed_tools, denied_tools, hooks, MCP, skills, outputFormat, systemPrompt).
+
+---

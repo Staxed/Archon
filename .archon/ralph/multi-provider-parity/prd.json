@@ -657,8 +657,8 @@
         "US-011"
       ],
       "priority": 28,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Verified in iteration 28. Tests already existed from US-007 (45 tool-loop tests), US-010 (28 GBNF tests), US-011 (24 context-window tests). All 97 tests pass. No mock.module() used — mock isolation respected."
     },
     {
       "id": "US-029",
