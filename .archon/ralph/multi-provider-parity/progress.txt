@@ -262,3 +262,30 @@
 - Tests fit in the existing `bun test src/clients/` batch without mock pollution (no mock.module needed).
 
 ---
+
+## 2026-04-12 — US-009: Skill loader
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/skill-loader.ts` — New file: loadSkills() function, SkillContext interface, SkillNotFoundError/SkillParseError classes, frontmatter parsing, reference file collection
+- `packages/core/src/clients/skill-loader.test.ts` — 12 tests: single/multi skill loading, tool allowlists, pattern stripping, references, error cases, multiline frontmatter
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/skill-loader.ts`
+- [x] Reads skill definitions from directories specified in workflow YAML `skills:` field
+- [x] Extracts system-prompt content from skill files (body + reference subdirectory .md files)
+- [x] Produces scoped tool allowlists based on `allowed-tools` frontmatter
+- [x] Returns a `SkillContext` object with `systemPromptAdditions: string[]` and `toolAllowlist: string[]`
+- [x] Handles missing skill directories with classified errors (SkillNotFoundError, SkillParseError)
+- [x] Type-check passes
+- [x] Tests pass (12/12, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Skills use YAML frontmatter in SKILL.md with `name`, `description`, and optional `allowed-tools` fields.
+- `allowed-tools` format: comma-separated tool names with optional patterns like `Bash(gh *)` — patterns stripped to base tool name.
+- Skills are resolved project-first (.claude/skills/{name}/SKILL.md) then user-level (~/.claude/skills/{name}/SKILL.md).
+- Reference files in subdirectories are included as additional system prompt content.
+- No mock.module() needed — real filesystem with temp directories works cleanly.
+- Tests fit in existing `bun test src/clients/` batch without mock pollution.
+
+---
