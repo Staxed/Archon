@@ -11,7 +11,6 @@
 import { OpenAICompatibleClient, type OpenAICompatibleClientConfig } from './openai-compatible';
 import type { AssistantRequestOptions } from '../types';
 import type { LlamaCppAssistantDefaults } from '../config/config-types';
-import { jsonSchemaToGbnf } from './grammar/json-schema-to-gbnf';
 
 import { createLogger } from '@archon/paths';
 
@@ -73,15 +72,11 @@ export class LlamaCppClient extends OpenAICompatibleClient {
   }
 
   /**
-   * Override extra body to use GBNF grammar instead of response_format
-   * for structured output. Llama.cpp uses the `grammar` field natively.
+   * Override output format style to use GBNF grammar instead of response_format.
+   * Llama.cpp uses the `grammar` field natively via the tool loop's GBNF translator.
    */
-  protected override buildExtraBody(options?: AssistantRequestOptions): Record<string, unknown> {
-    const extra: Record<string, unknown> = {};
-    if (options?.outputFormat) {
-      extra.grammar = jsonSchemaToGbnf(options.outputFormat.schema);
-    }
-    return extra;
+  protected override getOutputFormatStyle(): 'response_format' | 'grammar' {
+    return 'grammar';
   }
 
   /**

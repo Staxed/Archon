@@ -14,6 +14,7 @@
 import type { ToolDefinition } from './tool-definitions';
 import type { MessageChunk } from '../types';
 import { createLogger } from '@archon/paths';
+import { jsonSchemaToGbnf } from './grammar/json-schema-to-gbnf';
 
 import { readTool } from './tools/read';
 import { writeTool } from './tools/write';
@@ -124,10 +125,36 @@ export interface ToolLoopConfig {
   abortSignal?: AbortSignal;
   /** Max consecutive malformed tool-call attempts before throwing. Default: 3. */
   maxMalformedToolCallAttempts?: number;
-  /** Additional request body fields (e.g., response_format, grammar, temperature). */
+  /** Additional request body fields (e.g., temperature). */
   extraBody?: Record<string, unknown>;
   /** Maximum number of tool-call rounds. Default: 100. */
   maxIterations?: number;
+  /**
+   * Tool name whitelist. If set, only tools with these names are sent to the API.
+   * Filters the `tools` array before the first request.
+   */
+  allowedTools?: string[];
+  /**
+   * Tool name blocklist. These tool names are excluded from the tool list.
+   * Applied after `allowedTools` (if both are set, denied tools are removed from the whitelist result).
+   */
+  deniedTools?: string[];
+  /**
+   * System prompt prepended as the first system message in the messages array.
+   * Inserted before the first request; subsequent tool-loop iterations include it.
+   */
+  systemPrompt?: string;
+  /**
+   * Structured output format schema.
+   * Mapped to request body based on `outputFormatStyle`.
+   */
+  outputFormat?: { schema: Record<string, unknown>; name?: string };
+  /**
+   * How to map `outputFormat` to the request body.
+   * - `'response_format'` (default): OpenAI-standard `response_format: { type: 'json_schema', json_schema: ... }`
+   * - `'grammar'`: Llama.cpp-native GBNF grammar via the `grammar` request field
+   */
+  outputFormatStyle?: 'response_format' | 'grammar';
 }
 
 /** Type for a tool executor function. */
@@ -149,21 +176,65 @@ const toolRegistry: ReadonlyMap<string, ToolExecutor> = new Map<string, ToolExec
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function buildRequestBody(
-  config: ToolLoopConfig,
-  messages: ChatMessage[]
+  model: string,
+  messages: ChatMessage[],
+  tools: ToolDefinition[],
+  stream: boolean,
+  extraBody?: Record<string, unknown>
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
-    model: config.model,
+    model,
     messages,
-    stream: config.endpoint.stream !== false,
+    stream,
   };
-  if (config.tools.length > 0) {
-    body.tools = config.tools;
+  if (tools.length > 0) {
+    body.tools = tools;
   }
-  if (config.extraBody) {
-    Object.assign(body, config.extraBody);
+  if (extraBody) {
+    Object.assign(body, extraBody);
   }
   return body;
+}
+
+/**
+ * Apply allowedTools and deniedTools filters to the tool definitions.
+ */
+function filterTools(
+  tools: ToolDefinition[],
+  allowedTools?: string[],
+  deniedTools?: string[]
+): ToolDefinition[] {
+  let result = tools;
+  if (allowedTools && allowedTools.length > 0) {
+    const allowed = new Set(allowedTools);
+    result = result.filter(t => allowed.has(t.function.name));
+  }
+  if (deniedTools && deniedTools.length > 0) {
+    const denied = new Set(deniedTools);
+    result = result.filter(t => !denied.has(t.function.name));
+  }
+  return result;
+}
+
+/**
+ * Build output format extra body based on style.
+ */
+function buildOutputFormatBody(
+  outputFormat: { schema: Record<string, unknown>; name?: string },
+  style: 'response_format' | 'grammar'
+): Record<string, unknown> {
+  if (style === 'grammar') {
+    return { grammar: jsonSchemaToGbnf(outputFormat.schema) };
+  }
+  return {
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: outputFormat.name ?? 'output',
+        schema: outputFormat.schema,
+      },
+    },
+  };
 }
 
 function buildHeaders(endpoint: ProviderEndpointConfig): Record<string, string> {
@@ -309,10 +380,26 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
   const maxIterations = config.maxIterations ?? 100;
   const streaming = config.endpoint.stream !== false;
   const headers = buildHeaders(config.endpoint);
-  const availableTools = new Set(config.tools.map(t => t.function.name));
 
-  // Working copy of messages that grows as tools execute
+  // ── Apply allowedTools / deniedTools filters ──
+  const effectiveTools = filterTools(config.tools, config.allowedTools, config.deniedTools);
+  const availableTools = new Set(effectiveTools.map(t => t.function.name));
+
+  // ── Build effective extraBody (merge outputFormat + caller-provided extraBody) ──
+  const effectiveExtraBody: Record<string, unknown> = { ...config.extraBody };
+  if (config.outputFormat) {
+    const outputBody = buildOutputFormatBody(
+      config.outputFormat,
+      config.outputFormatStyle ?? 'response_format'
+    );
+    Object.assign(effectiveExtraBody, outputBody);
+  }
+
+  // ── Build messages with systemPrompt prepended ──
   const messages = [...config.messages];
+  if (config.systemPrompt) {
+    messages.unshift({ role: 'system', content: config.systemPrompt });
+  }
 
   let consecutiveMalformed = 0;
   let totalInputTokens = 0;
@@ -323,10 +410,16 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
       throw new Error('Tool loop aborted');
     }
 
-    const body = buildRequestBody(config, messages);
+    const body = buildRequestBody(
+      config.model,
+      messages,
+      effectiveTools,
+      streaming,
+      Object.keys(effectiveExtraBody).length > 0 ? effectiveExtraBody : undefined
+    );
 
     log.debug(
-      { iteration, messageCount: messages.length, toolCount: config.tools.length },
+      { iteration, messageCount: messages.length, toolCount: effectiveTools.length },
       'tool-loop.request_started'
     );
 

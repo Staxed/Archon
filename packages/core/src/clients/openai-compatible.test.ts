@@ -157,7 +157,7 @@ describe('OpenAICompatibleClient', () => {
 
       expect(body!.response_format).toEqual({
         type: 'json_schema',
-        json_schema: schema,
+        json_schema: { name: 'output', schema },
       });
     });
   });
@@ -423,13 +423,8 @@ describe('OpenAICompatibleClient', () => {
 
     it('allows subclass to override buildExtraBody()', async () => {
       class GrammarClient extends OpenAICompatibleClient {
-        protected override buildExtraBody(options?: AssistantRequestOptions) {
-          const extra = super.buildExtraBody(options);
-          if (options?.outputFormat) {
-            delete extra.response_format;
-            extra.grammar = 'root ::= "test"';
-          }
-          return extra;
+        protected override getOutputFormatStyle(): 'response_format' | 'grammar' {
+          return 'grammar';
         }
       }
 
@@ -447,7 +442,7 @@ describe('OpenAICompatibleClient', () => {
         })
       );
 
-      expect(body!.grammar).toBe('root ::= "test"');
+      expect(body!.grammar).toBeDefined();
       expect(body!.response_format).toBeUndefined();
     });
   });

@@ -23,7 +23,7 @@ import {
   type ProviderEndpointConfig,
 } from './tool-loop';
 import { ContextWindowManager } from './context-window';
-import { toolDefinitions, filterToolsByName, type ToolDefinition } from './tool-definitions';
+import { toolDefinitions, type ToolDefinition } from './tool-definitions';
 
 import { createLogger } from '@archon/paths';
 
@@ -92,20 +92,22 @@ export class OpenAICompatibleClient implements IAssistantClient {
   ): AsyncGenerator<MessageChunk> {
     const model = options?.model ?? this.defaultModel;
 
-    // ── Build messages ──
+    // ── Build messages (systemPrompt goes to tool loop config) ──
     const messages: ChatMessage[] = [];
+    // Include systemPrompt in messages for accurate context window estimation,
+    // then pass it to the tool loop config for proper handling
     if (options?.systemPrompt) {
       messages.push({ role: 'system', content: options.systemPrompt });
     }
     messages.push({ role: 'user', content: prompt });
 
-    // ── Build tool list ──
+    // ── Build full tool list (filtering delegated to tool loop) ──
     const tools = this.resolveTools(options);
 
     // ── Build endpoint config ──
     const endpoint = this.buildEndpoint();
 
-    // ── Build extra body (response_format, etc.) ──
+    // ── Build extra body (provider-specific fields, NOT outputFormat) ──
     const extraBody = this.buildExtraBody(options);
 
     // ── Context window management ──
@@ -129,6 +131,11 @@ export class OpenAICompatibleClient implements IAssistantClient {
       model,
       abortSignal: options?.abortSignal,
       extraBody: Object.keys(extraBody).length > 0 ? extraBody : undefined,
+      // Feature params delegated to tool loop
+      allowedTools: options?.tools,
+      deniedTools: options?.disallowedTools,
+      outputFormat: options?.outputFormat ? { schema: options.outputFormat.schema } : undefined,
+      outputFormatStyle: this.getOutputFormatStyle(),
     });
   }
 
@@ -148,46 +155,37 @@ export class OpenAICompatibleClient implements IAssistantClient {
 
   /**
    * Build extra body fields for the request. Subclasses can override to
-   * change output format handling (e.g., Llama.cpp uses GBNF grammar
-   * instead of response_format).
+   * add provider-specific request body fields.
+   *
+   * Note: outputFormat is handled by the tool loop via outputFormat/outputFormatStyle
+   * config fields — do not add response_format here.
    */
-  protected buildExtraBody(options?: AssistantRequestOptions): Record<string, unknown> {
-    const extra: Record<string, unknown> = {};
-    if (options?.outputFormat) {
-      extra.response_format = {
-        type: 'json_schema',
-        json_schema: options.outputFormat.schema,
-      };
-    }
-    return extra;
+  protected buildExtraBody(_options?: AssistantRequestOptions): Record<string, unknown> {
+    return {};
   }
 
   /**
-   * Resolve the tool definitions based on allowed_tools / denied_tools options.
-   * Subclasses generally don't need to override this.
+   * Return the output format style for this provider.
+   * - `'response_format'` (default): OpenAI-standard response_format
+   * - `'grammar'`: Llama.cpp-native GBNF grammar
+   *
+   * Subclasses override to change how outputFormat is mapped.
+   */
+  protected getOutputFormatStyle(): 'response_format' | 'grammar' {
+    return 'response_format';
+  }
+
+  /**
+   * Resolve the canonical tool definitions.
+   * Returns the full set — filtering by allowedTools/deniedTools is
+   * handled by the tool loop.
    */
   protected resolveTools(options?: AssistantRequestOptions): ToolDefinition[] {
     // Empty tools array (explicitly disabled) → pass empty list
     if (options?.tools?.length === 0) {
       return [];
     }
-
-    let tools: ToolDefinition[];
-
-    // Apply allowed_tools filter (whitelist)
-    if (options?.tools && options.tools.length > 0) {
-      tools = filterToolsByName(options.tools);
-    } else {
-      tools = [...toolDefinitions];
-    }
-
-    // Apply denied_tools filter (blocklist) on the current set
-    if (options?.disallowedTools && options.disallowedTools.length > 0) {
-      const denySet = new Set(options.disallowedTools);
-      tools = tools.filter(def => !denySet.has(def.function.name));
-    }
-
-    return tools;
+    return [...toolDefinitions];
   }
 
   // ─── Private implementation ─────────────────────────────────────────────

@@ -411,4 +411,187 @@ describe('executeToolLoop', () => {
       tokens: { input: 300, output: 50, total: 350 },
     });
   });
+
+  // ─── Feature integration tests (US-019) ────────────────────────────────
+
+  describe('allowedTools', () => {
+    test('filters tools to only allowed names', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ allowedTools: ['Read', 'Write'] }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(2);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Read', 'Write']);
+    });
+
+    test('empty allowedTools passes all tools', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ allowedTools: [] }));
+
+      // Empty allowedTools array means no filter — all tools passed
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(8);
+    });
+  });
+
+  describe('deniedTools', () => {
+    test('excludes denied tool names', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ deniedTools: ['Bash', 'WebFetch', 'WebSearch'] }));
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(5);
+      const names = tools.map(t => t.function.name);
+      expect(names).not.toContain('Bash');
+      expect(names).not.toContain('WebFetch');
+      expect(names).not.toContain('WebSearch');
+    });
+
+    test('allowedTools + deniedTools: denied removes from whitelist', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(
+        baseConfig({ allowedTools: ['Read', 'Write', 'Bash'], deniedTools: ['Bash'] })
+      );
+
+      const tools = body!.tools as { function: { name: string } }[];
+      expect(tools).toHaveLength(2);
+      expect(tools.map(t => t.function.name).sort()).toEqual(['Read', 'Write']);
+    });
+  });
+
+  describe('systemPrompt', () => {
+    test('prepends system message to messages array', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig({ systemPrompt: 'You are a helpful assistant.' }));
+
+      const messages = body!.messages as { role: string; content: string }[];
+      expect(messages[0]).toEqual({ role: 'system', content: 'You are a helpful assistant.' });
+      expect(messages[1]).toMatchObject({ role: 'user', content: 'hello' });
+    });
+
+    test('no systemPrompt: messages unchanged', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig());
+
+      const messages = body!.messages as { role: string; content: string }[];
+      expect(messages[0]).toMatchObject({ role: 'user', content: 'hello' });
+    });
+  });
+
+  describe('outputFormat', () => {
+    test('maps to response_format by default (response_format style)', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('{"result": 42}'));
+        }
+      );
+
+      const schema = { type: 'object', properties: { result: { type: 'number' } } };
+      await collectChunks(baseConfig({ outputFormat: { schema, name: 'my_output' } }));
+
+      expect(body!.response_format).toEqual({
+        type: 'json_schema',
+        json_schema: { name: 'my_output', schema },
+      });
+      expect(body!.grammar).toBeUndefined();
+    });
+
+    test('maps to GBNF grammar when outputFormatStyle is grammar', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('{}'));
+        }
+      );
+
+      const schema = {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      };
+      await collectChunks(baseConfig({ outputFormat: { schema }, outputFormatStyle: 'grammar' }));
+
+      // Should have grammar field, not response_format
+      expect(body!.grammar).toBeDefined();
+      expect(typeof body!.grammar).toBe('string');
+      expect(body!.response_format).toBeUndefined();
+    });
+
+    test('defaults name to "output" when not specified', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('{}'));
+        }
+      );
+
+      await collectChunks(
+        baseConfig({ outputFormat: { schema: { type: 'object', properties: {} } } })
+      );
+
+      const rf = body!.response_format as { json_schema: { name: string } };
+      expect(rf.json_schema.name).toBe('output');
+    });
+
+    test('no outputFormat: no response_format or grammar in body', async () => {
+      let body: Record<string, unknown> | null = null;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          body = JSON.parse(init?.body as string) as Record<string, unknown>;
+          return jsonResponse(textResponse('ok'));
+        }
+      );
+
+      await collectChunks(baseConfig());
+
+      expect(body!.response_format).toBeUndefined();
+      expect(body!.grammar).toBeUndefined();
+    });
+  });
 });
