@@ -94,8 +94,8 @@
         "US-003"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 4. Files: path-validation.ts, read.ts, write.ts, edit.ts, read.test.ts, write.test.ts, edit.test.ts"
     },
     {
       "id": "US-005",
@@ -161,7 +161,7 @@
         "Type-check passes",
         "Tests pass"
       ],
-      "technicalNotes": "Core algorithm per PRD section 3. The loop is provider-agnostic — it receives an HTTP endpoint config and message format. Tool dispatch uses a registry built from `tool-definitions.ts` + tool implementations. The loop must handle both streamed and non-streamed responses. Export `ToolLoopConfig` interface for configuration.",
+      "technicalNotes": "Core algorithm per PRD section 3. The loop is provider-agnostic \u2014 it receives an HTTP endpoint config and message format. Tool dispatch uses a registry built from `tool-definitions.ts` + tool implementations. The loop must handle both streamed and non-streamed responses. Export `ToolLoopConfig` interface for configuration.",
       "dependsOn": [
         "US-003",
         "US-004",
@@ -275,7 +275,7 @@
         "Migration works on both SQLite and PostgreSQL",
         "Type-check passes"
       ],
-      "technicalNotes": "Follow existing migration pattern in `migrations/` directory. SQLite doesn't support UUID[] — use TEXT with JSON array for SQLite adapter. The `IDatabase` interface abstracts PostgreSQL/SQLite differences. Token usage table per PRD section 5.",
+      "technicalNotes": "Follow existing migration pattern in `migrations/` directory. SQLite doesn't support UUID[] \u2014 use TEXT with JSON array for SQLite adapter. The `IDatabase` interface abstracts PostgreSQL/SQLite differences. Token usage table per PRD section 5.",
       "dependsOn": [],
       "priority": 12,
       "passes": false,
@@ -325,7 +325,7 @@
         "Type-check passes",
         "Tests pass"
       ],
-      "technicalNotes": "OpenRouter endpoint: `https://openrouter.ai/api/v1/chat/completions`. Model IDs use `vendor/model` format. Cost data may be in response headers or body — check OpenRouter API docs. Config from `assistants.openrouter` in `.archon/config.yaml`.",
+      "technicalNotes": "OpenRouter endpoint: `https://openrouter.ai/api/v1/chat/completions`. Model IDs use `vendor/model` format. Cost data may be in response headers or body \u2014 check OpenRouter API docs. Config from `assistants.openrouter` in `.archon/config.yaml`.",
       "dependsOn": [
         "US-013"
       ],

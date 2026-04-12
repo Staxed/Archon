@@ -10,6 +10,11 @@
 - **Pattern**: All `'claude' | 'codex'` union types replaced with `ProviderType`. New provider defaults interfaces added. WorkflowConfig.assistants must include all 4 providers as required keys.
 - **Example**: `assistant: ProviderType` instead of `assistant: 'claude' | 'codex'`
 
+### Tool implementation signature
+- **Where**: `packages/core/src/clients/tools/*.ts`
+- **Pattern**: All tools export `async function xxxTool(params: Record<string, unknown>, cwd: string): Promise<string>`. Path validation via shared `path-validation.ts` using `validatePath(filePath, cwd)`.
+- **Example**: `import { readTool } from './tools/read';`
+
 ### Pre-existing test failures
 - `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
 - `packages/cli/src/commands/workflow-run.test.ts`: 6 workflowRunCommand tests fail on main branch
@@ -100,5 +105,36 @@
 **Learnings**:
 - Straightforward story — no integration points to worry about, just defining data structures.
 - Exported both array (toolDefinitions) and Map (toolDefinitionsByName) for different access patterns.
+
+---
+
+## 2026-04-12 — US-004: Tool implementations: file ops (read, write, edit)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tools/path-validation.ts` — Shared path validation: resolves paths within cwd, blocks directory traversal
+- `packages/core/src/clients/tools/read.ts` — Read tool: file content with line numbers, offset/limit support
+- `packages/core/src/clients/tools/write.ts` — Write tool: file creation/overwrite with parent dir creation
+- `packages/core/src/clients/tools/edit.ts` — Edit tool: exact string replacement with uniqueness enforcement and replace_all support
+- `packages/core/src/clients/tools/read.test.ts` — 9 tests: happy path, offset/limit, empty file, path traversal, errors
+- `packages/core/src/clients/tools/write.test.ts` — 7 tests: create, overwrite, nested dirs, empty content, path traversal, errors
+- `packages/core/src/clients/tools/edit.test.ts` — 7 tests: unique replace, not found, non-unique, replace_all, multiline, path traversal, errors
+
+**Acceptance criteria verified**:
+- [x] New files: read.ts, write.ts, edit.ts in packages/core/src/clients/tools/
+- [x] Read tool: accepts file path + optional offset/limit, returns file content with line numbers
+- [x] Write tool: accepts file path + content, writes file, returns success confirmation
+- [x] Edit tool: accepts file path + old_string + new_string, performs exact string replacement
+- [x] All tools validate paths within cwd (no traversal above worktree root)
+- [x] All tools throw on error with descriptive messages
+- [x] Each tool exports function matching (params: Record<string, unknown>, cwd: string) => Promise<string>
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Empty file edge case: `''.split('\n')` yields `['']` not `[]`, so check `content.length === 0` before splitting.
+- No mock.module() needed for these tests — real filesystem with temp directories is cleanest.
+- Tests in `src/clients/tools/` are picked up by the existing `bun test src/clients/` batch, no package.json changes needed.
+- Shared `path-validation.ts` keeps path security logic DRY across all tool implementations.
 
 ---
