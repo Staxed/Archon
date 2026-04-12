@@ -26,6 +26,8 @@
 - **Key types**: `ToolLoopConfig`, `ChatMessage`, `ToolCall`, `ChatCompletionChunk`, `ChatCompletionResponse`, `ProviderEndpointConfig`
 - **Feature params**: `allowedTools`, `deniedTools`, `systemPrompt`, `outputFormat`, `outputFormatStyle` are processed at the start of `executeToolLoop()` — callers pass these via config, not pre-processing.
 - **Hooks**: `ToolLoopHooks` with `PreToolUse`, `PostToolUse`, `PostToolUseFailure` matchers. `ToolLoopHookMatcher` has `matcher?` (regex), `hooks[]` (callbacks), `timeout?`. Hook payloads match Claude SDK shapes. `runHooks()` evaluates all matching hooks; errors propagated (not swallowed).
+- **MCP integration**: `mcpProvider` field on `ToolLoopConfig`. MCP tools merged into tool list. MCP tool calls (prefixed `mcp__`) dispatched to `McpToolProvider.callTool()`. Caller manages lifecycle (connect/shutdown).
+- **Skills integration**: `skillContext` field on `ToolLoopConfig`. System prompt additions appended after user messages. Skill `toolAllowlist` intersected with `allowedTools` when both are set.
 
 ### Output format style pattern
 - **Where**: `packages/core/src/clients/openai-compatible.ts`, `packages/core/src/clients/llamacpp.ts`
@@ -589,5 +591,33 @@
 - `runHooks()` is a simple sequential loop over matchers — no need for parallel execution since hooks may depend on ordering.
 - ESLint catches unnecessary type parameters — use direct union type instead of `<T extends ...>` when T is only used once.
 - No mock.module() needed for hook tests — hooks are just callback functions, no external module mocking required.
+
+---
+
+## 2026-04-12 — US-021: Tool loop MCP + skills integration
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-loop.ts` — Added mcpProvider/skillContext to ToolLoopConfig; MCP tool merging, dispatch, and skill prompt/allowlist integration
+- `packages/core/src/clients/tool-loop.test.ts` — 12 new tests: MCP tool merging, dispatch, errors, filtering; skill prompt injection, tool allowlist intersection, combined scenarios
+- `packages/core/src/clients/openai-compatible.ts` — MCP lifecycle (connect/shutdown) and skill loading in sendQuery; imports McpToolProvider and loadSkills
+- `packages/core/src/types/index.ts` — Added mcpConfigs and skills fields to AssistantRequestOptions
+
+**Acceptance criteria verified**:
+- [x] Tool loop accepts MCP tool definitions from US-008 MCP client and merges them into the tool list
+- [x] MCP tool calls in `tool_calls` are dispatched to the MCP client for execution
+- [x] MCP tool results are formatted and appended to message history
+- [x] Tool loop accepts skill context from US-009 and injects system-prompt additions
+- [x] Skill tool allowlists are intersected with `allowed_tools` if both are specified
+- [x] MCP server lifecycle is managed: spawned before loop, cleaned up after (in OpenAICompatibleClient)
+- [x] Type-check passes
+- [x] Tests pass (45/45 tool-loop tests; only pre-existing failures elsewhere)
+
+**Learnings**:
+- MCP tool dispatch keyed on `mcp__` prefix — tool names from McpToolProvider already follow this convention (`mcp__serverName__toolName`).
+- MCP lifecycle owned by OpenAICompatibleClient (connect in sendQuery, shutdown in finally block), not by the tool loop itself — matches the PRD requirement and keeps the loop stateless.
+- Skill system prompt additions appended AFTER user messages (not before) to match Claude SDK behavior where skills are additional system context.
+- `mcpConfigs` on AssistantRequestOptions uses inline type definition (not importing from mcp-client.ts) to avoid coupling the types interface to the implementation.
+- No mock.module() needed — mock McpToolProvider is just a plain object cast, and SkillContext is a simple data interface.
 
 ---
