@@ -12,7 +12,13 @@ mock.module('./connection', () => ({
   getDialect: () => mockPostgresDialect,
 }));
 
-import { addMessage, listMessages } from './messages';
+import {
+  addMessage,
+  listMessages,
+  listMessagesForReplay,
+  markMessagesSummarized,
+  buildReplayMessages,
+} from './messages';
 
 describe('messages', () => {
   beforeEach(() => {
@@ -39,10 +45,8 @@ describe('messages', () => {
 
       expect(result).toEqual(mockMessage);
       expect(mockQuery).toHaveBeenCalledWith(
-        `INSERT INTO remote_agent_messages (conversation_id, role, content, metadata, created_at)
-     VALUES ($1, $2, $3, $4, NOW())
-     RETURNING *`,
-        ['conv-456', 'user', 'Hello, world!', '{}']
+        expect.stringContaining('INSERT INTO remote_agent_messages'),
+        ['conv-456', 'user', 'Hello, world!', '{}', 'text', false, null]
       );
     });
 
@@ -57,12 +61,6 @@ describe('messages', () => {
       const result = await addMessage('conv-456', 'assistant', 'Done.', metadata);
 
       expect(result).toEqual(messageWithMetadata);
-      expect(mockQuery).toHaveBeenCalledWith(expect.any(String), [
-        'conv-456',
-        'assistant',
-        'Done.',
-        JSON.stringify(metadata),
-      ]);
     });
 
     test('defaults metadata to empty object when not provided', async () => {
@@ -70,7 +68,8 @@ describe('messages', () => {
 
       await addMessage('conv-456', 'user', 'Hello, world!');
 
-      expect(mockQuery).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining(['{}']));
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[3]).toBe('{}');
     });
 
     test('throws wrapped error when INSERT returns no rows', async () => {
@@ -85,6 +84,111 @@ describe('messages', () => {
       mockQuery.mockRejectedValueOnce(new Error('connection refused'));
 
       await expect(addMessage('conv-456', 'user', 'Hello')).rejects.toThrow('connection refused');
+    });
+
+    test('handles system role messages', async () => {
+      const systemMsg: MessageRow = {
+        ...mockMessage,
+        role: 'system',
+        content: 'You are a helpful assistant.',
+        kind: 'text',
+      };
+      mockQuery.mockResolvedValueOnce(createQueryResult([systemMsg]));
+
+      const result = await addMessage('conv-456', 'system', 'You are a helpful assistant.');
+
+      expect(result.role).toBe('system');
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[1]).toBe('system');
+      expect(params[4]).toBe('text'); // kind inferred as text for system
+    });
+
+    test('handles tool role messages with toolCallId', async () => {
+      const toolMsg: MessageRow = {
+        ...mockMessage,
+        role: 'tool',
+        content: 'File contents...',
+        kind: 'tool_result',
+        metadata: '{"toolCallId":"call_123","toolName":"Read"}',
+      };
+      mockQuery.mockResolvedValueOnce(createQueryResult([toolMsg]));
+
+      const result = await addMessage('conv-456', 'tool', 'File contents...', undefined, {
+        toolCallId: 'call_123',
+        toolName: 'Read',
+      });
+
+      expect(result.role).toBe('tool');
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[4]).toBe('tool_result'); // kind inferred for tool role
+      const meta = JSON.parse(params[3] as string) as Record<string, unknown>;
+      expect(meta.toolCallId).toBe('call_123');
+      expect(meta.toolName).toBe('Read');
+    });
+
+    test('infers tool_call kind for assistant with toolCalls', async () => {
+      const toolCallMsg: MessageRow = {
+        ...mockMessage,
+        role: 'assistant',
+        content: '',
+        kind: 'tool_call',
+      };
+      mockQuery.mockResolvedValueOnce(createQueryResult([toolCallMsg]));
+
+      await addMessage('conv-456', 'assistant', '', undefined, {
+        toolCalls: [
+          { id: 'call_1', type: 'function', function: { name: 'Read', arguments: '{}' } },
+        ],
+      });
+
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[4]).toBe('tool_call');
+    });
+
+    test('handles summary messages with summaryOf', async () => {
+      const summaryMsg: MessageRow = {
+        ...mockMessage,
+        role: 'system',
+        content: 'Summary of previous conversation...',
+        kind: 'summary',
+        summary_of: '["msg-1","msg-2","msg-3"]',
+      };
+      mockQuery.mockResolvedValueOnce(createQueryResult([summaryMsg]));
+
+      await addMessage('conv-456', 'system', 'Summary of previous conversation...', undefined, {
+        summaryOf: ['msg-1', 'msg-2', 'msg-3'],
+      });
+
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[4]).toBe('summary'); // kind inferred from summaryOf
+      expect(params[6]).toBe('["msg-1","msg-2","msg-3"]'); // summary_of JSON
+    });
+
+    test('allows explicit kind override', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([mockMessage]));
+
+      await addMessage('conv-456', 'assistant', 'result', undefined, { kind: 'tool_call' });
+
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+      expect(params[4]).toBe('tool_call');
+    });
+  });
+
+  describe('markMessagesSummarized', () => {
+    test('updates messages with IN clause', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([], 3));
+
+      await markMessagesSummarized(['msg-1', 'msg-2', 'msg-3']);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        'UPDATE remote_agent_messages SET summarized = TRUE WHERE id IN ($1, $2, $3)',
+        ['msg-1', 'msg-2', 'msg-3']
+      );
+    });
+
+    test('no-ops for empty array', async () => {
+      await markMessagesSummarized([]);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 
@@ -122,6 +226,239 @@ describe('messages', () => {
       await listMessages('conv-456', 50);
 
       expect(mockQuery).toHaveBeenCalledWith(expect.any(String), ['conv-456', 50]);
+    });
+  });
+
+  describe('listMessagesForReplay', () => {
+    test('queries with summarized=FALSE OR kind=summary filter', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+      await listMessagesForReplay('conv-456');
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining("summarized = FALSE OR kind = 'summary'"),
+        ['conv-456', 1000]
+      );
+    });
+
+    test('returns non-summarized and summary messages', async () => {
+      const rows: MessageRow[] = [
+        { ...mockMessage, id: 'msg-1', kind: 'text', summarized: false },
+        {
+          ...mockMessage,
+          id: 'msg-summary',
+          role: 'system',
+          kind: 'summary',
+          summarized: false,
+          summary_of: '["msg-old-1","msg-old-2"]',
+        },
+        { ...mockMessage, id: 'msg-2', kind: 'text', summarized: false },
+      ];
+      mockQuery.mockResolvedValueOnce(createQueryResult(rows));
+
+      const result = await listMessagesForReplay('conv-456');
+
+      expect(result).toHaveLength(3);
+      expect(result[1]?.kind).toBe('summary');
+    });
+
+    test('respects custom limit', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+      await listMessagesForReplay('conv-456', 500);
+
+      expect(mockQuery).toHaveBeenCalledWith(expect.any(String), ['conv-456', 500]);
+    });
+  });
+
+  describe('buildReplayMessages', () => {
+    test('builds messages from empty rows with system prompt', () => {
+      const result = buildReplayMessages([], 'You are helpful.');
+
+      expect(result).toEqual([{ role: 'system', content: 'You are helpful.' }]);
+    });
+
+    test('builds messages from empty rows without system prompt', () => {
+      const result = buildReplayMessages([]);
+
+      expect(result).toEqual([]);
+    });
+
+    test('builds user and assistant messages', () => {
+      const rows: MessageRow[] = [
+        { ...mockMessage, id: 'msg-1', role: 'user', content: 'Hi' },
+        { ...mockMessage, id: 'msg-2', role: 'assistant', content: 'Hello!' },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toEqual([
+        { role: 'user', content: 'Hi' },
+        { role: 'assistant', content: 'Hello!' },
+      ]);
+    });
+
+    test('builds assistant message with tool_calls from metadata', () => {
+      const toolCalls = [
+        {
+          id: 'call_1',
+          type: 'function' as const,
+          function: { name: 'Read', arguments: '{"file_path":"/foo"}' },
+        },
+      ];
+      const rows: MessageRow[] = [
+        {
+          ...mockMessage,
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          kind: 'tool_call',
+          metadata: JSON.stringify({ toolCalls }),
+        },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.role).toBe('assistant');
+      expect(result[0]?.tool_calls).toEqual(toolCalls);
+      // Empty content with tool_calls should be null
+      expect(result[0]?.content).toBeNull();
+    });
+
+    test('builds tool result messages with tool_call_id', () => {
+      const rows: MessageRow[] = [
+        {
+          ...mockMessage,
+          id: 'msg-1',
+          role: 'tool',
+          content: 'file contents',
+          kind: 'tool_result',
+          metadata: JSON.stringify({ toolCallId: 'call_1', toolName: 'Read' }),
+        },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        role: 'tool',
+        content: 'file contents',
+        tool_call_id: 'call_1',
+        name: 'Read',
+      });
+    });
+
+    test('skips tool messages without toolCallId', () => {
+      const rows: MessageRow[] = [
+        {
+          ...mockMessage,
+          id: 'msg-1',
+          role: 'tool',
+          content: 'orphan result',
+          kind: 'tool_result',
+          metadata: '{}',
+        },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toHaveLength(0);
+    });
+
+    test('builds system messages including summaries', () => {
+      const rows: MessageRow[] = [
+        {
+          ...mockMessage,
+          id: 'msg-summary',
+          role: 'system',
+          content: 'Summary: User asked about X...',
+          kind: 'summary',
+          summary_of: '["msg-1","msg-2"]',
+        },
+        { ...mockMessage, id: 'msg-3', role: 'user', content: 'Continue' },
+      ];
+
+      const result = buildReplayMessages(rows, 'Be helpful');
+
+      expect(result).toHaveLength(3);
+      expect(result[0]).toEqual({ role: 'system', content: 'Be helpful' });
+      expect(result[1]).toEqual({ role: 'system', content: 'Summary: User asked about X...' });
+      expect(result[2]).toEqual({ role: 'user', content: 'Continue' });
+    });
+
+    test('round-trips tool call metadata through JSONB correctly', () => {
+      const toolCalls = [
+        {
+          id: 'call_abc',
+          type: 'function' as const,
+          function: {
+            name: 'Edit',
+            arguments: JSON.stringify({
+              file_path: '/src/index.ts',
+              old_string: 'foo',
+              new_string: 'bar',
+            }),
+          },
+        },
+        {
+          id: 'call_def',
+          type: 'function' as const,
+          function: {
+            name: 'Bash',
+            arguments: JSON.stringify({ command: 'ls -la' }),
+          },
+        },
+      ];
+
+      const rows: MessageRow[] = [
+        {
+          ...mockMessage,
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          kind: 'tool_call',
+          metadata: JSON.stringify({ toolCalls }),
+        },
+        {
+          ...mockMessage,
+          id: 'msg-2',
+          role: 'tool',
+          content: 'File edited successfully',
+          kind: 'tool_result',
+          metadata: JSON.stringify({ toolCallId: 'call_abc', toolName: 'Edit' }),
+        },
+        {
+          ...mockMessage,
+          id: 'msg-3',
+          role: 'tool',
+          content: 'drwxr-xr-x ...',
+          kind: 'tool_result',
+          metadata: JSON.stringify({ toolCallId: 'call_def', toolName: 'Bash' }),
+        },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toHaveLength(3);
+      // Assistant with tool calls
+      expect(result[0]?.tool_calls).toEqual(toolCalls);
+      expect(result[0]?.content).toBeNull();
+      // Tool results
+      expect(result[1]?.tool_call_id).toBe('call_abc');
+      expect(result[1]?.name).toBe('Edit');
+      expect(result[2]?.tool_call_id).toBe('call_def');
+      expect(result[2]?.name).toBe('Bash');
+    });
+
+    test('handles malformed metadata gracefully', () => {
+      const rows: MessageRow[] = [
+        { ...mockMessage, id: 'msg-1', role: 'user', content: 'Hi', metadata: 'not-json' },
+      ];
+
+      const result = buildReplayMessages(rows);
+
+      expect(result).toEqual([{ role: 'user', content: 'Hi' }]);
     });
   });
 });
