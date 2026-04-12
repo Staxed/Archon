@@ -230,6 +230,8 @@ export type MessageChunk =
 
 import type { ModelReasoningEffort, WebSearchMode } from '@archon/workflows/schemas/workflow';
 export type { ModelReasoningEffort, WebSearchMode };
+import type { ProviderType } from '@archon/workflows/schemas/provider';
+export type { ProviderType };
 import type {
   EffortLevel,
   ThinkingConfig,

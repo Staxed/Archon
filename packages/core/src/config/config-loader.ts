@@ -176,6 +176,8 @@ function getDefaults(): MergedConfig {
     assistants: {
       claude: {},
       codex: {},
+      openrouter: {},
+      llamacpp: { endpoint: 'http://localhost:8080' },
     },
     streaming: {
       telegram: 'stream',
@@ -220,7 +222,12 @@ function applyEnvOverrides(config: MergedConfig): MergedConfig {
 
   // Assistant override
   const envAssistant = process.env.DEFAULT_AI_ASSISTANT;
-  if (envAssistant === 'claude' || envAssistant === 'codex') {
+  if (
+    envAssistant === 'claude' ||
+    envAssistant === 'codex' ||
+    envAssistant === 'openrouter' ||
+    envAssistant === 'llamacpp'
+  ) {
     config.assistant = envAssistant;
   }
 
@@ -265,6 +272,8 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     assistants: {
       claude: { ...defaults.assistants.claude },
       codex: { ...defaults.assistants.codex },
+      openrouter: { ...defaults.assistants.openrouter },
+      llamacpp: { ...defaults.assistants.llamacpp },
     },
   };
 
@@ -288,6 +297,18 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.assistants.codex = {
       ...result.assistants.codex,
       ...global.assistants.codex,
+    };
+  }
+  if (global.assistants?.openrouter) {
+    result.assistants.openrouter = {
+      ...result.assistants.openrouter,
+      ...global.assistants.openrouter,
+    };
+  }
+  if (global.assistants?.llamacpp) {
+    result.assistants.llamacpp = {
+      ...result.assistants.llamacpp,
+      ...global.assistants.llamacpp,
     };
   }
 
@@ -326,6 +347,8 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     assistants: {
       claude: { ...merged.assistants.claude },
       codex: { ...merged.assistants.codex },
+      openrouter: { ...merged.assistants.openrouter },
+      llamacpp: { ...merged.assistants.llamacpp },
     },
   };
 
@@ -344,6 +367,18 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     result.assistants.codex = {
       ...result.assistants.codex,
       ...repo.assistants.codex,
+    };
+  }
+  if (repo.assistants?.openrouter) {
+    result.assistants.openrouter = {
+      ...result.assistants.openrouter,
+      ...repo.assistants.openrouter,
+    };
+  }
+  if (repo.assistants?.llamacpp) {
+    result.assistants.llamacpp = {
+      ...result.assistants.llamacpp,
+      ...repo.assistants.llamacpp,
     };
   }
 
@@ -512,6 +547,13 @@ export function toSafeConfig(config: MergedConfig): SafeConfig {
         model: config.assistants.codex.model,
         modelReasoningEffort: config.assistants.codex.modelReasoningEffort,
         webSearchMode: config.assistants.codex.webSearchMode,
+      },
+      openrouter: {
+        model: config.assistants.openrouter.model,
+      },
+      llamacpp: {
+        model: config.assistants.llamacpp.model,
+        endpoint: config.assistants.llamacpp.endpoint,
       },
     },
     streaming: {

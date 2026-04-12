@@ -31,6 +31,7 @@ import type {
   EffortLevel,
   ThinkingConfig,
   SandboxSettings,
+  ProviderType,
 } from './schemas';
 import {
   isBashNode,
@@ -360,7 +361,7 @@ function expandEnvVars(config: Record<string, unknown>): {
  */
 async function resolveNodeProviderAndModel(
   node: DagNode,
-  workflowProvider: 'claude' | 'codex',
+  workflowProvider: ProviderType,
   workflowModel: string | undefined,
   config: WorkflowConfig,
   platform: IWorkflowPlatform,
@@ -369,11 +370,11 @@ async function resolveNodeProviderAndModel(
   cwd: string,
   workflowLevelOptions: WorkflowLevelOptions
 ): Promise<{
-  provider: 'claude' | 'codex';
+  provider: ProviderType;
   model: string | undefined;
   options: WorkflowAssistantOptions | undefined;
 }> {
-  let provider: 'claude' | 'codex';
+  let provider: ProviderType;
 
   if (node.provider) {
     provider = node.provider;
@@ -714,7 +715,7 @@ async function executeNodeInternal(
   cwd: string,
   workflowRun: WorkflowRun,
   node: CommandNode | PromptNode,
-  provider: 'claude' | 'codex',
+  provider: ProviderType,
   nodeOptions: WorkflowAssistantOptions | undefined,
   artifactsDir: string,
   logDir: string,
@@ -1575,7 +1576,7 @@ async function executeKnowledgeExtractNode(
  * Caller is responsible for resolving per-node overrides before passing model.
  */
 function buildLoopNodeOptions(
-  provider: 'claude' | 'codex',
+  provider: ProviderType,
   model: string | undefined,
   config: WorkflowConfig
 ): WorkflowAssistantOptions | undefined {
@@ -1612,7 +1613,7 @@ async function executeLoopNode(
   cwd: string,
   workflowRun: WorkflowRun,
   node: LoopNode,
-  workflowProvider: 'claude' | 'codex',
+  workflowProvider: ProviderType,
   workflowModel: string | undefined,
   artifactsDir: string,
   logDir: string,
@@ -2106,7 +2107,7 @@ async function executeApprovalNode(
   deps: WorkflowDeps,
   platform: IWorkflowPlatform,
   conversationId: string,
-  workflowProvider: 'claude' | 'codex',
+  workflowProvider: ProviderType,
   workflowModel: string | undefined,
   cwd: string,
   artifactsDir: string,
@@ -2279,7 +2280,7 @@ export async function executeDagWorkflow(
   cwd: string,
   workflow: { name: string; nodes: readonly DagNode[] } & WorkflowLevelOptions,
   workflowRun: WorkflowRun,
-  workflowProvider: 'claude' | 'codex',
+  workflowProvider: ProviderType,
   workflowModel: string | undefined,
   artifactsDir: string,
   logDir: string,
@@ -2518,7 +2519,7 @@ export async function executeDagWorkflow(
           // 3b. Loop node dispatch — manages its own AI sessions and iteration
           if (isLoopNode(node)) {
             // Resolve per-node provider/model overrides (same logic as other node types)
-            let loopProvider: 'claude' | 'codex';
+            let loopProvider: ProviderType;
             if (node.provider) {
               loopProvider = node.provider;
             } else if (node.model && isClaudeModel(node.model)) {

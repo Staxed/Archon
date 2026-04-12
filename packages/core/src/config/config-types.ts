@@ -10,7 +10,7 @@
  * Global configuration (non-secret user preferences)
  * Located at ~/.archon/config.yaml
  */
-import type { ModelReasoningEffort, WebSearchMode } from '../types';
+import type { ModelReasoningEffort, ProviderType, WebSearchMode } from '../types';
 
 export interface AssistantDefaults {
   model?: string;
@@ -63,6 +63,26 @@ export interface ClaudeAssistantDefaults {
   settingSources?: ('project' | 'user')[];
 }
 
+export interface OpenRouterAssistantDefaults {
+  /** Model in vendor/model format (e.g., 'anthropic/claude-3-haiku', 'meta-llama/llama-4-scout') */
+  model?: string;
+  /** OpenRouter API key (or use OPENROUTER_API_KEY env var) */
+  apiKey?: string;
+  /** HTTP-Referer header value for OpenRouter requests */
+  siteUrl?: string;
+  /** X-Title header value for OpenRouter requests */
+  siteName?: string;
+}
+
+export interface LlamaCppAssistantDefaults {
+  /** Model name (informational — model is loaded server-side) */
+  model?: string;
+  /** llama-server endpoint URL
+   *  @default 'http://localhost:8080'
+   */
+  endpoint?: string;
+}
+
 export interface GlobalConfig {
   /**
    * Bot display name (shown in messages)
@@ -74,7 +94,7 @@ export interface GlobalConfig {
    * Default AI assistant when no codebase-specific preference
    * @default 'claude'
    */
-  defaultAssistant?: 'claude' | 'codex';
+  defaultAssistant?: ProviderType;
 
   /**
    * Assistant-specific defaults (model, reasoning effort, etc.)
@@ -82,6 +102,8 @@ export interface GlobalConfig {
   assistants?: {
     claude?: ClaudeAssistantDefaults;
     codex?: AssistantDefaults;
+    openrouter?: OpenRouterAssistantDefaults;
+    llamacpp?: LlamaCppAssistantDefaults;
   };
 
   /**
@@ -136,7 +158,7 @@ export interface RepoConfig {
    * AI assistant preference for this repository
    * Overrides global default
    */
-  assistant?: 'claude' | 'codex';
+  assistant?: ProviderType;
 
   /**
    * Assistant-specific defaults for this repository
@@ -144,6 +166,8 @@ export interface RepoConfig {
   assistants?: {
     claude?: ClaudeAssistantDefaults;
     codex?: AssistantDefaults;
+    openrouter?: OpenRouterAssistantDefaults;
+    llamacpp?: LlamaCppAssistantDefaults;
   };
 
   /**
@@ -238,10 +262,12 @@ export interface RepoConfig {
  */
 export interface MergedConfig {
   botName: string;
-  assistant: 'claude' | 'codex';
+  assistant: ProviderType;
   assistants: {
     claude: ClaudeAssistantDefaults;
     codex: AssistantDefaults;
+    openrouter: OpenRouterAssistantDefaults;
+    llamacpp: LlamaCppAssistantDefaults;
   };
   streaming: {
     telegram: 'stream' | 'batch';
@@ -299,10 +325,12 @@ export interface MergedConfig {
  */
 export interface SafeConfig {
   botName: string;
-  assistant: 'claude' | 'codex';
+  assistant: ProviderType;
   assistants: {
     claude: Pick<ClaudeAssistantDefaults, 'model'>;
     codex: Pick<AssistantDefaults, 'model' | 'modelReasoningEffort' | 'webSearchMode'>;
+    openrouter: Pick<OpenRouterAssistantDefaults, 'model'>;
+    llamacpp: Pick<LlamaCppAssistantDefaults, 'model' | 'endpoint'>;
   };
   streaming: {
     telegram: 'stream' | 'batch';

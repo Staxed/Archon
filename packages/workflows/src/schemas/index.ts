@@ -67,6 +67,10 @@ export type {
   SandboxSettings,
 } from './dag-node';
 
+// Provider type
+export { providerSchema } from './provider';
+export type { ProviderType } from './provider';
+
 // Workflow definition
 export {
   modelReasoningEffortSchema,

@@ -7,6 +7,7 @@
 import type { IWorkflowStore } from './store';
 import type {
   ModelReasoningEffort,
+  ProviderType,
   WebSearchMode,
   EffortLevel,
   ThinkingConfig,
@@ -226,7 +227,7 @@ export interface IWorkflowAssistantClient {
   getType(): string;
 }
 
-export type AssistantClientFactory = (provider: 'claude' | 'codex') => IWorkflowAssistantClient;
+export type AssistantClientFactory = (provider: ProviderType) => IWorkflowAssistantClient;
 
 // ---------------------------------------------------------------------------
 // Narrow config interface (subset of MergedConfig)
@@ -237,8 +238,8 @@ export type AssistantClientFactory = (provider: 'claude' | 'codex') => IWorkflow
 // ---------------------------------------------------------------------------
 
 export interface WorkflowConfig {
-  /** Default assistant provider ('claude' | 'codex') */
-  assistant: 'claude' | 'codex';
+  /** Default assistant provider */
+  assistant: ProviderType;
   baseBranch?: string;
   docsPath?: string;
   /**
@@ -262,6 +263,16 @@ export interface WorkflowConfig {
       modelReasoningEffort?: ModelReasoningEffort;
       webSearchMode?: WebSearchMode;
       additionalDirectories?: string[];
+    };
+    openrouter: {
+      model?: string;
+      apiKey?: string;
+      siteUrl?: string;
+      siteName?: string;
+    };
+    llamacpp: {
+      model?: string;
+      endpoint?: string;
     };
   };
 }

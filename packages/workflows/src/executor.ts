@@ -8,7 +8,12 @@ import type { WorkflowDeps, WorkflowConfig } from './deps';
 import * as archonPaths from '@archon/paths';
 import { createLogger } from '@archon/paths';
 import { getDefaultBranch, toRepoPath } from '@archon/git';
-import type { WorkflowDefinition, WorkflowRun, WorkflowExecutionResult } from './schemas';
+import type {
+  WorkflowDefinition,
+  WorkflowRun,
+  WorkflowExecutionResult,
+  ProviderType,
+} from './schemas';
 import { executeDagWorkflow } from './dag-executor';
 import { logWorkflowStart, logWorkflowError } from './logger';
 import { getWorkflowEventEmitter } from './event-emitter';
@@ -292,7 +297,7 @@ export async function executeWorkflow(
   // Resolve provider and model once (used by all nodes)
   // When workflow sets a model but not a provider, infer provider from the model.
   // e.g. model: sonnet → provider: claude, even if config.assistant is codex.
-  let resolvedProvider: 'claude' | 'codex';
+  let resolvedProvider: ProviderType;
   let providerSource: string;
   if (workflow.provider) {
     resolvedProvider = workflow.provider;
