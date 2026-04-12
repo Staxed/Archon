@@ -504,3 +504,31 @@
 - No mock.module() needed for buildReplayMessages tests — it's pure. DB tests reuse existing mock.module('./connection') in messages.test.ts.
 
 ---
+
+## 2026-04-12 — US-018: Cost/token tracking persistence layer
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/db/token-usage.ts` — New file: TokenUsageRow/TokenUsageInput/TokenUsageSummaryRow interfaces, recordTokenUsage(), getTokenUsageByRun(), getTokenUsageSummary() with dynamic filter builder
+- `packages/core/src/db/token-usage.test.ts` — 10 tests: insert with all fields, nullable defaults, insert error, getByRun (found/empty), getSummary (no filter, by provider, by model, by date range, combined filters)
+- `packages/workflows/src/store.ts` — Added recordTokenUsage() method to IWorkflowStore interface (non-throwing contract)
+- `packages/core/src/workflows/store-adapter.ts` — Implemented recordTokenUsage() with try/catch + error logging (never throws)
+- `packages/core/package.json` — Added token-usage.test.ts to DB test batch
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/db/token-usage.ts` with CRUD operations for `remote_agent_token_usage` table
+- [x] `recordTokenUsage()` inserts a row with workflow_run_id, conversation_id, node_id, provider, model, input/output/total tokens, cost_usd
+- [x] `getTokenUsageByRun(runId)` returns all usage records for a workflow run
+- [x] `getTokenUsageSummary(filters)` returns aggregated usage by provider/model/time range
+- [x] New `recordTokenUsage()` method added to `IWorkflowStore` interface in `packages/workflows/src/store.ts`
+- [x] Implemented in `packages/core/src/workflows/store-adapter.ts`
+- [x] Type-check passes
+- [x] Tests pass (10/10, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- store-adapter.ts recordTokenUsage follows same non-throwing pattern as createWorkflowEvent — wraps in try/catch, logs error, never fails the workflow.
+- token-usage.test.ts fits in the existing DB test batch (same mock.module('./connection') pattern as messages.test.ts etc).
+- getTokenUsageSummary uses dynamic WHERE clause builder with parameterized queries — safe against SQL injection.
+- SUM/COUNT aggregates work identically on SQLite and PostgreSQL for numeric columns.
+
+---
