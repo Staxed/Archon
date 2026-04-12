@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { createMockLogger } from '../test/mocks/logger';
 
 const mockLogger = createMockLogger();
@@ -37,6 +37,54 @@ const MockCodex = mock(() => ({
 // Mock the Codex SDK
 mock.module('@openai/codex-sdk', () => ({
   Codex: MockCodex,
+}));
+
+// ── Tool-loop fallback mocks ──
+const mockExecuteToolLoop = mock(async function* () {
+  yield { type: 'assistant' as const, content: 'Tool loop response' };
+  yield { type: 'result' as const, sessionId: undefined, tokens: { input: 5, output: 3 } };
+});
+
+mock.module('./tool-loop', () => ({
+  executeToolLoop: mockExecuteToolLoop,
+}));
+
+const mockMcpConnect = mock(() => Promise.resolve());
+const mockMcpShutdown = mock(() => Promise.resolve());
+const mockMcpGetToolDefinitions = mock(() => []);
+const MockMcpToolProvider = mock(() => ({
+  connect: mockMcpConnect,
+  shutdown: mockMcpShutdown,
+  getToolDefinitions: mockMcpGetToolDefinitions,
+}));
+
+mock.module('./mcp-client', () => ({
+  McpToolProvider: MockMcpToolProvider,
+}));
+
+const mockLoadSkills = mock(() =>
+  Promise.resolve({ systemPromptAdditions: [], toolAllowlist: [] })
+);
+
+mock.module('./skill-loader', () => ({
+  loadSkills: mockLoadSkills,
+}));
+
+const mockShouldSummarize = mock(() => false);
+const mockSummarize = mock(() => Promise.resolve({ messages: [] }));
+const MockContextWindowManager = mock(() => ({
+  shouldSummarize: mockShouldSummarize,
+  summarize: mockSummarize,
+}));
+
+mock.module('./context-window', () => ({
+  ContextWindowManager: MockContextWindowManager,
+}));
+
+mock.module('./tool-definitions', () => ({
+  toolDefinitions: [
+    { type: 'function', function: { name: 'Read', description: 'Read a file', parameters: {} } },
+  ],
 }));
 
 import { CodexClient } from './codex';
@@ -998,6 +1046,204 @@ describe('CodexClient', () => {
         await expect(consumeGenerator()).rejects.toThrow(/Codex unknown/);
         expect(mockRunStreamed).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  describe('dispatch logic', () => {
+    const originalEnv = process.env.OPENAI_API_KEY;
+
+    beforeEach(() => {
+      process.env.OPENAI_API_KEY = 'test-key';
+      mockExecuteToolLoop.mockClear();
+      MockMcpToolProvider.mockClear();
+      mockMcpConnect.mockClear();
+      mockMcpShutdown.mockClear();
+      mockMcpGetToolDefinitions.mockClear();
+      mockLoadSkills.mockClear();
+      MockContextWindowManager.mockClear();
+      mockShouldSummarize.mockClear();
+      mockShouldSummarize.mockReturnValue(false);
+
+      // Reset tool loop mock
+      mockExecuteToolLoop.mockImplementation(async function* () {
+        yield { type: 'assistant' as const, content: 'Tool loop response' };
+        yield {
+          type: 'result' as const,
+          sessionId: undefined,
+          tokens: { input: 5, output: 3 },
+        };
+      });
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.OPENAI_API_KEY = originalEnv;
+      } else {
+        delete process.env.OPENAI_API_KEY;
+      }
+    });
+
+    test('uses SDK path when no unsupported features are requested', async () => {
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield { type: 'turn.completed', usage: defaultUsage };
+        })(),
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        model: 'gpt-5.2-codex',
+        outputFormat: { type: 'json_schema', schema: { type: 'object' } },
+      })) {
+        chunks.push(chunk);
+      }
+
+      // Should use SDK path (mockRunStreamed called, not executeToolLoop)
+      expect(mockRunStreamed).toHaveBeenCalled();
+      expect(mockExecuteToolLoop).not.toHaveBeenCalled();
+    });
+
+    test('uses tool-loop path when allowed_tools is set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        tools: ['Read', 'Write'],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+      // Should emit system message tagging the path
+      expect(chunks[0]).toEqual({
+        type: 'system',
+        content: expect.stringContaining('codex:tool-loop'),
+      });
+    });
+
+    test('uses tool-loop path when hooks are set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        hooks: { PreToolUse: [{ hooks: [async () => undefined] }] },
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+    });
+
+    test('uses tool-loop path when systemPrompt is set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        systemPrompt: 'You are a helpful assistant',
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+    });
+
+    test('uses tool-loop path when denied_tools is set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        disallowedTools: ['Bash'],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+    });
+
+    test('uses tool-loop path when skills are set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        skills: ['my-skill'],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+      expect(mockLoadSkills).toHaveBeenCalledWith(['my-skill'], '/workspace');
+    });
+
+    test('uses tool-loop path when mcpConfigs are set', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        mcpConfigs: {
+          myServer: { command: 'node', args: ['server.js'] },
+        },
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+      expect(mockExecuteToolLoop).toHaveBeenCalled();
+      expect(mockMcpConnect).toHaveBeenCalled();
+      expect(mockMcpShutdown).toHaveBeenCalled();
+    });
+
+    test('system message lists unsupported features used', async () => {
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        systemPrompt: 'Custom prompt',
+        tools: ['Read'],
+        hooks: { PreToolUse: [{ hooks: [async () => undefined] }] },
+      })) {
+        chunks.push(chunk);
+      }
+
+      const systemMsg = chunks.find(
+        c => c.type === 'system' && 'content' in c && c.content.includes('codex:tool-loop')
+      );
+      expect(systemMsg).toBeDefined();
+      if (systemMsg && 'content' in systemMsg) {
+        expect(systemMsg.content).toContain('allowed_tools');
+        expect(systemMsg.content).toContain('hooks');
+        expect(systemMsg.content).toContain('systemPrompt');
+      }
+    });
+
+    test('throws when OPENAI_API_KEY is missing for tool-loop path', async () => {
+      delete process.env.OPENAI_API_KEY;
+
+      const consumeGenerator = async (): Promise<void> => {
+        for await (const _ of client.sendQuery('test', '/workspace', undefined, {
+          systemPrompt: 'Custom prompt',
+        })) {
+          // consume
+        }
+      };
+
+      await expect(consumeGenerator()).rejects.toThrow('OPENAI_API_KEY');
+    });
+
+    test('getType still returns codex regardless of dispatch path', () => {
+      expect(client.getType()).toBe('codex');
+    });
+
+    test('existing workflows without unsupported features run on SDK path', async () => {
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield {
+            type: 'item.completed',
+            item: { type: 'agent_message', text: 'Hello!' },
+          };
+          yield { type: 'turn.completed', usage: defaultUsage };
+        })(),
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace')) {
+        chunks.push(chunk);
+      }
+
+      // SDK path used — no tool-loop system message
+      expect(mockRunStreamed).toHaveBeenCalled();
+      expect(mockExecuteToolLoop).not.toHaveBeenCalled();
+      expect(chunks[0]).toEqual({ type: 'assistant', content: 'Hello!' });
     });
   });
 });
