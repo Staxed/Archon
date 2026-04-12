@@ -713,3 +713,24 @@
 - Config was already prepared by US-002 (captureProvider/compileProvider fields with defaults). This story just threads the config through to the call sites.
 
 ---
+
+## 2026-04-12 — US-025: Workflow builder update (4-provider awareness)
+
+**Status**: PASSED
+**Files changed**:
+- `.archon/workflows/defaults/archon-workflow-builder.yaml` — Added proposed_providers to extract-intent output schema; added Provider Capability Profiles section, per-node provider examples, bash-decomposition heuristic, and 3 new rules to generate-yaml prompt; updated schema reference with provider/model per-node options
+
+**Acceptance criteria verified**:
+- [x] `extract-intent` node output_format schema includes `proposed_providers` field (required string)
+- [x] `generate-yaml` node documents per-node `provider:` with all four accepted values and capability profiles table
+- [x] Bash-decomposition heuristic documented (rule 13 + dedicated section)
+- [x] Rule added: all features work identically on all four providers (rule 12)
+- [x] Examples of per-node `provider:`/`model:` syntax included (provider examples section + schema reference)
+- [x] Existing node type guidance preserved (bash/prompt/command/loop guidance unchanged)
+- [x] Type-check passes
+
+**Learnings**:
+- Workflow validator scans prompt text for `$nodeId.output` references — YAML code examples using `$someNode.output` trigger false positive "unknown node" errors. Avoided by using descriptive text instead of inline YAML code blocks for examples.
+- YAML-only story — no TypeScript, no tests needed. Quick to validate.
+
+---
