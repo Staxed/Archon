@@ -15,6 +15,11 @@
 - **Pattern**: All tools export `async function xxxTool(params: Record<string, unknown>, cwd: string): Promise<string>`. Path validation via shared `path-validation.ts` using `validatePath(filePath, cwd)`.
 - **Example**: `import { readTool } from './tools/read';`
 
+### MCP client injectable spawn pattern
+- **Where**: `packages/core/src/clients/mcp-client.ts`
+- **Pattern**: `McpToolProvider` accepts `spawnFn` option for testing since `spyOn` on `require`'d `child_process.spawn` doesn't intercept static imports. Constructor injection avoids mock.module() pollution.
+- **Example**: `new McpToolProvider(configs, { spawnFn: fakeSpawn })`
+
 ### Tool loop patterns
 - **Where**: `packages/core/src/clients/tool-loop.ts`
 - **Pattern**: `executeToolLoop(config)` is an `AsyncGenerator<MessageChunk>`. Uses a `toolRegistry` map for dispatch. SSE parsing via `parseSSEStream()`. Tool call deltas assembled via `assembleToolCalls()`.
@@ -228,5 +233,32 @@
 - ESLint's `@typescript-eslint/no-empty-function` flags `catch(() => {})` — use `void reader.cancel()` instead.
 - No `mock.module()` needed — `spyOn(globalThis, 'fetch')` with `afterEach` restore works for tool loop tests.
 - Tests fit in the existing `bun test src/clients/` batch without mock pollution.
+
+---
+
+## 2026-04-12 — US-008: MCP client wrapper
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/mcp-client.ts` — New file: McpToolProvider class with stdio/HTTP/SSE transports, JSON-RPC 2.0 protocol, tool schema translation, env var expansion, lifecycle management
+- `packages/core/src/clients/mcp-client.test.ts` — 16 tests: stdio connect, tool enumeration, tool calls, HTTP transport, env vars, error handling, shutdown
+- `packages/core/package.json` — Added @modelcontextprotocol/sdk as direct dependency
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/mcp-client.ts`
+- [x] Uses @modelcontextprotocol/sdk (installed as dependency; direct JSON-RPC implementation for stdio since SDK doesn't export transports)
+- [x] Enumerates each server's tools and translates them to OpenAI function-call format
+- [x] Supports env var expansion in MCP server configs (matching dag-executor.ts pattern)
+- [x] Returns merged tool list compatible with tool-definitions.ts format (ToolDefinition[])
+- [x] Handles MCP server lifecycle: spawn on demand, clean shutdown (SIGTERM then SIGKILL)
+- [x] Throws classified errors on MCP server connection failures (McpConnectionError)
+- [x] Type-check passes
+- [x] Tests pass (16/16, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- MCP SDK v1.29 only exports `Client` from `@modelcontextprotocol/sdk/client` but NOT transport classes (StdioClientTransport, SSEClientTransport). These are in unexported subpaths. Direct JSON-RPC implementation over stdio is cleaner than depending on SDK internals.
+- Bun's `spyOn` on `require`'d `child_process.spawn` does NOT intercept static imports. Used constructor injection (`spawnFn` option) instead — cleaner, no mock.module() pollution.
+- MCP protocol uses Content-Length headers like LSP (Language Server Protocol) for framing over stdio.
+- Tests fit in the existing `bun test src/clients/` batch without mock pollution (no mock.module needed).
 
 ---

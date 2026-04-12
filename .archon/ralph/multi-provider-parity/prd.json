@@ -192,8 +192,8 @@
         "US-003"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 8. Files: packages/core/src/clients/mcp-client.ts, packages/core/src/clients/mcp-client.test.ts. Added @modelcontextprotocol/sdk as direct dependency. Used direct JSON-RPC implementation for stdio transport since SDK doesn't export transport classes."
     },
     {
       "id": "US-009",
