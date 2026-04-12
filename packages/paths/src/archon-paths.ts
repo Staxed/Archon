@@ -209,8 +209,12 @@ const SAFE_NAME = /^[a-zA-Z0-9._-]+$/;
  * Parse "owner/repo" from a codebase name string.
  * Returns null if the name doesn't match exactly "owner/repo" format (no nested slashes).
  * Rejects path traversal characters and non-GitHub-compatible names.
+ * Returns null for non-string inputs (defensive — callers may pass DB rows where the field is optional).
  */
-export function parseOwnerRepo(name: string): { owner: string; repo: string } | null {
+export function parseOwnerRepo(
+  name: string | null | undefined
+): { owner: string; repo: string } | null {
+  if (typeof name !== 'string') return null;
   const parts = name.split('/');
   if (parts.length !== 2) return null;
   const [owner, repo] = parts;

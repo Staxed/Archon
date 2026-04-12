@@ -421,6 +421,84 @@ describe('OpenAICompatibleClient', () => {
       expect(hdrs!['X-Custom-Header']).toBe('custom');
     });
 
+    it('handles multi-turn streaming: tool_calls in SSE → tool execution → follow-up text', async () => {
+      // First SSE response streams a Glob tool_call; second streams text.
+      // Glob with a non-matching pattern returns "No matches found" without
+      // needing a real filesystem path, keeping the test hermetic.
+      const toolCallSSE = [
+        `data: ${JSON.stringify({
+          id: 'r1',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call_1',
+                    type: 'function',
+                    function: { name: 'Glob', arguments: '' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+        `data: ${JSON.stringify({
+          id: 'r1',
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    function: { arguments: '{"pattern":"no-match-xyz-zzz"}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+        `data: ${JSON.stringify({
+          id: 'r1',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+        })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+
+      let callCount = 0;
+      globalThis.fetch = async () => {
+        callCount++;
+        if (callCount === 1) return okResponse(toolCallSSE);
+        return okResponse(makeSSE('Found nothing, moving on.'));
+      };
+
+      const client = new OpenAICompatibleClient(BASE_CONFIG);
+      const chunks = await collectChunks(client.sendQuery('search it', '/tmp'));
+
+      expect(callCount).toBe(2);
+      const types = chunks.map(c => c.type);
+      expect(types).toContain('tool');
+      expect(types).toContain('tool_result');
+      expect(types).toContain('assistant');
+      expect(types).toContain('result');
+
+      const tool = chunks.find(c => c.type === 'tool') as Extract<MessageChunk, { type: 'tool' }>;
+      expect(tool.toolName).toBe('Glob');
+      expect(tool.toolCallId).toBe('call_1');
+
+      const result = chunks.find(c => c.type === 'result') as Extract<
+        MessageChunk,
+        { type: 'result' }
+      >;
+      expect(result.numTurns).toBe(2);
+    });
+
     it('allows subclass to override buildExtraBody()', async () => {
       class GrammarClient extends OpenAICompatibleClient {
         protected override getOutputFormatStyle(): 'response_format' | 'grammar' {

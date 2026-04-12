@@ -297,6 +297,8 @@ const INIT_TIMEOUT_MS = 30_000;
 export interface McpToolProviderOptions {
   /** Override spawn function for testing. Defaults to child_process.spawn. */
   spawnFn?: typeof spawn;
+  /** Override initialization timeout (ms) for testing. Defaults to INIT_TIMEOUT_MS. */
+  initTimeoutMs?: number;
 }
 
 export class McpToolProvider {
@@ -304,12 +306,14 @@ export class McpToolProvider {
   private readonly servers: Map<string, ConnectedServer> = new Map();
   private readonly toolMap: Map<string, { serverName: string; mcpToolName: string }> = new Map();
   private readonly spawnFn: typeof spawn;
+  private readonly initTimeoutMs: number;
   private toolDefs: ToolDefinition[] = [];
   private connected = false;
 
   constructor(configs: Record<string, McpServerConfig>, options?: McpToolProviderOptions) {
     this.configs = configs;
     this.spawnFn = options?.spawnFn ?? spawn;
+    this.initTimeoutMs = options?.initTimeoutMs ?? INIT_TIMEOUT_MS;
   }
 
   /**
@@ -537,10 +541,10 @@ export class McpToolProvider {
         reject(
           new McpConnectionError(
             server.serverName,
-            `Server initialization timed out after ${INIT_TIMEOUT_MS}ms`
+            `Server initialization timed out after ${this.initTimeoutMs}ms`
           )
         );
-      }, INIT_TIMEOUT_MS);
+      }, this.initTimeoutMs);
     });
 
     await Promise.race([initPromise, timeoutPromise]);

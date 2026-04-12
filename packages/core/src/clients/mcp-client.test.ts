@@ -582,4 +582,21 @@ describe('McpToolProvider', () => {
       await provider.shutdown();
     });
   });
+
+  describe('initialization timeout', () => {
+    it('throws McpConnectionError when server never responds to initialize', async () => {
+      // Fake process that silently swallows all stdin writes and never
+      // produces stdout — simulates a server that hangs during initialize.
+      const proc = createFakeProcess();
+      proc.stdin.write = (() => true) as typeof proc.stdin.write;
+
+      const provider = new McpToolProvider(
+        { hung: { command: 'fake', args: [] } },
+        { spawnFn: createFakeSpawn(proc), initTimeoutMs: 100 }
+      );
+
+      await expect(provider.connect()).rejects.toBeInstanceOf(McpConnectionError);
+      await expect(provider.connect()).rejects.toThrow(/timed out after 100ms/);
+    });
+  });
 });

@@ -98,4 +98,30 @@ describe('grepTool', () => {
       'Path traversal blocked'
     );
   });
+
+  test('respects head_limit in files_with_matches mode', async () => {
+    // Without head_limit, 'foo' matches 4 files; head_limit=2 caps at 2 entries.
+    const result = await grepTool({ pattern: 'foo', head_limit: 2 }, tempDir);
+    const lines = result.split('\n').filter(l => l.length > 0);
+    expect(lines.length).toBe(2);
+  });
+
+  test('respects head_limit in content mode', async () => {
+    const result = await grepTool(
+      { pattern: 'foo', output_mode: 'content', head_limit: 2 },
+      tempDir
+    );
+    const lines = result.split('\n').filter(l => l.length > 0);
+    expect(lines.length).toBe(2);
+  });
+
+  test('emits line numbers in content mode', async () => {
+    const result = await grepTool(
+      { pattern: 'foo', output_mode: 'content', path: 'foo.ts' },
+      tempDir
+    );
+    // Expected format: "<file>:<lineNum>:<line>"
+    expect(result).toMatch(/foo\.ts:1:const foo = 1;/);
+    expect(result).toMatch(/foo\.ts:3:foo\(\);/);
+  });
 });

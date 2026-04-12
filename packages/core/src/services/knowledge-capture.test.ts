@@ -142,6 +142,65 @@ describe('knowledge-capture', () => {
     expect(mockSendQuery).not.toHaveBeenCalled();
   });
 
+  test('passes captureProvider from config through to the client factory', async () => {
+    mockListMessages.mockResolvedValueOnce([
+      {
+        id: 'm1',
+        conversation_id: 'conv-1',
+        role: 'user' as const,
+        content: 'hi',
+        metadata: '{}',
+        created_at: '2026-04-12T10:00:00Z',
+      },
+      {
+        id: 'm2',
+        conversation_id: 'conv-1',
+        role: 'assistant' as const,
+        content: 'hello',
+        metadata: '{}',
+        created_at: '2026-04-12T10:00:01Z',
+      },
+    ]);
+    mockSendQueryChunks = [{ type: 'assistant', content: '## Notes\n- test\n' }];
+
+    const config = {
+      knowledge: {
+        ...defaultKnowledgeConfig,
+        captureProvider: 'openrouter' as const,
+        captureModel: 'meta-llama/llama-4-scout',
+      },
+      assistants: { claude: { model: 'sonnet', settingSources: ['project'] as const }, codex: {} },
+      worktree: {},
+      docs: { path: 'docs/' },
+      defaults: { loadDefaultCommands: true, loadDefaultWorkflows: true },
+    };
+
+    await captureKnowledge('conv-1', 'acme', 'widget', config as never);
+
+    // Factory must be called with the provider from config, not a hardcoded 'claude'
+    expect(mockGetAssistantClient).toHaveBeenCalledWith('openrouter');
+  });
+
+  test('defaults captureProvider to "claude" when config omits it', async () => {
+    mockListMessages.mockResolvedValueOnce([
+      {
+        id: 'm1',
+        conversation_id: 'conv-1',
+        role: 'user' as const,
+        content: 'hi',
+        metadata: '{}',
+        created_at: '2026-04-12T10:00:00Z',
+      },
+    ]);
+    mockSendQueryChunks = [{ type: 'assistant', content: '## Notes\n- ok\n' }];
+
+    // defaultKnowledgeConfig intentionally omits captureProvider — the service
+    // must coalesce to 'claude' for backward compatibility.
+    await captureKnowledge('conv-1', 'acme', 'widget');
+
+    expect(mockGetAssistantClient).toHaveBeenCalledWith('claude');
+  });
+
   test('extracts knowledge from conversation and appends to daily log', async () => {
     mockListMessages.mockResolvedValueOnce([
       {
