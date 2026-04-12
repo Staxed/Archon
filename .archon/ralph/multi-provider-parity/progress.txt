@@ -24,6 +24,12 @@
 - **Where**: `packages/core/src/clients/tool-loop.ts`
 - **Pattern**: `executeToolLoop(config)` is an `AsyncGenerator<MessageChunk>`. Uses a `toolRegistry` map for dispatch. SSE parsing via `parseSSEStream()`. Tool call deltas assembled via `assembleToolCalls()`.
 - **Key types**: `ToolLoopConfig`, `ChatMessage`, `ToolCall`, `ChatCompletionChunk`, `ChatCompletionResponse`, `ProviderEndpointConfig`
+- **Feature params**: `allowedTools`, `deniedTools`, `systemPrompt`, `outputFormat`, `outputFormatStyle` are processed at the start of `executeToolLoop()` — callers pass these via config, not pre-processing.
+
+### Output format style pattern
+- **Where**: `packages/core/src/clients/openai-compatible.ts`, `packages/core/src/clients/llamacpp.ts`
+- **Pattern**: `getOutputFormatStyle()` protected hook returns `'response_format'` (default) or `'grammar'` (Llama.cpp). Passed to tool loop's `outputFormatStyle` config field. The tool loop handles the actual mapping.
+- **Example**: `protected override getOutputFormatStyle(): 'response_format' | 'grammar' { return 'grammar'; }`
 
 ### Pre-existing test failures
 - `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
@@ -530,5 +536,32 @@
 - token-usage.test.ts fits in the existing DB test batch (same mock.module('./connection') pattern as messages.test.ts etc).
 - getTokenUsageSummary uses dynamic WHERE clause builder with parameterized queries — safe against SQL injection.
 - SUM/COUNT aggregates work identically on SQLite and PostgreSQL for numeric columns.
+
+---
+
+## 2026-04-12 — US-019: Tool loop feature integration (allowed_tools, denied_tools, output_format, systemPrompt)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-loop.ts` — Added allowedTools, deniedTools, systemPrompt, outputFormat, outputFormatStyle to ToolLoopConfig; filterTools(), buildOutputFormatBody() helpers; processing at start of executeToolLoop()
+- `packages/core/src/clients/tool-loop.test.ts` — 10 new tests: allowedTools (2), deniedTools (2), systemPrompt (2), outputFormat (4)
+- `packages/core/src/clients/openai-compatible.ts` — Refactored to delegate tool filtering, outputFormat to tool loop; removed filterToolsByName import; simplified resolveTools() and buildExtraBody(); added getOutputFormatStyle() hook
+- `packages/core/src/clients/openai-compatible.test.ts` — Updated structured output and subclass extensibility tests for new pattern
+- `packages/core/src/clients/llamacpp.ts` — Replaced buildExtraBody() override with getOutputFormatStyle() override returning 'grammar'
+
+**Acceptance criteria verified**:
+- [x] Tool loop filters tool definitions by `allowed_tools` before sending to API
+- [x] Tool loop excludes `denied_tools` from tool list before sending
+- [x] Tool loop prepends `systemPrompt` as first system message in messages array
+- [x] Tool loop maps `output_format` to `response_format: { type: 'json_schema', json_schema: ... }` for OpenRouter
+- [x] Tool loop maps `output_format` to GBNF grammar for Llama.cpp (via US-010 translator)
+- [x] All four features work identically across all providers that use the tool loop
+- [x] Type-check passes
+- [x] Tests pass (24/24 tool-loop, 22/22 openai-compatible, 17/17 llamacpp; only pre-existing failures)
+
+**Learnings**:
+- Output format mapping is inherently provider-specific (response_format vs grammar). Added `outputFormatStyle` field to ToolLoopConfig and `getOutputFormatStyle()` protected hook on OpenAICompatibleClient for clean subclass override.
+- The OpenAI-compatible client still prepends systemPrompt to messages before context window check (for accurate token estimates), then the tool loop's systemPrompt is for direct callers (like future Codex fallback).
+- filterToolsByName import removed from openai-compatible.ts — tool loop now handles all filtering.
 
 ---
