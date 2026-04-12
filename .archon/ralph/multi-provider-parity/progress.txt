@@ -454,3 +454,27 @@
 - No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
 
 ---
+
+## 2026-04-12 — US-016: Client factory expansion + barrel exports
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/factory.ts` — Added 'openrouter' and 'llamacpp' cases to switch, updated error message to list all 4 providers
+- `packages/core/src/clients/index.ts` — Added OpenRouterClient and LlamaCppClient barrel exports
+- `packages/core/src/clients/factory.test.ts` — Added tests for openrouter (env-var-gated) and llamacpp providers, updated error message assertions
+
+**Acceptance criteria verified**:
+- [x] Factory switch in `packages/core/src/clients/factory.ts` includes `case 'openrouter'` and `case 'llamacpp'`
+- [x] Error message on `default` case lists all 4 supported providers
+- [x] Barrel exports in `packages/core/src/clients/index.ts` include new client classes
+- [x] Factory accepts config for new providers (endpoint, API key) — clients read from env vars/defaults in constructors
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Factory pattern unchanged — each client reads config from env vars in its constructor, factory just passes type string.
+- OpenRouter test requires OPENROUTER_API_KEY env var (constructor throws without it), so test uses beforeEach/afterEach to set/restore env.
+- LlamaCpp requires no env var — defaults to localhost:8080.
+- Very small story — 3 files changed, minimal risk.
+
+---
