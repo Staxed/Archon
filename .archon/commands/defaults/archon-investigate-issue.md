@@ -51,9 +51,7 @@ gh issue view {number} --json title,body,labels,comments,state,url,author
 
 ### 1.3 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for prior work on
-similar issues, known bugs, past root cause analyses, and architectural decisions
-that may be relevant to this investigation.
+$KNOWLEDGE
 
 ### 1.4 Classify Issue Type
 

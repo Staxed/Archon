@@ -132,7 +132,11 @@ async function handleWorkflowCompleted(runId: string, conversationId: string): P
  * Read and format JSONL workflow logs for use as additional capture context.
  * Returns empty string if logs don't exist or can't be read.
  */
-async function readWorkflowLogs(owner: string, repo: string, runId: string): Promise<string> {
+export async function readWorkflowLogs(
+  owner: string,
+  repo: string,
+  runId: string
+): Promise<string> {
   try {
     const logPath = getRunLogPath(owner, repo, runId);
     const content = await readFile(logPath, 'utf-8');

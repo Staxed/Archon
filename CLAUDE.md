@@ -683,6 +683,7 @@ async function createSession(conversationId: string, codebaseId: string) {
 - `$DOCS_DIR` - Documentation directory path; configured via `docs.path` in `.archon/config.yaml`. Defaults to `docs/`. Never throws.
 - `$LOOP_USER_INPUT` - User feedback provided via `/workflow approve <id> <text>` at an interactive loop gate. Only populated on the first iteration of a resumed interactive loop; empty string on all other iterations.
 - `$REJECTION_REASON` - Reviewer feedback provided via `/workflow reject <id> <reason>` at an approval gate. Only populated in `on_reject` prompts; empty string elsewhere.
+- `$KNOWLEDGE` - Pre-loaded knowledge base content (global + project indexes and unprocessed logs). Resolved once at workflow start via `WorkflowDeps.loadKnowledgeContext()`. Empty string when no knowledge is available or knowledge is disabled.
 
 **Command Types:**
 

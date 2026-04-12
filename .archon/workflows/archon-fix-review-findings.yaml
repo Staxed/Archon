@@ -52,9 +52,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for past review
-      patterns, recurring findings, and known code quality concerns. This can help
-      prioritize which medium/low findings are most impactful to fix.
+      $KNOWLEDGE
 
       ## Instructions
 

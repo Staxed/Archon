@@ -26,9 +26,7 @@ Review ALL code changed on this branch and implement simplifications directly. Y
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for established
-patterns, architecture decisions, and style conventions to ensure simplifications
-align with project norms.
+$KNOWLEDGE
 
 ## What to Simplify
 

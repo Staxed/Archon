@@ -161,8 +161,9 @@ nodes:
       ## Knowledge Base Integration
 
       Generated workflows should leverage the project knowledge base when relevant.
-      The knowledge base index is automatically injected into the AI agent's context at
-      session start (via the prompt builder), so workflows do not need to load it manually.
+      The `$KNOWLEDGE` variable is substituted at execution time with formatted knowledge
+      base content (global and project indexes plus unprocessed logs). When no knowledge
+      exists, it resolves to an empty string.
 
       For prompt nodes that perform analysis, planning, or decision-making, include a
       "Knowledge Base" section like this:
@@ -170,18 +171,15 @@ nodes:
       ```
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for prior decisions,
-      lessons, and patterns relevant to this task. Use past knowledge to inform your approach
-      and avoid repeating past mistakes.
+      $KNOWLEDGE
       ```
 
       Guidelines:
-      - Add KB references to nodes that benefit from historical context (analysis, planning,
-        architecture, refactoring) — not to simple bash or classification nodes
-      - KB references should gracefully degrade — always use "if available" phrasing so
-        workflows work fine when the KB is empty
-      - Focus on the type of knowledge most relevant to the node's purpose (e.g., architecture
-        decisions for refactoring nodes, past lessons for review nodes)
+      - Add `$KNOWLEDGE` references to nodes that benefit from historical context (analysis,
+        planning, architecture, refactoring) — not to simple bash or classification nodes
+      - `$KNOWLEDGE` gracefully degrades — it resolves to empty string when no KB exists,
+        so workflows work fine with or without a knowledge base
+      - Place `$KNOWLEDGE` under a `## Knowledge Base` heading for consistency
 
       ## Rules
       1. The `name:` field MUST match: $extract-intent.output.workflow_name

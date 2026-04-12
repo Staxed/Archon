@@ -723,7 +723,8 @@ async function executeNodeInternal(
   nodeOutputs: Map<string, NodeOutput>,
   resumeSessionId: string | undefined,
   configuredCommandFolder?: string,
-  issueContext?: string
+  issueContext?: string,
+  knowledgeContext?: string
 ): Promise<NodeExecutionResult> {
   const nodeStartTime = Date.now();
   const nodeContext: SendMessageContext = { workflowId: workflowRun.id, nodeName: node.id };
@@ -800,7 +801,8 @@ async function executeNodeInternal(
       baseBranch,
       docsDir,
       issueContext,
-      `dag node '${node.id}' prompt`
+      `dag node '${node.id}' prompt`,
+      knowledgeContext
     );
   } catch (error) {
     const err = error as Error;
@@ -1312,7 +1314,8 @@ async function executeBashNode(
   baseBranch: string,
   docsDir: string,
   nodeOutputs: Map<string, NodeOutput>,
-  issueContext?: string
+  issueContext?: string,
+  knowledgeContext?: string
 ): Promise<NodeOutput> {
   const nodeStartTime = Date.now();
   const nodeContext: SendMessageContext = { workflowId: workflowRun.id, nodeName: node.id };
@@ -1350,7 +1353,10 @@ async function executeBashNode(
     artifactsDir,
     baseBranch,
     docsDir,
-    issueContext
+    issueContext,
+    undefined, // loopUserInput
+    undefined, // rejectionReason
+    knowledgeContext
   );
   const finalScript = substituteNodeOutputRefs(substitutedScript, nodeOutputs, true);
 
@@ -1462,7 +1468,8 @@ async function executeKnowledgeExtractNode(
   logDir: string,
   baseBranch: string,
   docsDir: string,
-  issueContext?: string
+  issueContext?: string,
+  knowledgeContext?: string
 ): Promise<NodeOutput> {
   const log = getLog();
 
@@ -1491,7 +1498,10 @@ async function executeKnowledgeExtractNode(
       artifactsDir,
       baseBranch,
       docsDir,
-      issueContext
+      issueContext,
+      undefined, // loopUserInput
+      undefined, // rejectionReason
+      knowledgeContext
     );
     const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
 
@@ -1610,7 +1620,8 @@ async function executeLoopNode(
   docsDir: string,
   nodeOutputs: Map<string, NodeOutput>,
   config: WorkflowConfig,
-  issueContext?: string
+  issueContext?: string,
+  knowledgeContext?: string
 ): Promise<NodeExecutionResult> {
   const loop = node.loop;
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
@@ -1711,7 +1722,9 @@ async function executeLoopNode(
         baseBranch,
         docsDir,
         issueContext,
-        i === startIteration ? loopUserInput : ''
+        i === startIteration ? loopUserInput : '',
+        undefined, // rejectionReason
+        knowledgeContext
       );
       const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
 
@@ -1907,7 +1920,10 @@ async function executeLoopNode(
           artifactsDir,
           baseBranch,
           docsDir,
-          issueContext
+          issueContext,
+          undefined, // loopUserInput
+          undefined, // rejectionReason
+          knowledgeContext
         );
         const substitutedBash = substituteNodeOutputRefs(
           bashPrompt,
@@ -2101,7 +2117,8 @@ async function executeApprovalNode(
   config: WorkflowConfig,
   workflowLevelOptions: WorkflowLevelOptions,
   configuredCommandFolder?: string,
-  issueContext?: string
+  issueContext?: string,
+  knowledgeContext?: string
 ): Promise<NodeOutput> {
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
 
@@ -2159,7 +2176,8 @@ async function executeApprovalNode(
       docsDir,
       issueContext,
       undefined, // loopUserInput
-      rejectionReason
+      rejectionReason,
+      knowledgeContext
     );
 
     // Build a synthetic PromptNode to reuse executeNodeInternal
@@ -2198,7 +2216,8 @@ async function executeApprovalNode(
       nodeOutputs,
       undefined, // fresh session
       configuredCommandFolder,
-      issueContext
+      issueContext,
+      knowledgeContext
     );
 
     if (output.state === 'failed') {
@@ -2269,7 +2288,8 @@ export async function executeDagWorkflow(
   config: WorkflowConfig,
   configuredCommandFolder?: string,
   issueContext?: string,
-  priorCompletedNodes?: Map<string, string>
+  priorCompletedNodes?: Map<string, string>,
+  knowledgeContext?: string
 ): Promise<string | undefined> {
   const dagStartTime = Date.now();
   const workflowLevelOptions = {
@@ -2489,7 +2509,8 @@ export async function executeDagWorkflow(
               baseBranch,
               docsDir,
               nodeOutputs,
-              issueContext
+              issueContext,
+              knowledgeContext
             );
             return { nodeId: node.id, output };
           }
@@ -2539,7 +2560,8 @@ export async function executeDagWorkflow(
               docsDir,
               nodeOutputs,
               config,
-              issueContext
+              issueContext,
+              knowledgeContext
             );
             return { nodeId: node.id, output };
           }
@@ -2563,7 +2585,8 @@ export async function executeDagWorkflow(
               config,
               workflowLevelOptions,
               configuredCommandFolder,
-              issueContext
+              issueContext,
+              knowledgeContext
             );
             return { nodeId: node.id, output };
           }
@@ -2612,7 +2635,8 @@ export async function executeDagWorkflow(
               logDir,
               baseBranch,
               docsDir,
-              issueContext
+              issueContext,
+              knowledgeContext
             );
             return { nodeId: node.id, output };
           }
@@ -2663,7 +2687,8 @@ export async function executeDagWorkflow(
               // ensures the source is never mutated, so retries can safely resume from it.
               resumeSessionId,
               configuredCommandFolder,
-              issueContext
+              issueContext,
+              knowledgeContext
             );
 
             if (output.state !== 'failed') break;

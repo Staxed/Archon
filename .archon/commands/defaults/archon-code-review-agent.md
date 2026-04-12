@@ -52,9 +52,7 @@ Note all coding standards, patterns, and rules.
 
 ### 1.5 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for architecture
-decisions, known patterns, past review findings, and coding conventions that should
-inform this review.
+$KNOWLEDGE
 
 **PHASE_1_CHECKPOINT:**
 - [ ] PR number identified

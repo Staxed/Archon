@@ -32,8 +32,7 @@ cat $ARTIFACTS_DIR/.pr-base
 
 ### 1.3 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for known issues,
-architecture decisions, and historical context related to the code areas this PR touches.
+$KNOWLEDGE
 
 ### 1.4 Understand What the PR Claims to Fix
 

@@ -75,9 +75,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for prior refactoring
-      decisions, lessons learned from past code reorganization, and architectural patterns.
-      Past decisions about module boundaries should inform your decomposition strategy.
+      $KNOWLEDGE
 
       ## Instructions
 

@@ -18,9 +18,7 @@ Generate production-quality Ralph PRD files — `prd.md` (full context document)
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for architecture
-decisions, design patterns, and past lessons that should inform PRD generation
-and story planning.
+$KNOWLEDGE
 
 ---
 

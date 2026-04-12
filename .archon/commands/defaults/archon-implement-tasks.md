@@ -22,8 +22,7 @@ Execute each task from the plan, validating after every change.
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for coding patterns,
-architecture decisions, and past implementation lessons relevant to the tasks in this plan.
+$KNOWLEDGE
 
 ---
 

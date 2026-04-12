@@ -32,8 +32,7 @@ cat $ARTIFACTS_DIR/.feature-branch
 
 ### 1.3 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for architecture
-decisions, patterns, and past review findings relevant to the changed code areas.
+$KNOWLEDGE
 
 ---
 

@@ -45,8 +45,7 @@ cat CLAUDE.md | grep -A 20 -i "error"
 
 ### 1.5 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for error handling
-conventions, known failure patterns, and past findings about error handling gaps.
+$KNOWLEDGE
 
 **PHASE_1_CHECKPOINT:**
 - [ ] PR number identified

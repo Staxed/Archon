@@ -205,6 +205,36 @@ describe('substituteWorkflowVariables', () => {
     );
     expect(prompt).toBe('Fix: ');
   });
+
+  it('replaces $KNOWLEDGE with knowledge context', () => {
+    const { prompt } = substituteWorkflowVariables(
+      'Context: $KNOWLEDGE\nDo the work.',
+      'run-1',
+      'msg',
+      '/tmp',
+      'main',
+      'docs/',
+      undefined,
+      undefined,
+      undefined,
+      '## Knowledge Base\n\n### Project Knowledge\n\nSome knowledge here'
+    );
+    expect(prompt).toBe(
+      'Context: ## Knowledge Base\n\n### Project Knowledge\n\nSome knowledge here\nDo the work.'
+    );
+  });
+
+  it('clears $KNOWLEDGE when not provided', () => {
+    const { prompt } = substituteWorkflowVariables(
+      'Before $KNOWLEDGE After',
+      'run-1',
+      'msg',
+      '/tmp',
+      'main',
+      'docs/'
+    );
+    expect(prompt).toBe('Before  After');
+  });
 });
 
 describe('buildPromptWithContext', () => {

@@ -288,10 +288,21 @@ export type KnowledgeExtractFn = (
   metadata: { workflowRunId: string; nodeId: string }
 ) => Promise<string>;
 
+/**
+ * Loads compiled knowledge context (index + unprocessed logs) for a project.
+ * Returns a formatted string ready for prompt injection, or empty string if unavailable.
+ *
+ * @param cwd - Working directory (used to resolve owner/repo via git remote)
+ * @param codebaseId - Optional codebase ID for DB-based owner/repo resolution
+ */
+export type KnowledgeLoaderFn = (cwd: string, codebaseId?: string) => Promise<string>;
+
 export interface WorkflowDeps {
   store: IWorkflowStore;
   getAssistantClient: AssistantClientFactory;
   loadConfig: (cwd: string) => Promise<WorkflowConfig>;
   /** Optional callback for knowledge-extract DAG nodes. If not provided, knowledge-extract nodes fail with an error. */
   extractKnowledge?: KnowledgeExtractFn;
+  /** Optional loader for knowledge base context. Returns formatted knowledge index + unprocessed logs for $KNOWLEDGE substitution. */
+  loadKnowledgeContext?: KnowledgeLoaderFn;
 }

@@ -113,14 +113,19 @@ IMPORTANT: Always clone into ~/.archon/workspaces/{owner}/{repo}/source unless t
 /** Maximum approximate token budget for the knowledge index (~500 tokens ≈ ~2000 chars) */
 const KNOWLEDGE_INDEX_MAX_CHARS = 2000;
 
-/** Maximum approximate token budget for raw logs (~2000 tokens ≈ ~8000 chars) */
-const KNOWLEDGE_LOGS_MAX_CHARS = 8000;
+/**
+ * Maximum approximate token budget for raw unprocessed logs (~8000 tokens ≈ ~32000 chars).
+ * This is a safety ceiling, not a target — stale-log auto-flush should keep the volume
+ * much lower in practice. Bumped from 8000 to 32000 to handle bursty workflow runs between
+ * flushes (a typical capture is 500-2000 chars, so this holds ~15-60 captures).
+ */
+const KNOWLEDGE_LOGS_MAX_CHARS = 32000;
 
 /**
  * Load a knowledge index.md file, returning its content or empty string if not found.
  * Gracefully handles ENOENT (empty KB state).
  */
-async function loadKnowledgeIndex(knowledgePath: string): Promise<string> {
+export async function loadKnowledgeIndex(knowledgePath: string): Promise<string> {
   try {
     const indexPath = join(knowledgePath, 'index.md');
     const content = await readFile(indexPath, 'utf-8');
@@ -142,7 +147,7 @@ async function loadKnowledgeIndex(knowledgePath: string): Promise<string> {
  * If no last-flush.json exists, includes all daily logs (pre-first-flush state).
  * Returns concatenated log content truncated to the token budget.
  */
-async function loadUnprocessedLogs(knowledgePath: string): Promise<string> {
+export async function loadUnprocessedLogs(knowledgePath: string): Promise<string> {
   const logsDir = join(knowledgePath, 'logs');
   const metaPath = join(knowledgePath, 'meta', 'last-flush.json');
 

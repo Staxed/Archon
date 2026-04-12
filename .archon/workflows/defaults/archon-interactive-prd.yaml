@@ -128,9 +128,7 @@ nodes:
       **CRITICAL**: Explore the codebase by READING actual files. Do not guess or assume.
       For every claim you make about the codebase, cite the exact file and line.
 
-      **Knowledge base**: If a knowledge base index is available in your context, check it
-      for architecture decisions, technical constraints, and patterns that may affect feasibility.
-      Past decisions about similar features or components should inform your assessment.
+      $KNOWLEDGE
 
       1. **What already exists** that partially solves this problem?
          - Read existing API endpoints, DB queries, UI components

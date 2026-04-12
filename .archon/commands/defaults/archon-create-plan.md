@@ -114,10 +114,7 @@ Note all coding standards, patterns, and rules that apply to this codebase.
 
 ### 1.3 Check Knowledge Base
 
-If a knowledge base index is available in your context, check it for prior
-architecture decisions, design patterns, past implementation lessons, and known
-constraints that should inform this plan. Incorporate relevant context into your
-approach and reference it in the plan.
+$KNOWLEDGE
 
 ### 1.4 Extract from Input
 

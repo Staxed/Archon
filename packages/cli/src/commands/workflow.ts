@@ -7,10 +7,19 @@ import {
   loadRepoConfig,
   generateAndSetTitle,
   createWorkflowStore,
+  readWorkflowLogs,
 } from '@archon/core';
+import { captureKnowledge } from '@archon/core/services/knowledge-capture';
+import { scheduleFlush } from '@archon/core/services/knowledge-scheduler';
+import { flushKnowledge, readLastFlush } from '@archon/core/services/knowledge-flush';
 import { WORKFLOW_EVENT_TYPES, type WorkflowEventType } from '@archon/workflows/store';
 import { configureIsolation, getIsolationProvider } from '@archon/isolation';
-import { createLogger, getArchonHome } from '@archon/paths';
+import {
+  createLogger,
+  getArchonHome,
+  parseOwnerRepo,
+  getProjectKnowledgePath,
+} from '@archon/paths';
 import { createWorkflowDeps } from '@archon/core/workflows/store-adapter';
 import { discoverWorkflowsWithConfig } from '@archon/workflows/workflow-discovery';
 import { resolveWorkflowName } from '@archon/workflows/router';
@@ -36,6 +45,8 @@ import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventsDb from '@archon/core/db/workflow-events';
 import type { WorkflowEventRow } from '@archon/core/db/workflow-events';
 import * as git from '@archon/git';
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { CLIAdapter } from '../adapters/cli-adapter';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -64,6 +75,76 @@ export interface WorkflowRunOptions {
   codebaseId?: string; // Passed by resume/approve to skip path-based lookup
   quiet?: boolean;
   verbose?: boolean;
+}
+
+/**
+ * Flush knowledge synchronously if unprocessed logs are older than the debounce window.
+ *
+ * Motivation: the debounced scheduleFlush() timer is .unref()'d and dies when the CLI
+ * process exits. Without this check, daily logs would accumulate indefinitely and never
+ * get compiled into structured articles. This function provides natural batching — the
+ * first CLI run after the debounce window elapses pays the ~30s flush cost once, then
+ * subsequent runs skip the flush until logs become stale again.
+ *
+ * Non-fatal: any error is logged and swallowed.
+ */
+async function maybeFlushStaleKnowledge(owner: string, repo: string): Promise<void> {
+  try {
+    const config = await loadConfig();
+    const debounceMinutes = config.knowledge.flushDebounceMinutes;
+    const knowledgePath = getProjectKnowledgePath(owner, repo);
+    const lastFlush = await readLastFlush(knowledgePath);
+
+    // If never flushed but logs exist, readLastFlush returns null.
+    // Check the logs directory for any unprocessed logs.
+    const logsDir = join(knowledgePath, 'logs');
+
+    let oldestUnprocessedMs: number | null = null;
+    try {
+      const entries = await readdir(logsDir);
+      const logFiles = entries.filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f));
+
+      // Find the oldest log file modified time
+      for (const file of logFiles) {
+        const s = await stat(join(logsDir, file));
+        const mtimeMs = s.mtimeMs;
+
+        // If there's a last-flush timestamp, only count logs newer than it
+        if (lastFlush?.timestamp) {
+          const flushMs = new Date(lastFlush.timestamp).getTime();
+          if (mtimeMs <= flushMs) continue;
+        }
+
+        if (oldestUnprocessedMs === null || mtimeMs < oldestUnprocessedMs) {
+          oldestUnprocessedMs = mtimeMs;
+        }
+      }
+    } catch {
+      // No logs directory — nothing to flush
+      return;
+    }
+
+    if (oldestUnprocessedMs === null) return; // Nothing unprocessed
+
+    const ageMs = Date.now() - oldestUnprocessedMs;
+    const debounceMs = debounceMinutes * 60 * 1000;
+
+    if (ageMs < debounceMs) {
+      getLog().debug({ owner, repo, ageMs, debounceMs }, 'cli.stale_flush_skipped_within_debounce');
+      return;
+    }
+
+    process.stderr.write('Flushing knowledge base (unprocessed logs are stale)...\n');
+    const report = await flushKnowledge(owner, repo);
+    getLog().info(
+      { owner, repo, articlesUpdated: report.articlesUpdated },
+      'cli.stale_flush_completed'
+    );
+    process.stderr.write('Knowledge flush complete.\n');
+  } catch (err) {
+    getLog().warn({ err: err as Error, owner, repo }, 'cli.stale_flush_failed');
+    // Non-fatal
+  }
 }
 
 /**
@@ -602,6 +683,43 @@ export async function workflowRunCommand(
     );
   } finally {
     unsubscribe?.();
+  }
+
+  // Post-workflow knowledge capture (awaited so it finishes before CLI exits)
+  if (codebase && result.success) {
+    const parsed = parseOwnerRepo(codebase.name);
+    if (parsed) {
+      try {
+        process.stderr.write('Capturing knowledge...\n');
+        // Read JSONL workflow logs as additional context
+        const workflowLogContent = result.workflowRunId
+          ? await readWorkflowLogs(parsed.owner, parsed.repo, result.workflowRunId)
+          : '';
+        const report = await captureKnowledge(
+          conversation.id,
+          parsed.owner,
+          parsed.repo,
+          undefined,
+          workflowLogContent
+        );
+        if (!report.skipped) {
+          // Schedule debounced flush (may not fire if CLI exits quickly)
+          await scheduleFlush(parsed.owner, parsed.repo);
+          process.stderr.write('Knowledge captured.\n');
+        }
+
+        // Stale-log check: if unprocessed logs exist older than the debounce window,
+        // flush synchronously before CLI exits. Naturally batches flush work across runs:
+        // first run after the debounce window pays the ~30s cost, subsequent runs don't.
+        await maybeFlushStaleKnowledge(parsed.owner, parsed.repo);
+      } catch (err) {
+        getLog().warn(
+          { err: err as Error, conversationId: conversation.id },
+          'cli.post_workflow_capture_failed'
+        );
+        // Non-fatal — don't fail the CLI if capture fails
+      }
+    }
   }
 
   // Check result and exit appropriately

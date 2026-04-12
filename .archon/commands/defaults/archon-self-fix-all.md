@@ -30,8 +30,7 @@ Read all review artifacts and fix EVERYTHING surfaced. Unlike conservative auto-
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for coding patterns,
-architecture decisions, and past review findings to ensure fixes align with project conventions.
+$KNOWLEDGE
 
 ## Phase 1: LOAD — Get Context
 

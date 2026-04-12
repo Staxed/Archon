@@ -13,7 +13,18 @@ import * as envVarDb from '../db/env-vars';
 import { getAssistantClient } from '../clients/factory';
 import { loadConfig as loadMergedConfig } from '../config/config-loader';
 import { extractKnowledgeFromContext } from '../services/knowledge-capture';
-import { createLogger } from '@archon/paths';
+import {
+  createLogger,
+  getGlobalKnowledgePath,
+  getProjectKnowledgePath,
+  parseOwnerRepo,
+} from '@archon/paths';
+import {
+  loadKnowledgeIndex,
+  loadUnprocessedLogs,
+  formatKnowledgeSection,
+} from '../orchestrator/prompt-builder';
+import * as git from '@archon/git';
 
 // Compile-time assertion: MergedConfig must remain a structural subtype of WorkflowConfig.
 // If MergedConfig drifts from WorkflowConfig, this line becomes a type error.
@@ -64,6 +75,66 @@ export function createWorkflowStore(): IWorkflowStore {
 }
 
 /**
+ * Load knowledge context for a project from its knowledge base.
+ * Resolves owner/repo from cwd via git remote, then loads the knowledge index
+ * and any unprocessed daily logs. Returns formatted string or empty on failure.
+ */
+async function loadKnowledgeContext(cwd: string, codebaseId?: string): Promise<string> {
+  try {
+    // Try to resolve owner/repo from codebase DB record first, then fall back to git remote
+    let owner: string | undefined;
+    let repo: string | undefined;
+
+    if (codebaseId) {
+      const codebase = await codebaseDb.getCodebase(codebaseId);
+      if (codebase) {
+        const parsed = parseOwnerRepo(codebase.name);
+        if (parsed) {
+          owner = parsed.owner;
+          repo = parsed.repo;
+        }
+      }
+    }
+
+    if (!owner || !repo) {
+      try {
+        const repoPath = git.toRepoPath(cwd);
+        const remoteUrl = await git.getRemoteUrl(repoPath);
+        if (remoteUrl) {
+          const urlParts = remoteUrl.replace(/\.git$/, '').split(/[/:]/);
+          repo = urlParts.pop();
+          owner = urlParts.pop();
+        }
+      } catch {
+        // Git remote resolution failed — fall through to global-only
+      }
+    }
+
+    // Load global knowledge
+    const globalKnowledgePath = getGlobalKnowledgePath();
+    const globalIndex = await loadKnowledgeIndex(globalKnowledgePath);
+
+    // Load project knowledge if owner/repo resolved
+    let projectIndex = '';
+    let projectLogs = '';
+    if (owner && repo) {
+      const projectKnowledgePath = getProjectKnowledgePath(owner, repo);
+      projectIndex = await loadKnowledgeIndex(projectKnowledgePath);
+      projectLogs = await loadUnprocessedLogs(projectKnowledgePath);
+    }
+
+    // Prefer project logs over global logs
+    const globalLogs = !projectLogs ? await loadUnprocessedLogs(globalKnowledgePath) : '';
+    const unprocessedLogs = projectLogs || globalLogs;
+
+    return formatKnowledgeSection(globalIndex, projectIndex, unprocessedLogs);
+  } catch (err) {
+    getLog().warn({ err: err as Error, cwd, codebaseId }, 'knowledge.context_load_failed');
+    return '';
+  }
+}
+
+/**
  * Create the canonical WorkflowDeps for the workflow engine.
  * Single construction point — avoids duplicating the wiring across callers.
  */
@@ -73,5 +144,6 @@ export function createWorkflowDeps(): WorkflowDeps {
     getAssistantClient,
     loadConfig: loadMergedConfig,
     extractKnowledge: extractKnowledgeFromContext,
+    loadKnowledgeContext,
   };
 }

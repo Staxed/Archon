@@ -159,9 +159,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for known issues,
-      patterns, and lessons learned related to this area. Past bug reports and their resolutions
-      may help identify the root cause faster.
+      $KNOWLEDGE
 
       ## Instructions
 

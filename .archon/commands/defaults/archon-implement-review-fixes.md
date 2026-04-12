@@ -29,8 +29,7 @@ Read the consolidated review artifact and implement all CRITICAL and HIGH priori
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for coding patterns,
-architecture decisions, and past fix approaches to ensure fixes align with project conventions.
+$KNOWLEDGE
 
 ## Phase 1: LOAD - Get Fix List
 

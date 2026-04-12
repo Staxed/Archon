@@ -275,6 +275,20 @@ export async function executeWorkflow(
 
   const docsDir = config.docsPath ?? 'docs/';
 
+  // Load knowledge context once for the entire workflow (used by $KNOWLEDGE substitution)
+  let knowledgeContext = '';
+  if (deps.loadKnowledgeContext) {
+    try {
+      knowledgeContext = await deps.loadKnowledgeContext(cwd, codebaseId);
+    } catch (error) {
+      // Non-fatal: knowledge context is supplementary
+      getLog().warn(
+        { err: error as Error, cwd, codebaseId },
+        'workflow.knowledge_context_load_failed'
+      );
+    }
+  }
+
   // Resolve provider and model once (used by all nodes)
   // When workflow sets a model but not a provider, infer provider from the model.
   // e.g. model: sonnet → provider: claude, even if config.assistant is codex.
@@ -635,7 +649,8 @@ export async function executeWorkflow(
       config,
       configuredCommandFolder,
       issueContext,
-      dagPriorCompletedNodes
+      dagPriorCompletedNodes,
+      knowledgeContext
     );
 
     // executeDagWorkflow throws on fatal errors; check DB status for result

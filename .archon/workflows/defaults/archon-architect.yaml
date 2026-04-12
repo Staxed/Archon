@@ -78,9 +78,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for prior architecture
-      decisions, past refactoring lessons, and known patterns. Past decisions about module
-      boundaries and complexity trade-offs should inform your assessment.
+      $KNOWLEDGE
 
       ## Instructions
 

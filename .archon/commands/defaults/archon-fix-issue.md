@@ -25,8 +25,7 @@ Execute the implementation plan from `/investigate-issue`:
 
 ## Knowledge Base
 
-If a knowledge base index is available in your context, check it for architecture
-decisions, coding patterns, and past fix lessons relevant to this implementation.
+$KNOWLEDGE
 
 ---
 

@@ -59,9 +59,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for prior work on
-      similar issues, known patterns, and past decisions that could inform classification
-      and resolution approach.
+      $KNOWLEDGE
 
       ## Classification Rules
 
@@ -167,8 +165,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for PR conventions,
-      commit message patterns, and any project-specific PR requirements.
+      $KNOWLEDGE
 
       ## Instructions
 
@@ -215,8 +212,7 @@ nodes:
 
       ## Knowledge Base
 
-      If a knowledge base index is available in your context, check it for past review
-      patterns and known areas of concern to inform which agents to prioritize.
+      $KNOWLEDGE
 
       ## Rules
 
