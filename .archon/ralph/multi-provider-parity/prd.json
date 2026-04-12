@@ -305,8 +305,8 @@
         "US-011"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 13. Files: openai-compatible.ts, openai-compatible.test.ts."
     },
     {
       "id": "US-014",

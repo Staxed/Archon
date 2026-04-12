@@ -372,3 +372,33 @@
 - Combined migration (000_combined.sql) serves dual purpose: fresh install schema + idempotent upgrade via ALTER TABLE IF NOT EXISTS.
 
 ---
+
+## 2026-04-12 — US-013: OpenAI-compatible base client
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/openai-compatible.ts` — New file: OpenAICompatibleClient class implementing IAssistantClient, with tool-loop integration, context-window management, rate-limit retry, tool resolution, system prompt injection, structured output mapping, and subclass hooks
+- `packages/core/src/clients/openai-compatible.test.ts` — 22 tests: single-turn, system prompt, structured output, tool resolution (4 cases), endpoint config (4 cases), rate limiting (3 cases), error handling, abort signal, model selection, subclass extensibility (2 cases)
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/openai-compatible.ts`
+- [x] Implements `IAssistantClient` interface (sendQuery + getType)
+- [x] Accepts configurable endpoint URL, API key, default headers
+- [x] Builds ChatCompletionRequest with messages, tools, response_format
+- [x] Sends via fetch() with SSE streaming support (via tool loop)
+- [x] Parses ChatCompletionChunk responses (via tool loop)
+- [x] Yields MessageChunk events matching existing discriminated union
+- [x] Integrates with tool-execution loop from US-007 for tool_calls handling
+- [x] Integrates with context-window manager from US-011
+- [x] Supports rate limiting with exponential backoff (HTTP 429, jitter, configurable max retries)
+- [x] Type-check passes
+- [x] Tests pass (22/22, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Tool loop defaults to streaming (SSE) — test responses must be SSE-formatted (`data: {...}\n\n` + `data: [DONE]\n\n`), not plain JSON.
+- `excludeToolsByName` operates on the full `toolDefinitions` array, not on a subset. When chaining allowed_tools + denied_tools, apply the denylist as a manual filter on the whitelisted result.
+- Rate-limit retry wraps the entire tool loop generator — tests override the private `sleep` method to avoid real delays.
+- Protected hooks (`buildEndpoint`, `buildExtraBody`) allow subclasses to customize without reimplementing `sendQuery`. Verified via subclass tests.
+- No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
+
+---
