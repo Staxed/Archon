@@ -54,3 +54,29 @@
 - SafeConfig OpenAPI Zod schema (config.schemas.ts) also needs updating alongside the TypeScript types.
 
 ---
+
+## 2026-04-12 — US-002: Config loader defaults for new providers
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/config/config-loader.ts` — Added OPENROUTER_API_KEY/LLAMACPP_ENDPOINT env overrides, defaultAssistant validation, captureProvider/compileProvider defaults, updateGlobalConfig new provider merge
+- `packages/core/src/config/config-types.ts` — Added captureProvider and compileProvider fields to KnowledgeConfig
+- `packages/core/src/config/config-loader.test.ts` — Added 10 new tests for env vars, validation, KB provider config, provider merging
+
+**Acceptance criteria verified**:
+- [x] config-loader.ts merges assistants.openrouter and assistants.llamacpp sections from config YAML
+- [x] Default values: openrouter: {}, llamacpp: { endpoint: 'http://localhost:8080' }
+- [x] OPENROUTER_API_KEY env var populates openrouter.apiKey when set
+- [x] LLAMACPP_ENDPOINT env var overrides llamacpp.endpoint when set
+- [x] Env override guard in config-loader.ts accepts all 4 provider values
+- [x] Invalid defaultAssistant values rejected with loud error at config load time
+- [x] KnowledgeConfig extended with captureProvider and compileProvider fields, both defaulting to 'claude'
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- US-001 already handled most merge logic for new providers (merge functions, defaults). US-002 was incremental.
+- ESLint catches unnecessary type assertions — `config.assistant` is already `ProviderType`, so casting to a subset type for `.includes()` check is flagged. Use `readonly string[]` for the validation array instead.
+- `updateGlobalConfig()` had hardcoded 2-provider assistants merge — needed widening to 4 providers.
+
+---
