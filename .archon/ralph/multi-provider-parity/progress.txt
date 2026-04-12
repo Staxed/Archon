@@ -659,3 +659,32 @@
 - "Claude-only" warning branches in dag-executor.ts are NOT removed in this story — that's US-023's scope (DAG executor branching + validator cleanup).
 
 ---
+
+## 2026-04-12 — US-023: DAG executor new provider branching + validator cleanup
+
+**Status**: PASSED
+**Files changed**:
+- `packages/workflows/src/dag-executor.ts` — Added vendor/model auto-inference (openrouter), removed Codex warning blocks, added openrouter/llamacpp option assembly, added loadMcpConfigRaw() helper, updated buildLoopNodeOptions() for all 4 providers
+- `packages/workflows/src/deps.ts` — Added mcpConfigs and skills fields to WorkflowAssistantOptions
+- `packages/workflows/src/validator.ts` — Removed 4 Claude-only warning blocks (MCP, skills, hooks, tool restrictions), removed unused resolveProvider() function and DagNode import
+- `packages/workflows/src/dag-executor.test.ts` — Updated 4 tests from warning-checking to feature-passthrough verification
+- `packages/workflows/src/validator.test.ts` — Updated MCP+Codex test to verify no warning instead of warning presence
+
+**Acceptance criteria verified**:
+- [x] `resolveNodeProviderAndModel()` adds branches for 'openrouter' and 'llamacpp'
+- [x] Option assembly for new providers passes all features through to the tool loop (no silent skips)
+- [x] `buildLoopNodeOptions()` handles new provider branches
+- [x] Validator removes Claude-only warnings for features now supported on all providers
+- [x] Validator adds new provider-specific validations — runtime validation in client classes (OpenRouterMissingApiKeyError, LlamaCppEndpointUnreachableError)
+- [x] Provider auto-inference from model name handles vendor/model format (infer openrouter) and unknown models
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failures)
+
+**Learnings**:
+- Codex warnings in resolveNodeProviderAndModel() were all obsolete after US-022 — Codex now handles all features via tool-loop fallback. All removed.
+- WorkflowAssistantOptions in deps.ts needed mcpConfigs and skills fields — these existed on AssistantRequestOptions in core but not on the workflows-side interface.
+- loadMcpConfigRaw() helper avoids duplicating env-var warning logic across provider branches.
+- Removing validator warnings cascaded: unused DagNode import, unused resolveProvider function, unused provider variable all needed cleanup.
+- ESLint caught `node.model && node.model.includes('/')` → requires optional chain `node.model?.includes('/')`.
+
+---
