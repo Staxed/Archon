@@ -258,8 +258,8 @@
       "technicalNotes": "Per PRD section 3c. Requires the `kind`/`summarized`/`summary_of` columns from US-012 migration. Summarization calls the same provider with a summarization prompt. Export `ContextWindowManager` class with `estimateTokens()`, `shouldSummarize()`, `summarize()` methods.",
       "dependsOn": [],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 11. Files: packages/core/src/clients/context-window.ts, packages/core/src/clients/context-window.test.ts. ContextWindowManager class with estimateTokens(), shouldSummarize(), summarize() methods. 24 tests. DB persistence deferred to US-012/US-017."
     },
     {
       "id": "US-012",

@@ -315,3 +315,31 @@
 - Tests fit in existing `bun test src/clients/` batch without mock pollution.
 
 ---
+
+## 2026-04-12 — US-011: Context-window manager + summarization
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/context-window.ts` — New file: ContextWindowManager class with token estimation, summarization threshold detection, and provider-backed summarization
+- `packages/core/src/clients/context-window.test.ts` — 24 tests: string/message/tool token estimation, model window lookup, shouldSummarize thresholds, summarization (success, preserved turns, system messages, error cases, request verification)
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/context-window.ts`
+- [x] Estimates token count of outgoing request (system + tools + messages)
+- [x] Uses model's declared window size when known; falls back to conservative character-based estimator (3.5 chars/token)
+- [x] Triggers summarization when estimated tokens exceed window * reservationThreshold (default 0.75)
+- [x] Summarizes oldest contiguous turns, preserving recent turns verbatim (default 10)
+- [x] Inserts synthetic summary message (as system role) replacing summarized turns, with SummaryMetadata tracking indices
+- [x] Replay reconstructs: system prompt + summary messages + non-summarized verbatim turns
+- [x] Throws ContextWindowSummarizationError on: API failure, empty response, no turns to summarize, result still too large
+- [x] Does NOT affect Claude/Codex SDK paths (standalone utility, no imports from SDK clients)
+- [x] Type-check passes
+- [x] Tests pass (24/24, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- DB persistence columns (kind, summarized, summary_of from US-012) not needed for this story — ContextWindowManager operates purely on in-memory ChatMessage[] arrays. DB integration deferred to US-017.
+- SummaryMetadata provides the turn indices and token estimates needed for future DB persistence.
+- No mock.module() needed — globalThis.fetch override with afterEach restore is sufficient.
+- Tests fit in existing `bun test src/clients/` batch without mock pollution.
+
+---
