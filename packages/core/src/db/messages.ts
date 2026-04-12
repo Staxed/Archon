@@ -17,6 +17,9 @@ export interface MessageRow {
   role: 'user' | 'assistant';
   content: string;
   metadata: string; // JSON string - parsed by frontend
+  kind: 'text' | 'tool_call' | 'tool_result' | 'summary';
+  summarized: boolean;
+  summary_of: string | null; // JSON array of UUIDs (TEXT in SQLite, UUID[] in PostgreSQL)
   created_at: string;
 }
 

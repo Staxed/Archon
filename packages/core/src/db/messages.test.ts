@@ -25,6 +25,9 @@ describe('messages', () => {
     role: 'user',
     content: 'Hello, world!',
     metadata: '{}',
+    kind: 'text',
+    summarized: false,
+    summary_of: null,
     created_at: '2025-01-01T00:00:00.000Z',
   };
 
