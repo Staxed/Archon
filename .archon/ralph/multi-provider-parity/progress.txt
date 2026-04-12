@@ -760,3 +760,25 @@
 - Fire-and-forget `.catch()` pattern matches existing `createWorkflowEvent()` pattern for non-critical persistence.
 
 ---
+
+## 2026-04-12 — US-027: Tests: tool implementations + definitions
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-definitions.test.ts` — New file: 27 tests covering JSON Schema format validation, filtering (filterToolsByName, excludeToolsByName), Map lookup, and specific tool schema verification
+
+**Acceptance criteria verified**:
+- [x] Unit tests for each tool implementation: read, write, edit, glob, grep, bash, web-fetch, web-search (already existed from US-004/005/006)
+- [x] Tests verify path traversal protection (already existed in read, write, edit, glob, grep tests)
+- [x] Tests verify error messages for common failures (already existed: file not found, permission denied, timeout)
+- [x] Tests verify tool definitions match expected JSON Schema format (new: 8 structural tests)
+- [x] Tests verify tool definitions are filterable by name (new: 8 filter/exclude tests)
+- [x] Test files co-located as `*.test.ts` next to source
+- [x] Mock isolation: no mock.module() used in any tool test file — all use real filesystem or spyOn
+- [x] All tests pass (only pre-existing failures in prompt-builder-knowledge.test.ts and workflow-run.test.ts)
+
+**Learnings**:
+- Most acceptance criteria were already satisfied by tests written in US-004/005/006. The only missing piece was tool-definitions.test.ts.
+- No mock.module() needed — tool definitions are pure data exports, no external dependencies.
+
+---
