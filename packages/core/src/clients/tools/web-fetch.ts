@@ -5,12 +5,12 @@ const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB truncation limit
 /**
  * Fetch content from a URL. Returns the response body as text or JSON.
  * Handles common content types (text/html, application/json, text/plain).
- * Returns errors as structured messages rather than throwing.
+ * Throws on validation errors and fetch failures (tool loop catches and formats these).
  */
 export async function webFetchTool(params: Record<string, unknown>, _cwd: string): Promise<string> {
   const url = params.url;
   if (typeof url !== 'string' || url.length === 0) {
-    return '[Error] WebFetch: url is required and must be a non-empty string.';
+    throw new Error('WebFetch: url is required and must be a non-empty string.');
   }
 
   // Validate URL format
@@ -18,12 +18,14 @@ export async function webFetchTool(params: Record<string, unknown>, _cwd: string
   try {
     parsedUrl = new URL(url);
   } catch {
-    return `[Error] WebFetch: Invalid URL: ${url}`;
+    throw new Error(`WebFetch: Invalid URL: ${url}`);
   }
 
   // Only allow http and https
   if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    return `[Error] WebFetch: Unsupported protocol: ${parsedUrl.protocol} (only http and https are supported).`;
+    throw new Error(
+      `WebFetch: Unsupported protocol: ${parsedUrl.protocol} (only http and https are supported).`
+    );
   }
 
   let timeoutMs = DEFAULT_TIMEOUT_MS;
@@ -48,7 +50,7 @@ export async function webFetchTool(params: Record<string, unknown>, _cwd: string
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      return `[Error] WebFetch: HTTP ${response.status} ${response.statusText} for ${url}`;
+      throw new Error(`WebFetch: HTTP ${response.status} ${response.statusText} for ${url}`);
     }
 
     const contentType = response.headers.get('content-type') ?? '';
@@ -78,9 +80,9 @@ export async function webFetchTool(params: Record<string, unknown>, _cwd: string
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      return `[Error] WebFetch: Request timed out after ${timeoutMs / 1000}s for ${url}`;
+      throw new Error(`WebFetch: Request timed out after ${timeoutMs / 1000}s for ${url}`);
     }
-    return `[Error] WebFetch: ${error.message}`;
+    throw new Error(`WebFetch: ${error.message}`);
   }
 }
 

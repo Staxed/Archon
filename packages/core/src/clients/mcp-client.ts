@@ -475,22 +475,27 @@ export class McpToolProvider {
 
     child.on('error', err => {
       log.error({ serverName, error: err.message }, 'mcp.server_process_error');
-      // Reject all pending requests
-      for (const [id, pending] of server.pendingRequests) {
+      // Reject all pending requests and remove stale server entry
+      for (const [, pending] of server.pendingRequests) {
         pending.reject(new McpConnectionError(serverName, `Process error: ${err.message}`));
-        server.pendingRequests.delete(id);
+      }
+      server.pendingRequests.clear();
+      this.servers.delete(serverName);
+      if (server.process && !server.process.killed) {
+        server.process.kill('SIGKILL');
       }
     });
 
     child.on('exit', (code, signal) => {
       log.info({ serverName, code, signal }, 'mcp.server_process_exit');
-      // Reject all pending requests
-      for (const [id, pending] of server.pendingRequests) {
+      // Reject all pending requests and remove stale server entry
+      for (const [, pending] of server.pendingRequests) {
         pending.reject(
           new McpConnectionError(serverName, `Process exited (code=${code}, signal=${signal})`)
         );
-        server.pendingRequests.delete(id);
       }
+      server.pendingRequests.clear();
+      this.servers.delete(serverName);
     });
 
     // Initialize the MCP session

@@ -20,23 +20,18 @@ describe('webSearchTool', () => {
     if (originalEnv.SERPER_API_KEY) process.env.SERPER_API_KEY = originalEnv.SERPER_API_KEY;
   });
 
-  test('returns error for missing query', async () => {
-    const result = await webSearchTool({}, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('query is required');
+  test('throws for missing query', async () => {
+    await expect(webSearchTool({}, '/tmp')).rejects.toThrow('query is required');
   });
 
-  test('returns error for empty query', async () => {
-    const result = await webSearchTool({ query: '' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('query is required');
+  test('throws for empty query', async () => {
+    await expect(webSearchTool({ query: '' }, '/tmp')).rejects.toThrow('query is required');
   });
 
-  test('returns error when no API key configured', async () => {
-    const result = await webSearchTool({ query: 'test' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('No search API key configured');
-    expect(result).toContain('TAVILY_API_KEY');
+  test('throws when no API key configured', async () => {
+    await expect(webSearchTool({ query: 'test' }, '/tmp')).rejects.toThrow(
+      'No search API key configured'
+    );
   });
 
   test('uses Tavily when TAVILY_API_KEY is set', async () => {
@@ -133,24 +128,20 @@ describe('webSearchTool', () => {
     expect(result).toContain('No results found');
   });
 
-  test('handles API error response', async () => {
+  test('throws on API error response', async () => {
     process.env.TAVILY_API_KEY = 'bad-key';
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }))
     );
 
-    const result = await webSearchTool({ query: 'test' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('401');
+    await expect(webSearchTool({ query: 'test' }, '/tmp')).rejects.toThrow('401');
   });
 
-  test('handles network error', async () => {
+  test('throws on network error', async () => {
     process.env.TAVILY_API_KEY = 'test-key';
     globalThis.fetch = mock(() => Promise.reject(new Error('Connection refused')));
 
-    const result = await webSearchTool({ query: 'test' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('Connection refused');
+    await expect(webSearchTool({ query: 'test' }, '/tmp')).rejects.toThrow('Connection refused');
   });
 
   test('respects max_results parameter', async () => {

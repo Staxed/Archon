@@ -185,4 +185,16 @@ describe('skill-loader', () => {
     // When any skill specifies restrictions, the merged allowlist applies
     expect(result.toolAllowlist).toEqual(['Bash']);
   });
+
+  test('rejects skill names containing path traversal sequences', async () => {
+    await expect(loadSkills(['../../etc'], testDir)).rejects.toThrow(/invalid skill name/i);
+  });
+
+  test('rejects skill names containing forward slashes', async () => {
+    await expect(loadSkills(['foo/bar'], testDir)).rejects.toThrow(/invalid skill name/i);
+  });
+
+  test('rejects skill names containing backslashes', async () => {
+    await expect(loadSkills(['foo\\bar'], testDir)).rejects.toThrow(/invalid skill name/i);
+  });
 });

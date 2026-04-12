@@ -151,8 +151,17 @@ function parseAllowedTools(value: string): string[] {
 /**
  * Resolve a skill name to its SKILL.md file path.
  * Searches project-level first, then user-level.
+ * Rejects skill names containing path traversal sequences.
  */
 async function resolveSkillPath(skillName: string, cwd: string): Promise<string> {
+  // Sanitize skill name to prevent path traversal
+  if (skillName.includes('..') || skillName.includes('/') || skillName.includes('\\')) {
+    throw new SkillParseError(
+      skillName,
+      'Invalid skill name: must not contain "..", "/", or "\\".'
+    );
+  }
+
   const projectPath = join(cwd, '.claude', 'skills', skillName, 'SKILL.md');
   const userPath = join(homedir(), '.claude', 'skills', skillName, 'SKILL.md');
 

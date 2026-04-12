@@ -1274,4 +1274,24 @@ describe('executeToolLoop', () => {
       expect(messages.some(m => m.content === 'Use the API tool when possible.')).toBe(true);
     });
   });
+
+  describe('maxIterations guard', () => {
+    test('stops after maxIterations and emits error result', async () => {
+      // Mock fetch to always return a tool_call response (infinite loop scenario)
+      const readArgs = JSON.stringify({ file_path: '/tmp/test.txt' });
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+        Promise.resolve(
+          jsonResponse(toolCallResponse([{ id: 'call_x', name: 'Read', arguments: readArgs }]))
+        )
+      );
+
+      const chunks = await collectChunks(baseConfig({ maxIterations: 2 }));
+
+      const resultChunk = chunks.find(c => c.type === 'result');
+      expect(resultChunk).toBeDefined();
+      expect(resultChunk!.stopReason).toBe('max_iterations');
+      expect(resultChunk!.isError).toBe(true);
+      expect(resultChunk!.numTurns).toBe(2);
+    });
+  });
 });

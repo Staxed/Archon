@@ -9,28 +9,22 @@ describe('webFetchTool', () => {
     globalThis.fetch = originalFetch;
   });
 
-  test('returns error for missing url', async () => {
-    const result = await webFetchTool({}, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('url is required');
+  test('throws for missing url', async () => {
+    await expect(webFetchTool({}, '/tmp')).rejects.toThrow('url is required');
   });
 
-  test('returns error for empty url', async () => {
-    const result = await webFetchTool({ url: '' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('url is required');
+  test('throws for empty url', async () => {
+    await expect(webFetchTool({ url: '' }, '/tmp')).rejects.toThrow('url is required');
   });
 
-  test('returns error for invalid url', async () => {
-    const result = await webFetchTool({ url: 'not-a-url' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('Invalid URL');
+  test('throws for invalid url', async () => {
+    await expect(webFetchTool({ url: 'not-a-url' }, '/tmp')).rejects.toThrow('Invalid URL');
   });
 
-  test('returns error for unsupported protocol', async () => {
-    const result = await webFetchTool({ url: 'ftp://example.com/file' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('Unsupported protocol');
+  test('throws for unsupported protocol', async () => {
+    await expect(webFetchTool({ url: 'ftp://example.com/file' }, '/tmp')).rejects.toThrow(
+      'Unsupported protocol'
+    );
   });
 
   test('fetches JSON content', async () => {
@@ -78,15 +72,14 @@ describe('webFetchTool', () => {
     expect(result).not.toContain('<p>');
   });
 
-  test('returns error for HTTP error status', async () => {
+  test('throws for HTTP error status', async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response('Not Found', { status: 404, statusText: 'Not Found' }))
     );
 
-    const result = await webFetchTool({ url: 'https://example.com/missing' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('404');
-    expect(result).toContain('Not Found');
+    await expect(webFetchTool({ url: 'https://example.com/missing' }, '/tmp')).rejects.toThrow(
+      '404'
+    );
   });
 
   test('returns empty body message', async () => {
@@ -102,21 +95,21 @@ describe('webFetchTool', () => {
     expect(result).toBe('(empty response body)');
   });
 
-  test('handles fetch network error', async () => {
+  test('throws on fetch network error', async () => {
     globalThis.fetch = mock(() => Promise.reject(new Error('Network error')));
 
-    const result = await webFetchTool({ url: 'https://example.com/fail' }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('Network error');
+    await expect(webFetchTool({ url: 'https://example.com/fail' }, '/tmp')).rejects.toThrow(
+      'Network error'
+    );
   });
 
-  test('handles timeout via AbortError', async () => {
+  test('throws on timeout via AbortError', async () => {
     const abortError = new DOMException('The operation was aborted', 'AbortError');
     globalThis.fetch = mock(() => Promise.reject(abortError));
 
-    const result = await webFetchTool({ url: 'https://example.com/slow', timeout: 5000 }, '/tmp');
-    expect(result).toContain('[Error]');
-    expect(result).toContain('timed out');
+    await expect(
+      webFetchTool({ url: 'https://example.com/slow', timeout: 5000 }, '/tmp')
+    ).rejects.toThrow('timed out');
   });
 
   test('truncates large responses', async () => {

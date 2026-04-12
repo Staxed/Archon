@@ -1,7 +1,6 @@
 /**
  * Perform a web search and return results.
- * Returns a structured error message if no search API key is configured.
- * Returns errors as structured messages rather than throwing.
+ * Throws on validation errors, missing config, and API failures (tool loop catches and formats).
  */
 export async function webSearchTool(
   params: Record<string, unknown>,
@@ -9,7 +8,7 @@ export async function webSearchTool(
 ): Promise<string> {
   const query = params.query;
   if (typeof query !== 'string' || query.length === 0) {
-    return '[Error] WebSearch: query is required and must be a non-empty string.';
+    throw new Error('WebSearch: query is required and must be a non-empty string.');
   }
 
   const maxResults =
@@ -26,21 +25,16 @@ export async function webSearchTool(
       : null;
 
   if (!apiKey || !apiProvider) {
-    return (
-      '[Error] WebSearch: No search API key configured. ' +
-      'Set TAVILY_API_KEY or SERPER_API_KEY environment variable to enable web search.'
+    throw new Error(
+      'WebSearch: No search API key configured. ' +
+        'Set TAVILY_API_KEY or SERPER_API_KEY environment variable to enable web search.'
     );
   }
 
-  try {
-    if (apiProvider === 'tavily') {
-      return await searchTavily(query, maxResults, apiKey);
-    }
-    return await searchSerper(query, maxResults, apiKey);
-  } catch (err) {
-    const error = err as Error;
-    return `[Error] WebSearch: ${error.message}`;
+  if (apiProvider === 'tavily') {
+    return await searchTavily(query, maxResults, apiKey);
   }
+  return await searchSerper(query, maxResults, apiKey);
 }
 
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB truncation limit
@@ -80,7 +74,9 @@ async function searchTavily(query: string, maxResults: number, apiKey: string): 
   clearTimeout(timeoutId);
 
   if (!response.ok) {
-    return `[Error] WebSearch: Tavily API returned HTTP ${response.status} ${response.statusText}`;
+    throw new Error(
+      `WebSearch: Tavily API returned HTTP ${response.status} ${response.statusText}`
+    );
   }
 
   const data = (await response.json()) as TavilyResponse;
@@ -148,7 +144,9 @@ async function searchSerper(query: string, maxResults: number, apiKey: string): 
   clearTimeout(timeoutId);
 
   if (!response.ok) {
-    return `[Error] WebSearch: Serper API returned HTTP ${response.status} ${response.statusText}`;
+    throw new Error(
+      `WebSearch: Serper API returned HTTP ${response.status} ${response.statusText}`
+    );
   }
 
   const data = (await response.json()) as SerperResponse;
