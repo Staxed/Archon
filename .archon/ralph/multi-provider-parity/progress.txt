@@ -343,3 +343,32 @@
 - Tests fit in existing `bun test src/clients/` batch without mock pollution.
 
 ---
+
+## 2026-04-12 — US-012: DB migrations (messages columns + token usage table)
+
+**Status**: PASSED
+**Files changed**:
+- `migrations/021_messages_columns_token_usage.sql` — New PostgreSQL migration: kind/summarized/summary_of on messages, new token_usage table
+- `migrations/000_combined.sql` — Updated combined schema with new columns, table, indexes, and idempotent ALTER statements
+- `packages/core/src/db/adapters/sqlite.ts` — createSchema() includes new columns/table; migrateColumns() adds columns for existing DBs
+- `packages/core/src/db/messages.ts` — MessageRow interface extended with kind, summarized, summary_of fields
+- `packages/core/src/db/messages.test.ts` — Updated mock data to include new fields
+
+**Acceptance criteria verified**:
+- [x] New migration adds `kind VARCHAR(32) NOT NULL DEFAULT 'text'` to remote_agent_messages
+- [x] New migration adds `summarized BOOLEAN NOT NULL DEFAULT FALSE` to remote_agent_messages
+- [x] New migration adds `summary_of UUID[] NULL` to remote_agent_messages (TEXT in SQLite for JSON array)
+- [x] Backfill: existing rows remain kind='text', summarized=false, summary_of=NULL (via DEFAULT clauses)
+- [x] New remote_agent_token_usage table with all required columns
+- [x] Foreign keys: workflow_run_id -> workflow_runs (CASCADE), conversation_id -> conversations (CASCADE)
+- [x] Migration works on both SQLite and PostgreSQL
+- [x] Type-check passes
+
+**Learnings**:
+- SQLite doesn't support UUID[] — use TEXT column for JSON array storage. PostgreSQL uses UUID[] natively.
+- SQLite BOOLEAN maps to INTEGER (0/1). The MessageRow interface uses `boolean` which works for both.
+- SQLite NUMERIC(12,6) maps to REAL for cost_usd — sufficient precision for cost tracking.
+- migrateColumns() pattern: PRAGMA table_info() to check existing columns, then ALTER TABLE ADD COLUMN for missing ones.
+- Combined migration (000_combined.sql) serves dual purpose: fresh install schema + idempotent upgrade via ALTER TABLE IF NOT EXISTS.
+
+---

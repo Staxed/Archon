@@ -278,8 +278,8 @@
       "technicalNotes": "Follow existing migration pattern in `migrations/` directory. SQLite doesn't support UUID[] \u2014 use TEXT with JSON array for SQLite adapter. The `IDatabase` interface abstracts PostgreSQL/SQLite differences. Token usage table per PRD section 5.",
       "dependsOn": [],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 12. Files: 021_messages_columns_token_usage.sql, 000_combined.sql, sqlite.ts, messages.ts, messages.test.ts"
     },
     {
       "id": "US-013",
