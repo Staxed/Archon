@@ -169,3 +169,31 @@
 - All 50KB truncation limits match across tools for consistent behavior.
 
 ---
+
+## 2026-04-12 — US-006: Tool implementations: web (web-fetch, web-search)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tools/web-fetch.ts` — WebFetch tool: URL fetching with timeout, HTML stripping, JSON handling, truncation
+- `packages/core/src/clients/tools/web-search.ts` — WebSearch tool: Tavily and Serper API support with structured error messages
+- `packages/core/src/clients/tools/web-fetch.test.ts` — 12 tests: JSON, HTML, plain text, errors, timeout, truncation, protocol validation
+- `packages/core/src/clients/tools/web-search.test.ts` — 12 tests: both APIs, error handling, parameter passing, no-API-key message
+
+**Acceptance criteria verified**:
+- [x] New files: web-fetch.ts, web-search.ts in packages/core/src/clients/tools/
+- [x] WebFetch tool: accepts URL, returns response body (text or JSON)
+- [x] WebSearch tool: accepts query string, returns search results
+- [x] WebFetch respects reasonable timeout (30s default)
+- [x] WebFetch handles common content types (text/html, application/json, text/plain)
+- [x] Both tools return errors as structured messages (not thrown exceptions)
+- [x] Each tool exports function matching (params: Record<string, unknown>, cwd: string) => Promise<string>
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Web tools return errors as strings (not thrown exceptions) since the tool loop needs to pass errors back to the AI model as tool results.
+- WebSearch supports two providers (Tavily, Serper) with Tavily preferred when both keys are set.
+- HTML stripping removes script/style elements, strips tags, decodes entities, and collapses whitespace.
+- No mock.module() needed — globalThis.fetch override with afterEach restore is sufficient for test isolation.
+
+---
