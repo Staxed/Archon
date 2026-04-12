@@ -28,8 +28,8 @@
       "technicalNotes": "Touch points: `packages/workflows/src/schemas/workflow.ts:32`, `packages/workflows/src/schemas/dag-node.ts:120`, `packages/workflows/src/deps.ts:229,241`, `packages/workflows/src/model-validation.ts:1-16`, `packages/core/src/config/config-types.ts:77,139,241,301`. Export a `ProviderType` union from a shared location to avoid repeating the literal union. The `config-loader.ts:223` env override guard also needs updating.",
       "dependsOn": [],
       "priority": 1,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 1. Files: provider.ts, workflow.ts, dag-node.ts, deps.ts, config-types.ts, config-loader.ts, model-validation.ts, dag-executor.ts, executor.ts, config.schemas.ts, types/index.ts, schemas/index.ts, model-validation.test.ts, config-loader.test.ts"
     },
     {
       "id": "US-002",
@@ -47,7 +47,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Modify `packages/core/src/config/config-loader.ts:172-209` (defaults block) and the merge logic. Add env var reads for `OPENROUTER_API_KEY` and `LLAMACPP_ENDPOINT`. Follow existing pattern: `applyEnvOverrides()` at line 223. Add `captureProvider`/`compileProvider` to `KnowledgeConfig` in `config-types.ts` with validation against the 4-provider enum.",
-      "dependsOn": ["US-001"],
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 2,
       "passes": false,
       "notes": ""
@@ -88,7 +90,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Use Node.js `fs` APIs. Path validation: resolve the absolute path and verify it starts with the normalized `cwd`. Edit tool must fail if `old_string` is not unique in the file (match Claude SDK behavior). Use `@archon/git`'s `execFileAsync` pattern for consistency.",
-      "dependsOn": ["US-003"],
+      "dependsOn": [
+        "US-003"
+      ],
       "priority": 4,
       "passes": false,
       "notes": ""
@@ -110,7 +114,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Grep: delegate to ripgrep (`rg`) if available, fall back to Node.js regex search. Glob: use fast-glob or similar. Bash: spawn via `execFileAsync(['bash', '-c', command], { cwd })`. All output should be truncated at a reasonable limit (e.g., 50KB) with a note if truncated.",
-      "dependsOn": ["US-003"],
+      "dependsOn": [
+        "US-003"
+      ],
       "priority": 5,
       "passes": false,
       "notes": ""
@@ -131,7 +137,9 @@
         "Tests pass"
       ],
       "technicalNotes": "WebFetch: use native `fetch()`. WebSearch: consider using a search API or returning a 'not available' message if no search API key is configured. Output should be truncated at a reasonable limit. HTML responses should be converted to readable text.",
-      "dependsOn": ["US-003"],
+      "dependsOn": [
+        "US-003"
+      ],
       "priority": 6,
       "passes": false,
       "notes": ""
@@ -153,8 +161,13 @@
         "Type-check passes",
         "Tests pass"
       ],
-      "technicalNotes": "Core algorithm per PRD section 3. The loop is provider-agnostic — it receives an HTTP endpoint config and message format. Tool dispatch uses a registry built from `tool-definitions.ts` + tool implementations. The loop must handle both streamed and non-streamed responses. Export `ToolLoopConfig` interface for configuration.",
-      "dependsOn": ["US-003", "US-004", "US-005", "US-006"],
+      "technicalNotes": "Core algorithm per PRD section 3. The loop is provider-agnostic \u2014 it receives an HTTP endpoint config and message format. Tool dispatch uses a registry built from `tool-definitions.ts` + tool implementations. The loop must handle both streamed and non-streamed responses. Export `ToolLoopConfig` interface for configuration.",
+      "dependsOn": [
+        "US-003",
+        "US-004",
+        "US-005",
+        "US-006"
+      ],
       "priority": 7,
       "passes": false,
       "notes": ""
@@ -175,7 +188,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Reference existing MCP handling in `dag-executor.ts:261-294` (`loadMcpConfig()`). The wrapper should accept the same MCP config format used in workflow YAML. Tool parameter schemas from MCP must be translated to JSON Schema function format. Export `McpToolProvider` class or similar.",
-      "dependsOn": ["US-003"],
+      "dependsOn": [
+        "US-003"
+      ],
       "priority": 8,
       "passes": false,
       "notes": ""
@@ -195,7 +210,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Reference existing skill handling in `dag-executor.ts:570-594` which wraps nodes in AgentDefinition for Claude. The loader needs to produce equivalent information in a provider-agnostic format. Skill definitions follow Claude's AgentDefinition structure.",
-      "dependsOn": ["US-003"],
+      "dependsOn": [
+        "US-003"
+      ],
       "priority": 9,
       "passes": false,
       "notes": ""
@@ -258,7 +275,7 @@
         "Migration works on both SQLite and PostgreSQL",
         "Type-check passes"
       ],
-      "technicalNotes": "Follow existing migration pattern in `migrations/` directory. SQLite doesn't support UUID[] — use TEXT with JSON array for SQLite adapter. The `IDatabase` interface abstracts PostgreSQL/SQLite differences. Token usage table per PRD section 5.",
+      "technicalNotes": "Follow existing migration pattern in `migrations/` directory. SQLite doesn't support UUID[] \u2014 use TEXT with JSON array for SQLite adapter. The `IDatabase` interface abstracts PostgreSQL/SQLite differences. Token usage table per PRD section 5.",
       "dependsOn": [],
       "priority": 12,
       "passes": false,
@@ -283,7 +300,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Per PRD section 2. This is the base that `OpenRouterClient` and `LlamaCppClient` extend/compose. SSE parsing for streaming: handle `data: [DONE]`, `data: {...}` chunks. Map OpenAI response structure to Archon's `MessageChunk` union. The base handles the common HTTP path; subclasses add provider-specific headers and config.",
-      "dependsOn": ["US-007", "US-011"],
+      "dependsOn": [
+        "US-007",
+        "US-011"
+      ],
       "priority": 13,
       "passes": false,
       "notes": ""
@@ -305,8 +325,10 @@
         "Type-check passes",
         "Tests pass"
       ],
-      "technicalNotes": "OpenRouter endpoint: `https://openrouter.ai/api/v1/chat/completions`. Model IDs use `vendor/model` format. Cost data may be in response headers or body — check OpenRouter API docs. Config from `assistants.openrouter` in `.archon/config.yaml`.",
-      "dependsOn": ["US-013"],
+      "technicalNotes": "OpenRouter endpoint: `https://openrouter.ai/api/v1/chat/completions`. Model IDs use `vendor/model` format. Cost data may be in response headers or body \u2014 check OpenRouter API docs. Config from `assistants.openrouter` in `.archon/config.yaml`.",
+      "dependsOn": [
+        "US-013"
+      ],
       "priority": 14,
       "passes": false,
       "notes": ""
@@ -328,7 +350,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Llama.cpp server speaks OpenAI-compatible protocol at `/v1/chat/completions`. Override the `output_format` handling from the base class: instead of `response_format`, translate JSON Schema to GBNF and pass via the `grammar` request field. Config from `assistants.llamacpp` in `.archon/config.yaml`.",
-      "dependsOn": ["US-013", "US-010"],
+      "dependsOn": [
+        "US-013",
+        "US-010"
+      ],
       "priority": 15,
       "passes": false,
       "notes": ""
@@ -346,7 +371,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Modify `packages/core/src/clients/factory.ts:26-37`. Update the error message in the default case. Import `OpenRouterClient` and `LlamaCppClient`. Consider whether config should be passed to constructors or read from env/config within the factory.",
-      "dependsOn": ["US-014", "US-015"],
+      "dependsOn": [
+        "US-014",
+        "US-015"
+      ],
       "priority": 16,
       "passes": false,
       "notes": ""
@@ -366,7 +394,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Per PRD section 4. Extend `MessageRow` interface in `packages/core/src/db/messages.ts:14-21` with new columns. The replay builder should produce an array compatible with OpenAI's chat/completions `messages` parameter. Requires US-012 migration columns.",
-      "dependsOn": ["US-012", "US-013"],
+      "dependsOn": [
+        "US-012",
+        "US-013"
+      ],
       "priority": 17,
       "passes": false,
       "notes": ""
@@ -386,7 +417,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Per PRD section 5. Follow existing DB module patterns in `packages/core/src/db/`. Use `IDatabase` interface for PostgreSQL/SQLite compatibility. Cost may be null for providers that don't report cost. Token counts from `MessageChunk.tokens` and `MessageChunk.cost` fields.",
-      "dependsOn": ["US-012"],
+      "dependsOn": [
+        "US-012"
+      ],
       "priority": 18,
       "passes": false,
       "notes": ""
@@ -406,7 +439,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Modify `packages/core/src/clients/tool-loop.ts`. `allowed_tools`: if set, include only named tools from canonical + MCP + skill sets. `denied_tools`: exclude named tools. These filter BEFORE sending the request. `systemPrompt`: insert as `{ role: 'system', content: systemPrompt }` at position 0. `output_format`: provider-specific mapping.",
-      "dependsOn": ["US-007"],
+      "dependsOn": [
+        "US-007"
+      ],
       "priority": 19,
       "passes": false,
       "notes": ""
@@ -426,7 +461,9 @@
         "Tests pass"
       ],
       "technicalNotes": "Reference existing hook implementation in `dag-executor.ts:236-253` (`buildSDKHooksFromYAML()`) and Claude client hooks at `claude.ts:347-404`. The tool loop must fire hooks at equivalent lifecycle points. Use the same hook payload interface. Export `ToolLoopHooks` type.",
-      "dependsOn": ["US-007"],
+      "dependsOn": [
+        "US-007"
+      ],
       "priority": 20,
       "passes": false,
       "notes": ""
@@ -446,7 +483,11 @@
         "Tests pass"
       ],
       "technicalNotes": "Wire `McpToolProvider` from US-008 and `SkillContext` from US-009 into tool-loop.ts. MCP tools should be indistinguishable from canonical tools in the tool list. Skills add to the system prompt and may restrict the tool set. Env var expansion in MCP configs happens at loop invocation time.",
-      "dependsOn": ["US-007", "US-008", "US-009"],
+      "dependsOn": [
+        "US-007",
+        "US-008",
+        "US-009"
+      ],
       "priority": 21,
       "passes": false,
       "notes": ""
@@ -467,7 +508,12 @@
         "Tests pass"
       ],
       "technicalNotes": "Per PRD section 7. Read the installed `@openai/codex-sdk` package to determine native support for: `allowed_tools`, `denied_tools`, `hooks`, `mcp`, `skills`, `output_format`, `systemPrompt`, `fallbackModel`, `betas`, `sandbox`. Modify `packages/core/src/clients/codex.ts`. The dispatch logic inspects `options` to decide which path to take.",
-      "dependsOn": ["US-007", "US-019", "US-020", "US-021"],
+      "dependsOn": [
+        "US-007",
+        "US-019",
+        "US-020",
+        "US-021"
+      ],
       "priority": 22,
       "passes": false,
       "notes": ""
@@ -487,7 +533,13 @@
         "Tests pass"
       ],
       "technicalNotes": "Modify `packages/workflows/src/dag-executor.ts:361-619` (`resolveNodeProviderAndModel()`) and lines 487-616 (option assembly). Modify `packages/workflows/src/validator.ts` to remove the Claude-only feature warnings that are now obsolete. New providers pass all options through since the tool loop handles everything.",
-      "dependsOn": ["US-001", "US-016", "US-019", "US-020", "US-021"],
+      "dependsOn": [
+        "US-001",
+        "US-016",
+        "US-019",
+        "US-020",
+        "US-021"
+      ],
       "priority": 23,
       "passes": false,
       "notes": ""
@@ -508,7 +560,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Per PRD section 6. Modify `packages/core/src/services/knowledge-capture.ts` and `packages/core/src/services/knowledge-flush.ts`. The config changes were prepared in US-002. Thread the merged config through to these callsites.",
-      "dependsOn": ["US-001", "US-002"],
+      "dependsOn": [
+        "US-001",
+        "US-002"
+      ],
       "priority": 24,
       "passes": false,
       "notes": ""
@@ -527,7 +582,9 @@
         "Type-check passes"
       ],
       "technicalNotes": "Per PRD section 8. Modify `.archon/workflows/defaults/archon-workflow-builder.yaml`. Update `extract-intent` output_format schema (lines 43-86) and `generate-yaml` prompt (lines 88-205). Provider capability profiles: claude (full SDK, premium), codex (OpenAI SDK, premium), openrouter (cloud gateway, variable cost), llamacpp (local, zero cost).",
-      "dependsOn": ["US-001"],
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 25,
       "passes": false,
       "notes": ""
@@ -546,7 +603,10 @@
         "Tests pass"
       ],
       "technicalNotes": "Modify `packages/workflows/src/dag-executor.ts` after the result chunk processing (around line 1009 where `sessionId` is captured). Use `deps.store.recordTokenUsage()` from US-018. The `MessageChunk` union at `packages/core/src/types/index.ts:195-229` has `tokens` and `cost` fields on the `result` variant.",
-      "dependsOn": ["US-018", "US-023"],
+      "dependsOn": [
+        "US-018",
+        "US-023"
+      ],
       "priority": 26,
       "passes": false,
       "notes": ""
@@ -566,7 +626,11 @@
         "All tests pass"
       ],
       "technicalNotes": "Create test files next to each tool implementation. Use temp directories for file operation tests. Bash tool tests should verify timeout enforcement. Path traversal tests should attempt `../` escapes and verify they're blocked.",
-      "dependsOn": ["US-004", "US-005", "US-006"],
+      "dependsOn": [
+        "US-004",
+        "US-005",
+        "US-006"
+      ],
       "priority": 27,
       "passes": false,
       "notes": ""
@@ -587,7 +651,11 @@
         "All tests pass"
       ],
       "technicalNotes": "Mock the HTTP endpoint for tool loop tests (return canned responses with/without tool_calls). Context-window tests should mock the provider call for summarization. GBNF tests should validate the grammar output is syntactically correct GBNF.",
-      "dependsOn": ["US-007", "US-010", "US-011"],
+      "dependsOn": [
+        "US-007",
+        "US-010",
+        "US-011"
+      ],
       "priority": 28,
       "passes": false,
       "notes": ""
@@ -607,7 +675,11 @@
         "All tests pass"
       ],
       "technicalNotes": "Mock HTTP endpoints for client tests. Message replay tests need a test database (follow existing integration test patterns). Verify SSE chunk parsing handles edge cases: empty data lines, malformed JSON, `[DONE]` terminator.",
-      "dependsOn": ["US-014", "US-015", "US-017"],
+      "dependsOn": [
+        "US-014",
+        "US-015",
+        "US-017"
+      ],
       "priority": 29,
       "passes": false,
       "notes": ""
@@ -628,7 +700,11 @@
         "All tests pass"
       ],
       "technicalNotes": "Codex tests need mocks for both the Codex SDK and the tool loop to verify dispatch logic. KB tests mock `getAssistantClient()` and verify the correct provider string is passed. Token tracking tests need a test database.",
-      "dependsOn": ["US-022", "US-024", "US-026"],
+      "dependsOn": [
+        "US-022",
+        "US-024",
+        "US-026"
+      ],
       "priority": 30,
       "passes": false,
       "notes": ""
@@ -648,7 +724,13 @@
         "Zero ESLint warnings"
       ],
       "technicalNotes": "Run `bun run validate` and fix any issues. Update CLAUDE.md sections: Architecture (client factory, provider list), Configuration (new env vars, config examples), Environment Variables. Verify all test scripts in package.json correctly split `mock.module()` test files.",
-      "dependsOn": ["US-023", "US-027", "US-028", "US-029", "US-030"],
+      "dependsOn": [
+        "US-023",
+        "US-027",
+        "US-028",
+        "US-029",
+        "US-030"
+      ],
       "priority": 31,
       "passes": false,
       "notes": ""

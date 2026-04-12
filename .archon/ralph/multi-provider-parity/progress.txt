@@ -1,0 +1,56 @@
+## Codebase Patterns
+
+### ProviderType shared schema
+- **Where**: `packages/workflows/src/schemas/provider.ts`
+- **Pattern**: Provider enum extracted to its own file to avoid circular imports between workflow.ts and dag-node.ts. Re-exported from schemas/index.ts and core/types/index.ts.
+- **Example**: `import type { ProviderType } from './schemas/provider';`
+
+### Config type widening pattern
+- **Where**: `packages/core/src/config/config-types.ts`, `packages/workflows/src/deps.ts`
+- **Pattern**: All `'claude' | 'codex'` union types replaced with `ProviderType`. New provider defaults interfaces added. WorkflowConfig.assistants must include all 4 providers as required keys.
+- **Example**: `assistant: ProviderType` instead of `assistant: 'claude' | 'codex'`
+
+### Pre-existing test failures
+- `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
+- `packages/cli/src/commands/workflow-run.test.ts`: 6 workflowRunCommand tests fail on main branch
+
+---
+
+## 2026-04-12 — US-001: Provider enum + type expansion
+
+**Status**: PASSED
+**Files changed**:
+- `packages/workflows/src/schemas/provider.ts` — New file: providerSchema z.enum and ProviderType
+- `packages/workflows/src/schemas/workflow.ts` — Import providerSchema from provider.ts, use in workflowBaseSchema
+- `packages/workflows/src/schemas/dag-node.ts` — Import providerSchema from provider.ts, use in dagNodeBaseSchema
+- `packages/workflows/src/schemas/index.ts` — Re-export providerSchema and ProviderType
+- `packages/workflows/src/deps.ts` — Widen AssistantClientFactory and WorkflowConfig
+- `packages/workflows/src/model-validation.ts` — Add openrouter/llamacpp handling to isModelCompatible
+- `packages/workflows/src/dag-executor.ts` — Replace all 'claude' | 'codex' with ProviderType
+- `packages/workflows/src/executor.ts` — Replace resolvedProvider type with ProviderType
+- `packages/core/src/config/config-types.ts` — Add OpenRouterAssistantDefaults, LlamaCppAssistantDefaults, widen all configs
+- `packages/core/src/config/config-loader.ts` — Add defaults, merge logic, env override guard for new providers
+- `packages/core/src/config/config-loader.test.ts` — Update defaults test expectation
+- `packages/core/src/types/index.ts` — Re-export ProviderType
+- `packages/server/src/routes/schemas/config.schemas.ts` — Update SafeConfig and updateAssistantConfig Zod schemas
+- `packages/workflows/src/model-validation.test.ts` — Add tests for openrouter/llamacpp providers
+
+**Acceptance criteria verified**:
+- [x] z.enum in workflow.ts includes 'openrouter' and 'llamacpp'
+- [x] z.enum in dag-node.ts includes 'openrouter' and 'llamacpp'
+- [x] AssistantClientFactory accepts all 4 providers
+- [x] WorkflowConfig.assistant accepts all 4 providers
+- [x] GlobalConfig/RepoConfig/MergedConfig/SafeConfig accept all 4 providers
+- [x] New OpenRouterAssistantDefaults and LlamaCppAssistantDefaults interfaces
+- [x] assistants blocks include openrouter/llamacpp keys
+- [x] isModelCompatible() handles openrouter and llamacpp
+- [x] Claude aliases rejected for non-Claude providers
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failures)
+
+**Learnings**:
+- Circular import risk: workflow.ts imports from dag-node.ts and vice versa. Extracted providerSchema to its own provider.ts file.
+- dag-executor.ts has ~10 `'claude' | 'codex'` type annotations that all need widening to ProviderType for the type system to be consistent.
+- SafeConfig OpenAPI Zod schema (config.schemas.ts) also needs updating alongside the TypeScript types.
+
+---
