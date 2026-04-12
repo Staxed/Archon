@@ -4,7 +4,19 @@ import type { WorkflowRun } from '@archon/workflows/schemas/workflow-run';
 
 const mockQuery = mock(() => Promise.resolve(createQueryResult([])));
 
-// Mock the connection module before importing the module under test
+// Mock the connection module before importing the module under test.
+//
+// IMPORTANT: This mock includes `getDatabaseType` because workflows.ts calls
+// it for SQL dialect branching (lines ~626 and ~870). Bun's `mock.module()`
+// is process-global and irreversible (see CLAUDE.md / .claude/rules/dx-quirks.md),
+// so once this file runs, every subsequent test in the same `bun test`
+// invocation gets this mocked `getDatabaseType` returning 'postgresql' —
+// which would break `connection.test.ts` if they shared a batch.
+//
+// `connection.test.ts` is therefore split into its own batch in
+// packages/core/package.json (the `&& bun test src/db/connection.test.ts &&`
+// invocation, isolated from this one). DO NOT collapse those batches back
+// into one without first switching this mock to spyOn-based isolation.
 mock.module('./connection', () => ({
   pool: {
     query: mockQuery,
