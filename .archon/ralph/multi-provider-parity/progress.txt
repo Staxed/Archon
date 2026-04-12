@@ -688,3 +688,28 @@
 - ESLint caught `node.model && node.model.includes('/')` → requires optional chain `node.model?.includes('/')`.
 
 ---
+
+## 2026-04-12 — US-024: KB provider configurability
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/services/knowledge-capture.ts` — extractKnowledge() takes captureProvider param; extractKnowledgeFromContext() reads captureProvider from mergedConfig
+- `packages/core/src/services/knowledge-flush.ts` — synthesizeLogs() takes compileProvider param; identifyStaleArticles() and validateStaleness() take captureProvider param; all callers pass config values
+
+**Acceptance criteria verified**:
+- [x] knowledge-capture.ts:176 uses getAssistantClient(captureProvider) instead of hardcoded 'claude'
+- [x] knowledge-capture.ts:265 uses getAssistantClient(mergedConfig.knowledge.captureProvider ?? 'claude') instead of hardcoded 'claude'
+- [x] knowledge-flush.ts:462 uses getAssistantClient(compileProvider) instead of hardcoded 'claude'
+- [x] knowledge-flush.ts:968 uses getAssistantClient(captureProvider) instead of hardcoded 'claude'
+- [x] Both captureProvider and compileProvider default to 'claude' via config-loader defaults (US-002)
+- [x] Invalid provider values rejected at config load time with loud error (US-002 validation)
+- [x] Existing configs without captureProvider/compileProvider work unchanged (defaults to 'claude')
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Very straightforward story — 4 hardcoded `getAssistantClient('claude')` calls replaced with config-driven provider selection.
+- ESLint `no-inferrable-types` rule rejects `param: string = 'claude'` — use `param = 'claude'` instead (type inferred from default).
+- Config was already prepared by US-002 (captureProvider/compileProvider fields with defaults). This story just threads the config through to the call sites.
+
+---
