@@ -356,6 +356,32 @@ function expandEnvVars(config: Record<string, unknown>): {
 }
 
 /**
+ * Load MCP config and return the raw server configs for non-Claude providers (tool-loop path).
+ * Handles env-var missing warnings. Returns the mcpConfigs-typed record.
+ */
+async function loadMcpConfigRaw(
+  mcpPath: string,
+  cwd: string,
+  nodeId: string,
+  platform: IWorkflowPlatform,
+  conversationId: string,
+  workflowRunId: string
+): Promise<WorkflowAssistantOptions['mcpConfigs']> {
+  const { servers, missingVars } = await loadMcpConfig(mcpPath, cwd);
+  if (missingVars.length > 0) {
+    const uniqueVars = [...new Set(missingVars)];
+    getLog().warn({ nodeId, missingVars: uniqueVars }, 'dag.mcp_env_vars_missing');
+    await safeSendMessage(
+      platform,
+      conversationId,
+      `Warning: Node '${nodeId}' MCP config references undefined env vars: ${uniqueVars.join(', ')}. These will be empty strings — MCP servers may fail to authenticate.`,
+      { workflowId: workflowRunId, nodeName: nodeId }
+    );
+  }
+  return servers as WorkflowAssistantOptions['mcpConfigs'];
+}
+
+/**
  * Resolve per-node provider and model.
  * Node-level overrides take precedence over workflow defaults.
  */
@@ -380,6 +406,9 @@ async function resolveNodeProviderAndModel(
     provider = node.provider;
   } else if (node.model && isClaudeModel(node.model)) {
     provider = 'claude';
+  } else if (node.model?.includes('/')) {
+    // vendor/model format (e.g., "anthropic/claude-3-haiku") → infer openrouter
+    provider = 'openrouter';
   } else if (node.model) {
     provider = 'codex';
   } else {
@@ -396,113 +425,121 @@ async function resolveNodeProviderAndModel(
     );
   }
 
-  // Warn if Codex node has allowed_tools or denied_tools (unsupported per-call)
-  if (
-    provider === 'codex' &&
-    (node.allowed_tools !== undefined || node.denied_tools !== undefined)
-  ) {
-    getLog().warn({ nodeId: node.id }, 'dag_node_tool_restrictions_ignored_codex');
-    const delivered = await safeSendMessage(
-      platform,
-      conversationId,
-      `Warning: Node '${node.id}' has allowed_tools/denied_tools set but uses Codex — per-node tool restrictions are not supported for Codex. Configure MCP servers globally in the Codex CLI config instead.`,
-      { workflowId: workflowRunId, nodeName: node.id }
-    );
-    if (!delivered) {
-      getLog().error({ nodeId: node.id, workflowRunId }, 'dag_node_codex_warning_delivery_failed');
-    }
-  }
-
-  // Warn if Codex node has hooks (unsupported)
-  if (provider === 'codex' && node.hooks) {
-    getLog().warn({ nodeId: node.id }, 'dag_node_hooks_ignored_codex');
-    const delivered = await safeSendMessage(
-      platform,
-      conversationId,
-      `Warning: Node '${node.id}' has hooks set but uses Codex provider — hooks are Claude-only and will be ignored.`,
-      { workflowId: workflowRunId, nodeName: node.id }
-    );
-    if (!delivered) {
-      getLog().error({ nodeId: node.id, workflowRunId }, 'dag_node_hooks_warning_delivery_failed');
-    }
-  }
-
-  // Warn if Codex node has mcp (unsupported per-call)
-  if (provider === 'codex' && node.mcp) {
-    getLog().warn({ nodeId: node.id }, 'dag.mcp_ignored_codex');
-    const delivered = await safeSendMessage(
-      platform,
-      conversationId,
-      `Warning: Node '${node.id}' has mcp config but uses Codex — per-node MCP servers are not supported for Codex. Configure MCP servers globally in the Codex CLI config instead.`,
-      { workflowId: workflowRunId, nodeName: node.id }
-    );
-    if (!delivered) {
-      getLog().error({ nodeId: node.id, workflowRunId }, 'dag.mcp_warning_delivery_failed');
-    }
-  }
-
-  // Warn if Codex node has skills (unsupported)
-  if (provider === 'codex' && node.skills) {
-    getLog().warn({ nodeId: node.id }, 'dag.skills_ignored_codex');
-    const delivered = await safeSendMessage(
-      platform,
-      conversationId,
-      `Warning: Node '${node.id}' has skills set but uses Codex — per-node skills are not supported for Codex.`,
-      { workflowId: workflowRunId, nodeName: node.id }
-    );
-    if (!delivered) {
-      getLog().error({ nodeId: node.id, workflowRunId }, 'dag.skills_warning_delivery_failed');
-    }
-  }
-
-  // Warn if Codex node has Claude-only SDK options (effort, thinking, maxBudgetUsd, systemPrompt, fallbackModel, betas, sandbox)
-  if (provider === 'codex') {
-    const claudeOnlyFields = [
-      ['effort', node.effort ?? workflowLevelOptions.effort],
-      ['thinking', node.thinking ?? workflowLevelOptions.thinking],
-      ['maxBudgetUsd', node.maxBudgetUsd],
-      ['systemPrompt', node.systemPrompt],
-      ['fallbackModel', node.fallbackModel ?? workflowLevelOptions.fallbackModel],
-      ['betas', node.betas ?? workflowLevelOptions.betas],
-      ['sandbox', node.sandbox ?? workflowLevelOptions.sandbox],
-    ] as const;
-    const present = claudeOnlyFields.filter(([, val]) => val !== undefined).map(([name]) => name);
-    if (present.length > 0) {
-      getLog().warn({ nodeId: node.id, fields: present }, 'dag.claude_options_ignored_codex');
-      const delivered = await safeSendMessage(
-        platform,
-        conversationId,
-        `Warning: Node '${node.id}' has Claude-only options (${present.join(', ')}) but uses Codex — these will be ignored.`,
-        { workflowId: workflowRunId, nodeName: node.id }
-      );
-      if (!delivered) {
-        getLog().error(
-          { nodeId: node.id, workflowRunId },
-          'dag.claude_options_warning_delivery_failed'
-        );
-      }
-    }
-  }
-
+  // --- Build provider-specific options ---
   let options: WorkflowAssistantOptions | undefined;
+
   if (provider === 'codex') {
-    options = {
+    // Codex: SDK-native options + tool-loop fallback handles all other features
+    const codexOptions: WorkflowAssistantOptions = {
       model,
       modelReasoningEffort: config.assistants.codex.modelReasoningEffort,
       webSearchMode: config.assistants.codex.webSearchMode,
       additionalDirectories: config.assistants.codex.additionalDirectories,
     };
     if (node.output_format) {
-      options.outputFormat = { type: 'json_schema', schema: node.output_format };
+      codexOptions.outputFormat = { type: 'json_schema', schema: node.output_format };
     }
+    // Pass through features that Codex handles via tool-loop fallback
+    if (node.allowed_tools !== undefined) codexOptions.tools = node.allowed_tools;
+    if (node.denied_tools !== undefined) codexOptions.disallowedTools = node.denied_tools;
+    if (node.hooks) {
+      const builtHooks = buildSDKHooksFromYAML(node.hooks);
+      if (Object.keys(builtHooks).length > 0) codexOptions.hooks = builtHooks;
+    }
+    if (node.mcp) {
+      try {
+        codexOptions.mcpConfigs = await loadMcpConfigRaw(
+          node.mcp,
+          cwd,
+          node.id,
+          platform,
+          conversationId,
+          workflowRunId
+        );
+      } catch (mcpErr) {
+        const errMsg = (mcpErr as Error).message;
+        getLog().error(
+          { nodeId: node.id, mcpPath: node.mcp, error: errMsg },
+          'dag.mcp_config_load_failed'
+        );
+        throw new Error(`Node '${node.id}': ${errMsg}`);
+      }
+    }
+    if (node.skills) codexOptions.skills = node.skills;
+    if (node.systemPrompt !== undefined) codexOptions.systemPrompt = node.systemPrompt;
+    // Per-node overrides for workflow-level options
+    const effort = node.effort ?? workflowLevelOptions.effort;
+    if (effort !== undefined) codexOptions.effort = effort;
+    const thinking = node.thinking ?? workflowLevelOptions.thinking;
+    if (thinking !== undefined) codexOptions.thinking = thinking;
+    if (node.maxBudgetUsd !== undefined) codexOptions.maxBudgetUsd = node.maxBudgetUsd;
+    const fallbackModel = node.fallbackModel ?? workflowLevelOptions.fallbackModel;
+    if (fallbackModel !== undefined) codexOptions.fallbackModel = fallbackModel;
+    const betas = node.betas ?? workflowLevelOptions.betas;
+    if (betas !== undefined) codexOptions.betas = betas;
+    const sandbox = node.sandbox ?? workflowLevelOptions.sandbox;
+    if (sandbox !== undefined) codexOptions.sandbox = sandbox;
+    options = codexOptions;
+  } else if (provider === 'openrouter' || provider === 'llamacpp') {
+    // OpenRouter / Llama.cpp: all features flow through the tool loop
+    const toolLoopOptions: WorkflowAssistantOptions = {};
+    if (model) toolLoopOptions.model = model;
+    if (node.output_format) {
+      toolLoopOptions.outputFormat = { type: 'json_schema', schema: node.output_format };
+    }
+    if (node.allowed_tools !== undefined) toolLoopOptions.tools = node.allowed_tools;
+    if (node.denied_tools !== undefined) toolLoopOptions.disallowedTools = node.denied_tools;
+    if (node.hooks) {
+      const builtHooks = buildSDKHooksFromYAML(node.hooks);
+      if (Object.keys(builtHooks).length > 0) toolLoopOptions.hooks = builtHooks;
+    }
+    if (node.mcp) {
+      try {
+        toolLoopOptions.mcpConfigs = await loadMcpConfigRaw(
+          node.mcp,
+          cwd,
+          node.id,
+          platform,
+          conversationId,
+          workflowRunId
+        );
+      } catch (mcpErr) {
+        const errMsg = (mcpErr as Error).message;
+        getLog().error(
+          { nodeId: node.id, mcpPath: node.mcp, error: errMsg },
+          'dag.mcp_config_load_failed'
+        );
+        throw new Error(`Node '${node.id}': ${errMsg}`);
+      }
+    }
+    if (node.skills) toolLoopOptions.skills = node.skills;
+    if (node.systemPrompt !== undefined) toolLoopOptions.systemPrompt = node.systemPrompt;
+    // Per-node overrides for workflow-level options
+    const effort = node.effort ?? workflowLevelOptions.effort;
+    if (effort !== undefined) toolLoopOptions.effort = effort;
+    const thinking = node.thinking ?? workflowLevelOptions.thinking;
+    if (thinking !== undefined) toolLoopOptions.thinking = thinking;
+    if (node.maxBudgetUsd !== undefined) toolLoopOptions.maxBudgetUsd = node.maxBudgetUsd;
+    const fallbackModel = node.fallbackModel ?? workflowLevelOptions.fallbackModel;
+    if (fallbackModel !== undefined) toolLoopOptions.fallbackModel = fallbackModel;
+    const betas = node.betas ?? workflowLevelOptions.betas;
+    if (betas !== undefined) toolLoopOptions.betas = betas;
+    const sandbox = node.sandbox ?? workflowLevelOptions.sandbox;
+    if (sandbox !== undefined) toolLoopOptions.sandbox = sandbox;
+    // Inject per-project env vars
+    if (config.envVars && Object.keys(config.envVars).length > 0) {
+      toolLoopOptions.env = config.envVars;
+    }
+    options = Object.keys(toolLoopOptions).length > 0 ? toolLoopOptions : undefined;
   } else {
+    // Claude: native SDK path with full feature support
     const claudeOptions: WorkflowAssistantOptions = {};
     if (model) claudeOptions.model = model;
     // Propagate settingSources from config (controls which CLAUDE.md files the SDK loads)
     if (config.assistants.claude.settingSources) {
       claudeOptions.settingSources = config.assistants.claude.settingSources;
     }
-    if (provider === 'claude' && node.output_format) {
+    if (node.output_format) {
       claudeOptions.outputFormat = {
         type: 'json_schema',
         schema: node.output_format,
@@ -1580,22 +1617,21 @@ function buildLoopNodeOptions(
   model: string | undefined,
   config: WorkflowConfig
 ): WorkflowAssistantOptions | undefined {
-  const codexOptions =
-    provider === 'codex'
-      ? {
-          modelReasoningEffort: config.assistants.codex.modelReasoningEffort,
-          webSearchMode: config.assistants.codex.webSearchMode,
-          additionalDirectories: config.assistants.codex.additionalDirectories,
-        }
-      : undefined;
+  const options: WorkflowAssistantOptions = {};
+  if (model) options.model = model;
 
-  const claudeOptions =
-    provider === 'claude' && config.assistants.claude.settingSources
-      ? { settingSources: config.assistants.claude.settingSources }
-      : undefined;
+  if (provider === 'codex') {
+    options.modelReasoningEffort = config.assistants.codex.modelReasoningEffort;
+    options.webSearchMode = config.assistants.codex.webSearchMode;
+    options.additionalDirectories = config.assistants.codex.additionalDirectories;
+  } else if (provider === 'claude') {
+    if (config.assistants.claude.settingSources) {
+      options.settingSources = config.assistants.claude.settingSources;
+    }
+  }
+  // openrouter and llamacpp have no provider-specific loop defaults
 
-  if (!model && !codexOptions && !claudeOptions) return undefined;
-  return { ...(model ? { model } : {}), ...codexOptions, ...claudeOptions };
+  return Object.keys(options).length > 0 ? options : undefined;
 }
 
 /**

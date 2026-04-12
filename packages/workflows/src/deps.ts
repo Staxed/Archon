@@ -191,6 +191,23 @@ export interface WorkflowAssistantOptions {
    * Structural match for SDK SandboxSettings.
    */
   sandbox?: SandboxSettings;
+  /**
+   * MCP server configs for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * Consumed by the Archon tool loop's McpToolProvider.
+   * Format matches MCP YAML config. Discriminated union is structurally identical
+   * to mcpServers but flows through the tool loop instead of the Claude SDK.
+   */
+  mcpConfigs?: Record<
+    string,
+    | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+    | { type: 'sse'; url: string; headers?: Record<string, string> }
+    | { type: 'http'; url: string; headers?: Record<string, string> }
+  >;
+  /**
+   * Skill names for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * The tool loop's skill loader resolves these to system prompt additions + tool allowlists.
+   */
+  skills?: string[];
 }
 
 // ---------------------------------------------------------------------------

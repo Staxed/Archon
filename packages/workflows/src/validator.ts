@@ -19,7 +19,7 @@ import {
 } from '@archon/paths';
 import { BUNDLED_COMMANDS, isBinaryBuild } from './defaults/bundled-defaults';
 import { isValidCommandName } from './command-validation';
-import type { WorkflowDefinition, DagNode } from './schemas';
+import type { WorkflowDefinition } from './schemas';
 
 // =============================================================================
 // Types
@@ -196,12 +196,6 @@ async function resolveCommand(
 // Workflow resource validation (Level 3)
 // =============================================================================
 
-/** Get the resolved provider for a node (node-level > workflow-level) */
-function resolveProvider(node: DagNode, workflowProvider?: string): string {
-  if ('provider' in node && node.provider) return node.provider;
-  return workflowProvider ?? 'claude';
-}
-
 /**
  * Validate a workflow's external resource references (Level 3).
  *
@@ -217,8 +211,6 @@ export async function validateWorkflowResources(
   const availableCommands = await discoverAvailableCommands(cwd, config);
 
   for (const node of workflow.nodes) {
-    const provider = resolveProvider(node, workflow.provider);
-
     // --- Command nodes: check file exists ---
     if ('command' in node && typeof node.command === 'string') {
       if (!isValidCommandName(node.command)) {
@@ -287,17 +279,6 @@ export async function validateWorkflowResources(
           });
         }
       }
-
-      // Warn if using MCP with Codex
-      if (provider === 'codex') {
-        issues.push({
-          level: 'warning',
-          nodeId: node.id,
-          field: 'mcp',
-          message: 'MCP servers are Claude-only per-node — this will be ignored on Codex',
-          hint: 'For Codex, configure MCP servers globally in ~/.codex/config.toml instead',
-        });
-      }
     }
 
     // --- Skills nodes: check skill directories exist ---
@@ -318,44 +299,6 @@ export async function validateWorkflowResources(
             hint: `Install with: npx skills add <repo> — or create manually at .claude/skills/${skillName}/SKILL.md`,
           });
         }
-      }
-
-      // Warn if using skills with Codex
-      if (provider === 'codex') {
-        issues.push({
-          level: 'warning',
-          nodeId: node.id,
-          field: 'skills',
-          message: 'Skills are Claude-only per-node — this will be ignored on Codex',
-          hint: 'For Codex, place skills in ~/.agents/skills/ for global discovery instead',
-        });
-      }
-    }
-
-    // --- Hooks with Codex warning ---
-    if ('hooks' in node && node.hooks && provider === 'codex') {
-      issues.push({
-        level: 'warning',
-        nodeId: node.id,
-        field: 'hooks',
-        message: 'Hooks are Claude-only — this will be ignored on Codex',
-        hint: 'Hooks have no Codex equivalent. Remove them or switch to provider: claude',
-      });
-    }
-
-    // --- Tool restrictions with Codex warning ---
-    if (provider === 'codex') {
-      if (
-        ('allowed_tools' in node && node.allowed_tools !== undefined) ||
-        ('denied_tools' in node && node.denied_tools !== undefined)
-      ) {
-        issues.push({
-          level: 'warning',
-          nodeId: node.id,
-          field: 'allowed_tools/denied_tools',
-          message: 'Tool restrictions are Claude-only — this will be ignored on Codex',
-          hint: 'For Codex, configure tool restrictions per MCP server in ~/.codex/config.toml',
-        });
       }
     }
   }

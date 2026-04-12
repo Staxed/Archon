@@ -799,7 +799,7 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     expect(optionsArg?.tools).toEqual(['Read', 'Grep']);
   });
 
-  it('warns user when Codex DAG node has denied_tools only', async () => {
+  it('passes denied_tools through to Codex sendQuery (tool-loop fallback)', async () => {
     mockGetAssistantClientDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -830,10 +830,9 @@ describe('executeDagWorkflow -- tool restrictions', () => {
       { ...minimalConfig, assistant: 'codex' }
     );
 
-    const sendMessage = platform.sendMessage as ReturnType<typeof mock>;
-    const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
-    const warning = messages.find(m => m.includes('denied_tools') && m.includes('Codex'));
-    expect(warning).toBeDefined();
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg?.disallowedTools).toEqual(['WebSearch']);
   });
 
   it('passes empty allowed_tools: [] (disable all tools) to sendQuery', async () => {
@@ -901,7 +900,7 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     expect(hooks.PreToolUse).toHaveLength(1);
   });
 
-  it('warns user when Codex DAG node has hooks', async () => {
+  it('passes hooks through to Codex sendQuery (tool-loop fallback)', async () => {
     mockGetAssistantClientDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -939,10 +938,9 @@ describe('executeDagWorkflow -- tool restrictions', () => {
       { ...minimalConfig, assistant: 'codex' }
     );
 
-    const sendMessage = platform.sendMessage as ReturnType<typeof mock>;
-    const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
-    const warning = messages.find(m => m.includes('hooks') && m.includes('Codex'));
-    expect(warning).toBeDefined();
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg?.hooks).toBeDefined();
   });
 });
 
@@ -2309,7 +2307,7 @@ describe('executeDagWorkflow -- skills options', () => {
     expect(optionsArg?.allowedTools).toContain('Skill');
   });
 
-  it('warns user when Codex DAG node has skills and does not pass agents', async () => {
+  it('passes skills through to Codex sendQuery (tool-loop fallback)', async () => {
     mockGetAssistantClientDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -2340,18 +2338,12 @@ describe('executeDagWorkflow -- skills options', () => {
       { ...minimalConfig, assistant: 'codex' }
     );
 
-    // Warning sent to user
-    const sendMessage = platform.sendMessage as ReturnType<typeof mock>;
-    const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
-    const warning = messages.find(m => m.includes('skills') && m.includes('Codex'));
-    expect(warning).toBeDefined();
-
-    // No agents/agent passed to Codex sendQuery
-    if (mockSendQueryDag.mock.calls.length > 0) {
-      const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
-      expect(optionsArg?.agents).toBeUndefined();
-      expect(optionsArg?.agent).toBeUndefined();
-    }
+    // Skills passed through to Codex sendQuery (not agents — that's Claude-only)
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg?.skills).toEqual(['codebase-search']);
+    expect(optionsArg?.agents).toBeUndefined();
+    expect(optionsArg?.agent).toBeUndefined();
   });
 });
 
@@ -4591,7 +4583,7 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     expect(optionsArg?.effort).toBe('max');
   });
 
-  it('warns user when Codex node has Claude-only options (effort)', async () => {
+  it('passes effort through to Codex sendQuery (tool-loop fallback)', async () => {
     mockGetAssistantClientDag.mockImplementation(() => ({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -4620,10 +4612,9 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
       { ...minimalConfig, assistant: 'codex' }
     );
 
-    const sendMessage = platform.sendMessage as ReturnType<typeof mock>;
-    const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
-    const warning = messages.find(m => m.includes('effort') && m.toLowerCase().includes('codex'));
-    expect(warning).toBeDefined();
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg?.effort).toBe('high');
   });
 });
 
