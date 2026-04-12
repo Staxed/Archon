@@ -734,3 +734,29 @@
 - YAML-only story — no TypeScript, no tests needed. Quick to validate.
 
 ---
+
+## 2026-04-12 — US-026: Token usage wiring in DAG executor
+
+**Status**: PASSED
+**Files changed**:
+- `packages/workflows/src/dag-executor.ts` — Added recordTokenUsage() calls after node completion in executeNodeInternal() and per loop iteration in executeLoopNode()
+- `packages/workflows/src/dag-executor.test.ts` — Added recordTokenUsage mock to createMockStore()
+- `packages/workflows/src/executor.test.ts` — Added recordTokenUsage mock to makeStore()
+- `packages/workflows/src/executor-preamble.test.ts` — Added recordTokenUsage mock to makeStore()
+- `packages/workflows/src/knowledge-extract-node.test.ts` — Added recordTokenUsage mock to createMockStore()
+
+**Acceptance criteria verified**:
+- [x] After each node's `result` chunk in DAG executor, `recordTokenUsage()` is called via the store
+- [x] Token data extracted from `MessageChunk.tokens` and `MessageChunk.cost` fields
+- [x] Records include: workflow_run_id, node_id, provider, model, input/output/total tokens, cost_usd
+- [x] Missing token data (provider doesn't report) results in zeros, not errors
+- [x] Token recording failures logged but don't fail the workflow
+- [x] Type-check passes
+- [x] Tests pass (all workflow tests pass; only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- IWorkflowStore mock must be kept in sync across 4 test files: dag-executor.test.ts, executor.test.ts, executor-preamble.test.ts, knowledge-extract-node.test.ts. Adding a new method to the interface requires updating all 4 mocks.
+- Loop nodes track cost per-iteration via msg.cost but didn't previously track msg.tokens. Token recording added per-iteration alongside existing cost accumulation.
+- Fire-and-forget `.catch()` pattern matches existing `createWorkflowEvent()` pattern for non-critical persistence.
+
+---
