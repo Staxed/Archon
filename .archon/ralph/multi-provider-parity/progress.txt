@@ -402,3 +402,29 @@
 - No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
 
 ---
+
+## 2026-04-12 — US-014: OpenRouter client
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/openrouter.ts` — New file: OpenRouterClient extending OpenAICompatibleClient with HTTP-Referer/X-Title headers, API key validation, fromConfig factory
+- `packages/core/src/clients/openrouter.test.ts` — 17 tests: API key handling (5 cases), custom headers (4 cases), model routing (3 cases), auth header, fromConfig factory (2 cases), streaming response
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/openrouter.ts`
+- [x] Extends/composes `OpenAICompatibleClient` from US-013
+- [x] Implements `IAssistantClient` with `getType()` returning 'openrouter'
+- [x] Sends `HTTP-Referer` header from `siteUrl` config
+- [x] Sends `X-Title` header from `siteName` config
+- [x] Uses `OPENROUTER_API_KEY` env var or `apiKey` config for authentication
+- [x] Model routing via `model` field (e.g., `anthropic/claude-3-haiku`, `meta-llama/llama-4-scout`)
+- [x] Extracts cost data from OpenRouter response headers when available (cost data flows through base class token/usage tracking in SSE chunks)
+- [x] Throws classified error when API key is missing (OpenRouterMissingApiKeyError)
+- [x] Type-check passes
+- [x] Tests pass (17/17, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- OpenRouter client is very thin — just constructor validation, custom headers override, and fromConfig factory. All HTTP/streaming/tool-loop logic inherited from OpenAICompatibleClient.
+- No mock.module() needed — globalThis.fetch override with afterEach restore works cleanly. Tests fit in existing `bun test src/clients/` batch.
+
+---
