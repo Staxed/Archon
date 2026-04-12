@@ -155,6 +155,120 @@ export interface ToolLoopConfig {
    * - `'grammar'`: Llama.cpp-native GBNF grammar via the `grammar` request field
    */
   outputFormatStyle?: 'response_format' | 'grammar';
+  /**
+   * Hook callbacks fired at tool lifecycle points.
+   * Matches Claude SDK hook semantics: PreToolUse, PostToolUse, PostToolUseFailure.
+   */
+  hooks?: ToolLoopHooks;
+  /**
+   * Session identifier included in hook payloads.
+   * Matches Claude SDK's session_id field.
+   */
+  sessionId?: string;
+}
+
+// ─── Hook Types ─────────────────────────────────────────────────────────────
+
+/** Payload for PreToolUse hook — matches Claude SDK's PreToolUseHookInput shape. */
+export interface PreToolUseHookInput {
+  hook_event_name: 'PreToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Payload for PostToolUse hook — matches Claude SDK's PostToolUseHookInput shape. */
+export interface PostToolUseHookInput {
+  hook_event_name: 'PostToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_response: unknown;
+  tool_use_id: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Payload for PostToolUseFailure hook — matches Claude SDK's PostToolUseFailureHookInput shape. */
+export interface PostToolUseFailureHookInput {
+  hook_event_name: 'PostToolUseFailure';
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  error: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Output from a hook callback — mirrors Claude SDK's SyncHookJSONOutput. */
+export interface HookOutput {
+  continue?: boolean;
+  suppressOutput?: boolean;
+  stopReason?: string;
+  decision?: 'approve' | 'block';
+  systemMessage?: string;
+  reason?: string;
+  hookSpecificOutput?: {
+    hookEventName: string;
+    permissionDecision?: 'allow' | 'deny' | 'ask' | 'defer';
+    permissionDecisionReason?: string;
+    updatedInput?: Record<string, unknown>;
+    additionalContext?: string;
+    updatedMCPToolOutput?: unknown;
+  };
+}
+
+/** A single hook callback matcher — matches SDK's HookCallbackMatcher. */
+export interface ToolLoopHookMatcher {
+  /** Regex pattern to match tool names. If undefined, matches all. */
+  matcher?: string;
+  /** Hook callback functions. */
+  hooks: ((
+    input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput
+  ) => Promise<HookOutput>)[];
+  /** Timeout in seconds. */
+  timeout?: number;
+}
+
+/** Hook configuration for the tool loop. */
+export interface ToolLoopHooks {
+  PreToolUse?: ToolLoopHookMatcher[];
+  PostToolUse?: ToolLoopHookMatcher[];
+  PostToolUseFailure?: ToolLoopHookMatcher[];
+}
+
+/**
+ * Run matching hooks for a given event and tool name.
+ * Returns the merged output from all matching hooks.
+ * Hook errors are surfaced (re-thrown) — not swallowed.
+ */
+async function runHooks(
+  matchers: ToolLoopHookMatcher[] | undefined,
+  input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput
+): Promise<HookOutput> {
+  if (!matchers || matchers.length === 0) return {};
+
+  let merged: HookOutput = {};
+  for (const m of matchers) {
+    // Check matcher regex against tool_name
+    if (m.matcher) {
+      const regex = new RegExp(m.matcher);
+      if (!regex.test(input.tool_name)) continue;
+    }
+    for (const hook of m.hooks) {
+      const output = await hook(input);
+      merged = { ...merged, ...output };
+      // hookSpecificOutput is deep-merged
+      if (output.hookSpecificOutput) {
+        merged.hookSpecificOutput = {
+          ...merged.hookSpecificOutput,
+          ...output.hookSpecificOutput,
+        };
+      }
+    }
+  }
+  return merged;
 }
 
 /** Type for a tool executor function. */
@@ -593,6 +707,7 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
     messages.push(assistantMsg);
 
     // ── Execute tools and append results ──
+    const sessionId = config.sessionId ?? '';
     for (const { tc, args } of parsedCalls) {
       // Emit tool chunk
       yield {
@@ -602,8 +717,44 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
         toolCallId: tc.id,
       };
 
+      // ── PreToolUse hook ──
+      let skipTool = false;
+      let effectiveArgs = args;
+      if (config.hooks?.PreToolUse && args !== null) {
+        const preInput: PreToolUseHookInput = {
+          hook_event_name: 'PreToolUse',
+          tool_name: tc.function.name,
+          tool_input: args,
+          tool_use_id: tc.id,
+          session_id: sessionId,
+          cwd: config.cwd,
+        };
+        const preOutput = await runHooks(config.hooks.PreToolUse, preInput);
+        if (preOutput.hookSpecificOutput?.permissionDecision === 'deny') {
+          skipTool = true;
+          const reason = preOutput.hookSpecificOutput.permissionDecisionReason ?? 'denied by hook';
+          const result = `Error: Tool "${tc.function.name}" denied by PreToolUse hook: ${reason}`;
+          yield {
+            type: 'tool_result',
+            toolName: tc.function.name,
+            toolOutput: result,
+            toolCallId: tc.id,
+          };
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: result,
+          });
+        } else if (preOutput.hookSpecificOutput?.updatedInput) {
+          effectiveArgs = preOutput.hookSpecificOutput.updatedInput;
+        }
+      }
+
+      if (skipTool) continue;
+
       let result: string;
-      if (args === null) {
+      if (effectiveArgs === null) {
         result = `Error: Malformed tool call for "${tc.function.name}". Arguments must be valid JSON.`;
       } else {
         const executor = toolRegistry.get(tc.function.name);
@@ -611,7 +762,21 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
           result = `Error: Unknown tool "${tc.function.name}". Available: ${Array.from(availableTools).join(', ')}`;
         } else {
           try {
-            result = await executor(args, config.cwd);
+            result = await executor(effectiveArgs, config.cwd);
+
+            // ── PostToolUse hook ──
+            if (config.hooks?.PostToolUse) {
+              const postInput: PostToolUseHookInput = {
+                hook_event_name: 'PostToolUse',
+                tool_name: tc.function.name,
+                tool_input: effectiveArgs,
+                tool_response: result,
+                tool_use_id: tc.id,
+                session_id: sessionId,
+                cwd: config.cwd,
+              };
+              await runHooks(config.hooks.PostToolUse, postInput);
+            }
           } catch (err) {
             const error = err as Error;
             result = `Error executing ${tc.function.name}: ${error.message}`;
@@ -619,6 +784,20 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
               { toolName: tc.function.name, error: error.message },
               'tool-loop.tool_execution_failed'
             );
+
+            // ── PostToolUseFailure hook ──
+            if (config.hooks?.PostToolUseFailure) {
+              const failInput: PostToolUseFailureHookInput = {
+                hook_event_name: 'PostToolUseFailure',
+                tool_name: tc.function.name,
+                tool_input: effectiveArgs,
+                tool_use_id: tc.id,
+                error: error.message,
+                session_id: sessionId,
+                cwd: config.cwd,
+              };
+              await runHooks(config.hooks.PostToolUseFailure, failInput);
+            }
           }
         }
       }

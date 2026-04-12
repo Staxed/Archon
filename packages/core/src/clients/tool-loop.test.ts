@@ -1,6 +1,15 @@
 import { describe, test, expect, spyOn, afterEach } from 'bun:test';
 import { executeToolLoop } from './tool-loop';
-import type { ToolLoopConfig, ChatCompletionResponse, ChatCompletionChunk } from './tool-loop';
+import type {
+  ToolLoopConfig,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+  ToolLoopHooks,
+  PreToolUseHookInput,
+  PostToolUseHookInput,
+  PostToolUseFailureHookInput,
+  HookOutput,
+} from './tool-loop';
 import { toolDefinitions } from './tool-definitions';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -592,6 +601,332 @@ describe('executeToolLoop', () => {
 
       expect(body!.response_format).toBeUndefined();
       expect(body!.grammar).toBeUndefined();
+    });
+  });
+
+  // ─── Hooks lifecycle tests (US-020) ─────────────────────────────────────
+
+  describe('hooks', () => {
+    test('PreToolUse: fires before tool execution with correct payload', async () => {
+      const hookCalls: PreToolUseHookInput[] = [];
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async input => {
+                hookCalls.push(input as PreToolUseHookInput);
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo hello' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_1', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks, sessionId: 'sess-123' }));
+
+      expect(hookCalls).toHaveLength(1);
+      expect(hookCalls[0]).toMatchObject({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' },
+        tool_use_id: 'call_1',
+        session_id: 'sess-123',
+        cwd: '/tmp',
+      });
+    });
+
+    test('PreToolUse: deny permission blocks tool execution', async () => {
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async () => ({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny' as const,
+                  permissionDecisionReason: 'Not allowed in this context',
+                },
+              }),
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'rm -rf /' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_deny', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('ok')));
+
+      const chunks = await collectChunks(baseConfig({ hooks }));
+
+      // Should have a tool_result with denial message
+      const toolResult = chunks.find(c => c.type === 'tool_result');
+      expect(toolResult).toBeDefined();
+      if (toolResult?.type === 'tool_result') {
+        expect(toolResult.toolOutput).toContain('denied by PreToolUse hook');
+        expect(toolResult.toolOutput).toContain('Not allowed in this context');
+      }
+    });
+
+    test('PreToolUse: matcher regex filters which tools trigger the hook', async () => {
+      const hookCalls: string[] = [];
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async input => {
+                hookCalls.push((input as PreToolUseHookInput).tool_name);
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo test' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_1', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks }));
+
+      // Matcher "Write|Edit" should NOT match "Bash"
+      expect(hookCalls).toHaveLength(0);
+    });
+
+    test('PreToolUse: updatedInput modifies tool arguments', async () => {
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async () => ({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  updatedInput: { command: 'echo modified' },
+                },
+              }),
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo original' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_mod', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      const chunks = await collectChunks(baseConfig({ hooks }));
+
+      // The tool result should reflect the modified command
+      const toolResult = chunks.find(c => c.type === 'tool_result');
+      expect(toolResult).toBeDefined();
+      if (toolResult?.type === 'tool_result') {
+        // 'echo modified' should have been executed
+        expect(toolResult.toolOutput).toContain('modified');
+      }
+    });
+
+    test('PostToolUse: fires after successful tool execution', async () => {
+      const hookCalls: PostToolUseHookInput[] = [];
+      const hooks: ToolLoopHooks = {
+        PostToolUse: [
+          {
+            hooks: [
+              async input => {
+                hookCalls.push(input as PostToolUseHookInput);
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo hello' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_post', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks, sessionId: 'sess-post' }));
+
+      expect(hookCalls).toHaveLength(1);
+      expect(hookCalls[0]).toMatchObject({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' },
+        tool_use_id: 'call_post',
+        session_id: 'sess-post',
+        cwd: '/tmp',
+      });
+      // tool_response should be the string output
+      expect(typeof hookCalls[0].tool_response).toBe('string');
+    });
+
+    test('PostToolUseFailure: fires after tool execution error', async () => {
+      const hookCalls: PostToolUseFailureHookInput[] = [];
+      const hooks: ToolLoopHooks = {
+        PostToolUseFailure: [
+          {
+            hooks: [
+              async input => {
+                hookCalls.push(input as PostToolUseFailureHookInput);
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      // Read a non-existent file to trigger an error
+      const readArgs = JSON.stringify({ file_path: '/tmp/nonexistent-hook-test-file-xyz.txt' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_fail', name: 'Read', arguments: readArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks, sessionId: 'sess-fail' }));
+
+      expect(hookCalls).toHaveLength(1);
+      expect(hookCalls[0]).toMatchObject({
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: 'Read',
+        tool_use_id: 'call_fail',
+        session_id: 'sess-fail',
+        cwd: '/tmp',
+      });
+      expect(hookCalls[0].error).toBeDefined();
+      expect(hookCalls[0].error.length).toBeGreaterThan(0);
+    });
+
+    test('hook errors are surfaced, not swallowed', async () => {
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async () => {
+                throw new Error('Hook crashed intentionally');
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo test' });
+      fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        jsonResponse(toolCallResponse([{ id: 'call_err', name: 'Bash', arguments: bashArgs }]))
+      );
+
+      await expect(collectChunks(baseConfig({ hooks }))).rejects.toThrow(
+        'Hook crashed intentionally'
+      );
+    });
+
+    test('PostToolUse matcher filters by tool name', async () => {
+      const hookCalls: string[] = [];
+      const hooks: ToolLoopHooks = {
+        PostToolUse: [
+          {
+            matcher: 'Read',
+            hooks: [
+              async input => {
+                hookCalls.push((input as PostToolUseHookInput).tool_name);
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo hi' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_1', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks }));
+
+      // Matcher "Read" should NOT fire for "Bash"
+      expect(hookCalls).toHaveLength(0);
+    });
+
+    test('multiple hook matchers are all evaluated', async () => {
+      const calls: string[] = [];
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async () => {
+                calls.push('first');
+                return {};
+              },
+            ],
+          },
+          {
+            hooks: [
+              async () => {
+                calls.push('second');
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo test' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_m', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      await collectChunks(baseConfig({ hooks }));
+
+      expect(calls).toEqual(['first', 'second']);
+    });
+
+    test('default sessionId is empty string when not provided', async () => {
+      let capturedSessionId = '';
+      const hooks: ToolLoopHooks = {
+        PreToolUse: [
+          {
+            hooks: [
+              async input => {
+                capturedSessionId = (input as PreToolUseHookInput).session_id;
+                return {};
+              },
+            ],
+          },
+        ],
+      };
+
+      const bashArgs = JSON.stringify({ command: 'echo test' });
+      fetchSpy = spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(
+          jsonResponse(toolCallResponse([{ id: 'call_s', name: 'Bash', arguments: bashArgs }]))
+        )
+        .mockResolvedValueOnce(jsonResponse(textResponse('done')));
+
+      // No sessionId in config
+      await collectChunks(baseConfig({ hooks }));
+
+      expect(capturedSessionId).toBe('');
     });
   });
 });
