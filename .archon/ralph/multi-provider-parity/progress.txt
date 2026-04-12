@@ -25,6 +25,7 @@
 - **Pattern**: `executeToolLoop(config)` is an `AsyncGenerator<MessageChunk>`. Uses a `toolRegistry` map for dispatch. SSE parsing via `parseSSEStream()`. Tool call deltas assembled via `assembleToolCalls()`.
 - **Key types**: `ToolLoopConfig`, `ChatMessage`, `ToolCall`, `ChatCompletionChunk`, `ChatCompletionResponse`, `ProviderEndpointConfig`
 - **Feature params**: `allowedTools`, `deniedTools`, `systemPrompt`, `outputFormat`, `outputFormatStyle` are processed at the start of `executeToolLoop()` — callers pass these via config, not pre-processing.
+- **Hooks**: `ToolLoopHooks` with `PreToolUse`, `PostToolUse`, `PostToolUseFailure` matchers. `ToolLoopHookMatcher` has `matcher?` (regex), `hooks[]` (callbacks), `timeout?`. Hook payloads match Claude SDK shapes. `runHooks()` evaluates all matching hooks; errors propagated (not swallowed).
 
 ### Output format style pattern
 - **Where**: `packages/core/src/clients/openai-compatible.ts`, `packages/core/src/clients/llamacpp.ts`
@@ -563,5 +564,30 @@
 - Output format mapping is inherently provider-specific (response_format vs grammar). Added `outputFormatStyle` field to ToolLoopConfig and `getOutputFormatStyle()` protected hook on OpenAICompatibleClient for clean subclass override.
 - The OpenAI-compatible client still prepends systemPrompt to messages before context window check (for accurate token estimates), then the tool loop's systemPrompt is for direct callers (like future Codex fallback).
 - filterToolsByName import removed from openai-compatible.ts — tool loop now handles all filtering.
+
+---
+
+## 2026-04-12 — US-020: Tool loop hooks lifecycle
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-loop.ts` — Added hook types (PreToolUseHookInput, PostToolUseHookInput, PostToolUseFailureHookInput, HookOutput, ToolLoopHookMatcher, ToolLoopHooks), runHooks() helper, hooks/sessionId config fields, hook firing in tool execution loop
+- `packages/core/src/clients/tool-loop.test.ts` — 10 new tests for hook lifecycle
+
+**Acceptance criteria verified**:
+- [x] Tool loop fires PreToolUse hook before each tool execution
+- [x] Tool loop fires PostToolUse hook after each successful tool execution
+- [x] Tool loop fires PostToolUseFailure hook after failed tool execution
+- [x] Hook callbacks receive the same payload shape as Claude SDK hooks (tool_name, tool_input, tool_use_id, session_id, cwd, hook_event_name)
+- [x] Hooks can modify tool call behavior (PreToolUse permissionDecision: 'deny' blocks; updatedInput modifies args)
+- [x] Hook errors are surfaced, not swallowed (test verifies thrown errors propagate)
+- [x] Type-check passes
+- [x] Tests pass (34/34 tool-loop tests; only pre-existing failures elsewhere)
+
+**Learnings**:
+- Hook types are defined locally in tool-loop.ts (not imported from Claude SDK) to avoid @archon/core depending on the SDK's type exports. Shapes match semantically.
+- `runHooks()` is a simple sequential loop over matchers — no need for parallel execution since hooks may depend on ordering.
+- ESLint catches unnecessary type parameters — use direct union type instead of `<T extends ...>` when T is only used once.
+- No mock.module() needed for hook tests — hooks are just callback functions, no external module mocking required.
 
 ---
