@@ -242,7 +242,8 @@ async function flushKnowledgeCore(options: FlushCoreOptions): Promise<KnowledgeF
     const synthesis = await synthesizeLogs(
       logContents,
       existingArticles,
-      mergedConfig.knowledge.compileModel
+      mergedConfig.knowledge.compileModel,
+      mergedConfig.knowledge.compileProvider ?? 'claude'
     );
 
     // Write to temp dir first, then atomic rename to final paths
@@ -255,7 +256,8 @@ async function flushKnowledgeCore(options: FlushCoreOptions): Promise<KnowledgeF
         gitInfo.owner,
         gitInfo.repo,
         lastFlush?.gitSha || undefined,
-        mergedConfig.knowledge.captureModel
+        mergedConfig.knowledge.captureModel,
+        mergedConfig.knowledge.captureProvider ?? 'claude'
       );
       report.articlesStale = validation.articlesFlaggedStale;
     }
@@ -454,9 +456,10 @@ async function readExistingArticles(knowledgePath: string): Promise<string> {
 async function synthesizeLogs(
   logContents: string,
   existingArticles: string,
-  compileModel: string
+  compileModel: string,
+  compileProvider: string
 ): Promise<FlushSynthesis> {
-  const client = getAssistantClient('claude');
+  const client = getAssistantClient(compileProvider);
 
   const contextParts = [SYNTHESIS_PROMPT];
   if (existingArticles) {
@@ -838,7 +841,8 @@ async function validateStaleness(
   owner: string,
   repo: string,
   lastFlushSha: string | undefined,
-  captureModel: string
+  captureModel: string,
+  captureProvider = 'claude'
 ): Promise<StalenessResult> {
   const log = getLog();
 
@@ -860,7 +864,12 @@ async function validateStaleness(
   if (lastFlushSha) {
     const diffOutput = await getGitDiffNameOnly(owner, repo, lastFlushSha);
     if (diffOutput) {
-      staleArticles = await identifyStaleArticles(articles, diffOutput, captureModel);
+      staleArticles = await identifyStaleArticles(
+        articles,
+        diffOutput,
+        captureModel,
+        captureProvider
+      );
     }
   }
 
@@ -953,9 +962,10 @@ export async function collectAllArticles(knowledgePath: string): Promise<Collect
 export async function identifyStaleArticles(
   articles: CollectedArticle[],
   diffOutput: string,
-  captureModel: string
+  captureModel: string,
+  captureProvider = 'claude'
 ): Promise<string[]> {
-  const client = getAssistantClient('claude');
+  const client = getAssistantClient(captureProvider);
 
   const articlesSummary = articles.map(a => `### ${a.key}\n\n${a.content}`).join('\n\n---\n\n');
 
