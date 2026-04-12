@@ -80,3 +80,25 @@
 - `updateGlobalConfig()` had hardcoded 2-provider assistants merge — needed widening to 4 providers.
 
 ---
+
+## 2026-04-12 — US-003: Canonical tool definitions (JSON Schema)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-definitions.ts` — New file: 8 tool definitions in OpenAI function-call JSON Schema format with typed interfaces and filter helpers
+
+**Acceptance criteria verified**:
+- [x] New file exports an array of tool definitions
+- [x] Tools defined: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
+- [x] Each definition follows OpenAI function-call format
+- [x] Parameter schemas match Claude SDK tool surface
+- [x] ToolDefinition is fully typed (no any)
+- [x] Definitions are filterable by name (filterToolsByName, excludeToolsByName, toolDefinitionsByName)
+- [x] Type-check passes
+- [x] Lint passes
+
+**Learnings**:
+- Straightforward story — no integration points to worry about, just defining data structures.
+- Exported both array (toolDefinitions) and Map (toolDefinitionsByName) for different access patterns.
+
+---

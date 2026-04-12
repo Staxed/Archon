@@ -71,8 +71,8 @@
       "technicalNotes": "Mirror the tool surface from Claude Agent SDK. Parameter schemas should be precise JSON Schema (required fields, string formats, enums where applicable). Export both the definitions array and a lookup map by tool name. Reference Claude SDK tool behavior for parameter semantics.",
       "dependsOn": [],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 3. Files: tool-definitions.ts"
     },
     {
       "id": "US-004",
