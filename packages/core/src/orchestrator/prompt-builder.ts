@@ -5,9 +5,21 @@
  */
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getGlobalKnowledgePath, getProjectKnowledgePath, parseOwnerRepo } from '@archon/paths';
+import {
+  createLogger,
+  getGlobalKnowledgePath,
+  getProjectKnowledgePath,
+  parseOwnerRepo,
+} from '@archon/paths';
 import type { Codebase } from '../types';
 import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
+
+// Lazy logger per orchestrator conventions — never initialize at module scope.
+let cachedLog: ReturnType<typeof createLogger> | undefined;
+function getLog(): ReturnType<typeof createLogger> {
+  if (!cachedLog) cachedLog = createLogger('orchestrator.prompt-builder');
+  return cachedLog;
+}
 
 /**
  * Format a single project for the orchestrator prompt.
@@ -110,16 +122,35 @@ To remove a registered project:
 IMPORTANT: Always clone into ~/.archon/workspaces/{owner}/{repo}/source unless the user specifies a different location.`;
 }
 
-/** Maximum approximate token budget for the knowledge index (~500 tokens ≈ ~2000 chars) */
-const KNOWLEDGE_INDEX_MAX_CHARS = 2000;
+/**
+ * Maximum character budget for the knowledge index (~4K tokens ≈ ~16KB).
+ *
+ * The index is injected into the agent system prompt on every workflow run,
+ * so every byte costs tokens on every call. This ceiling is sized for a
+ * mature multi-year project: 10-15 top-level domains with short summaries
+ * should realistically land around 4-8KB, and 16KB gives comfortable
+ * headroom for organic drift without needing revisits.
+ *
+ * If truncation fires in practice, the right fix is to audit why the index
+ * grew (almost always the compile prompt getting chatty), not to raise the
+ * cap again. The index is a navigation map, not the content itself.
+ */
+const KNOWLEDGE_INDEX_MAX_CHARS = 16384;
 
 /**
- * Maximum approximate token budget for raw unprocessed logs (~8000 tokens ≈ ~32000 chars).
- * This is a safety ceiling, not a target — stale-log auto-flush should keep the volume
- * much lower in practice. Bumped from 8000 to 32000 to handle bursty workflow runs between
- * flushes (a typical capture is 500-2000 chars, so this holds ~15-60 captures).
+ * Maximum character budget for raw unprocessed logs (~16K tokens ≈ ~64KB).
+ *
+ * Logs are only injected when the KB has captures since the last flush.
+ * Auto-flush (10-min debounce) normally keeps volume much lower, so this
+ * cap is a safety net for flush gaps rather than a per-run budget.
+ *
+ * Sizing: heavy capture rate is ~10 captures/day × ~2KB each = 20KB/day,
+ * so 64KB comfortably handles a 3-day flush gap. A gap longer than that
+ * is a broken-flush signal, not normal operation — the cap is deliberately
+ * tight enough to truncate eventually rather than let a runaway log grow
+ * unbounded.
  */
-const KNOWLEDGE_LOGS_MAX_CHARS = 32000;
+const KNOWLEDGE_LOGS_MAX_CHARS = 65536;
 
 /**
  * Load a knowledge index.md file, returning its content or empty string if not found.
@@ -129,8 +160,17 @@ export async function loadKnowledgeIndex(knowledgePath: string): Promise<string>
   try {
     const indexPath = join(knowledgePath, 'index.md');
     const content = await readFile(indexPath, 'utf-8');
-    // Truncate to stay within ~500 token budget
+    // Truncate to stay within the token budget
     if (content.length > KNOWLEDGE_INDEX_MAX_CHARS) {
+      getLog().warn(
+        {
+          indexPath,
+          actualChars: content.length,
+          maxChars: KNOWLEDGE_INDEX_MAX_CHARS,
+          overflowChars: content.length - KNOWLEDGE_INDEX_MAX_CHARS,
+        },
+        'knowledge.index_truncated'
+      );
       return content.slice(0, KNOWLEDGE_INDEX_MAX_CHARS) + '\n\n*(index truncated)*\n';
     }
     return content;
@@ -183,6 +223,9 @@ export async function loadUnprocessedLogs(knowledgePath: string): Promise<string
 
   // Read and concatenate logs (newest first), respecting token budget
   let combined = '';
+  let truncated = false;
+  let truncatedFile: string | undefined;
+  let droppedFileCount = 0;
   for (const file of logFiles.reverse()) {
     try {
       const content = await readFile(join(logsDir, file), 'utf-8');
@@ -192,12 +235,36 @@ export async function loadUnprocessedLogs(knowledgePath: string): Promise<string
         if (remaining > 200) {
           combined += content.slice(0, remaining) + '\n\n*(log truncated)*\n';
         }
+        truncated = true;
+        truncatedFile = file;
         break;
       }
       combined += content + '\n';
     } catch {
       // Skip unreadable files
     }
+  }
+
+  // Count log files that were skipped entirely because truncation fired
+  // mid-iteration. After reverse(), logFiles is newest-first. Files after
+  // the truncation point (older ones) are completely absent from the output.
+  if (truncated && truncatedFile) {
+    const truncatedIdx = logFiles.indexOf(truncatedFile);
+    droppedFileCount = truncatedIdx >= 0 ? logFiles.length - truncatedIdx - 1 : 0;
+  }
+
+  if (truncated) {
+    getLog().warn(
+      {
+        logsDir,
+        maxChars: KNOWLEDGE_LOGS_MAX_CHARS,
+        includedChars: combined.length,
+        truncatedAtFile: truncatedFile,
+        droppedOlderFiles: droppedFileCount,
+        totalLogFiles: logFiles.length,
+      },
+      'knowledge.logs_truncated'
+    );
   }
 
   return combined;

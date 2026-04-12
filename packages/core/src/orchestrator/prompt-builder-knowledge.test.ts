@@ -119,7 +119,8 @@ describe('buildOrchestratorPrompt — knowledge loading', () => {
   });
 
   test('truncates index content that exceeds budget', async () => {
-    const longContent = 'x'.repeat(3000);
+    // Must exceed KNOWLEDGE_INDEX_MAX_CHARS (16384) to trigger truncation.
+    const longContent = 'x'.repeat(17000);
     mockReadFile.mockImplementation(async (path: string) => {
       if (path === '/home/user/.archon/knowledge/index.md') {
         return longContent;
@@ -282,8 +283,8 @@ describe('buildProjectScopedPrompt — unprocessed logs fallback', () => {
   });
 
   test('truncates logs that exceed token budget', async () => {
-    // Must exceed KNOWLEDGE_LOGS_MAX_CHARS (32000) to trigger truncation.
-    const largeContent = 'x'.repeat(36000);
+    // Must exceed KNOWLEDGE_LOGS_MAX_CHARS (65536) to trigger truncation.
+    const largeContent = 'x'.repeat(70000);
     mockReadFile.mockImplementation(async (path: string) => {
       if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
         return largeContent;
