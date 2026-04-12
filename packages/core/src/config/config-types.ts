@@ -31,10 +31,22 @@ export interface KnowledgeConfig {
   enabled?: boolean;
 
   /**
+   * Provider to use for knowledge capture
+   * @default 'claude'
+   */
+  captureProvider?: ProviderType;
+
+  /**
    * Model to use for knowledge capture (fast extraction from transcripts)
    * @default 'haiku'
    */
   captureModel?: string;
+
+  /**
+   * Provider to use for knowledge compilation
+   * @default 'claude'
+   */
+  compileProvider?: ProviderType;
 
   /**
    * Model to use for knowledge compilation (synthesis into articles)
