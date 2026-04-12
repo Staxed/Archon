@@ -138,3 +138,34 @@
 - Shared `path-validation.ts` keeps path security logic DRY across all tool implementations.
 
 ---
+
+## 2026-04-12 — US-005: Tool implementations: search + shell (glob, grep, bash)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tools/glob.ts` — Glob tool using Bun.Glob with mtime sorting
+- `packages/core/src/clients/tools/grep.ts` — Grep tool with regex search, output modes (content/files_with_matches/count), glob/type filters
+- `packages/core/src/clients/tools/bash.ts` — Bash tool using execFileAsync from @archon/git with timeout enforcement
+- `packages/core/src/clients/tools/glob.test.ts` — 8 tests: pattern matching, recursive, path param, no-match, traversal, mtime sort
+- `packages/core/src/clients/tools/grep.test.ts` — 12 tests: all output modes, case-insensitive, glob/type filters, single file, traversal
+- `packages/core/src/clients/tools/bash.test.ts` — 10 tests: stdout, stderr, cwd, non-zero exit, timeout, multi-line
+
+**Acceptance criteria verified**:
+- [x] New files: glob.ts, grep.ts, bash.ts in packages/core/src/clients/tools/
+- [x] Glob tool: accepts pattern + optional path, returns matching file paths sorted by modification time
+- [x] Grep tool: accepts pattern + optional path/glob/type filters, returns matching lines or file paths
+- [x] Bash tool: accepts command string + optional timeout, executes via execFileAsync, returns stdout/stderr
+- [x] Bash tool uses execFileAsync from @archon/git (never exec)
+- [x] All tools scope operations to provided cwd
+- [x] Bash tool enforces timeout (default 120s, max 600s)
+- [x] Each tool exports function matching (params: Record<string, unknown>, cwd: string) => Promise<string>
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Bun.Glob is available at runtime and works well for glob matching — no need for external `fast-glob` or `minimatch` dependencies.
+- `rg` (ripgrep) is not available in this environment; Node.js regex-based grep works fine as fallback.
+- ESLint enforces `T[]` over `Array<T>` and catches unused variables — fix before committing.
+- All 50KB truncation limits match across tools for consistent behavior.
+
+---

@@ -118,8 +118,8 @@
         "US-003"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 5. Files: glob.ts, grep.ts, bash.ts, glob.test.ts, grep.test.ts, bash.test.ts"
     },
     {
       "id": "US-006",
