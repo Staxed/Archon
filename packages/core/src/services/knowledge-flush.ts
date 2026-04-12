@@ -525,8 +525,8 @@ async function writeFlushResultsAtomic(
   // Clean up any leftover temp dir from a previous crashed flush
   try {
     await rm(tmpDir, { recursive: true, force: true });
-  } catch {
-    // Ignore cleanup errors
+  } catch (err) {
+    getLog().debug({ tmpDir, error: (err as Error).message }, 'knowledge.flush_tmp_cleanup_failed');
   }
   await mkdir(tmpDir, { recursive: true });
 
@@ -618,8 +618,14 @@ async function writeFlushResultsAtomic(
       const tmpIndexPath = join(tmpIndexDir, '_index.md');
       await writeFile(tmpIndexPath, updatedIndex);
       pendingRenames.push({ tmpPath: tmpIndexPath, finalPath: indexPath });
-    } catch {
-      // Index was already created above for new domains
+    } catch (err) {
+      // ENOENT is expected for new domains (index was created above); warn on unexpected errors
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLog().warn(
+          { domain, error: (err as Error).message },
+          'knowledge.flush_domain_index_update_failed'
+        );
+      }
     }
   }
 
@@ -642,8 +648,11 @@ async function writeFlushResultsAtomic(
   // Clean up temp dir
   try {
     await rm(tmpDir, { recursive: true, force: true });
-  } catch {
-    // Ignore cleanup errors
+  } catch (err) {
+    getLog().debug(
+      { tmpDir, error: (err as Error).message },
+      'knowledge.flush_final_tmp_cleanup_failed'
+    );
   }
 
   return {

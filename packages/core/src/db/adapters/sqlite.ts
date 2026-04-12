@@ -179,7 +179,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN hidden INTEGER DEFAULT 0');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
     }
 
     // Workflow runs columns
@@ -199,7 +199,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN working_path TEXT');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
     }
 
     // Sessions columns
@@ -213,7 +213,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_sessions ADD COLUMN ended_reason TEXT');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
     }
 
     // Messages columns (for stateless-provider replay)
@@ -237,7 +237,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_messages ADD COLUMN summary_of TEXT');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
     }
   }
 

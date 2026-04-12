@@ -61,6 +61,11 @@ export interface TokenUsageSummaryFilters {
 
 /**
  * Insert a token usage record.
+ *
+ * Note: `id` is generated via `dialect.generateUuid()` (hex-encoded random bytes in SQLite,
+ * `gen_random_uuid()` in PostgreSQL). The UUID format differs between backends but both
+ * are unique and suitable for primary keys. Foreign key references (workflow_run_id, etc.)
+ * use the format of their source table.
  */
 export async function recordTokenUsage(data: TokenUsageInput): Promise<TokenUsageRow> {
   const dialect = getDialect();
@@ -88,7 +93,9 @@ export async function recordTokenUsage(data: TokenUsageInput): Promise<TokenUsag
 
   const row = result.rows[0];
   if (!row) {
-    throw new Error('Failed to persist token usage: INSERT returned no rows');
+    throw new Error(
+      `Failed to persist token usage: INSERT returned no rows (provider: ${data.provider}, model: ${data.model}, run: ${data.workflow_run_id ?? 'none'})`
+    );
   }
 
   getLog().debug(

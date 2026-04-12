@@ -303,6 +303,7 @@ const toolRegistry: ReadonlyMap<string, ToolExecutor> = new Map<string, ToolExec
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Build the JSON body for an OpenAI chat/completions request, merging model, messages, tools, and extra fields. */
 function buildRequestBody(
   model: string,
   messages: ChatMessage[],
@@ -365,6 +366,7 @@ function buildOutputFormatBody(
   };
 }
 
+/** Build HTTP headers for the provider request, including Authorization and any custom headers. */
 function buildHeaders(endpoint: ProviderEndpointConfig): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -425,7 +427,7 @@ async function* parseSSEStream(
     try {
       yield JSON.parse(jsonStr) as ChatCompletionChunk;
     } catch {
-      // Skip malformed trailing data
+      log.debug({ jsonStr: jsonStr.slice(0, 200) }, 'tool-loop.sse_trailing_parse_skipped');
     }
   }
 }
@@ -628,10 +630,10 @@ export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<M
           toolCallDeltas.push(choice.delta.tool_calls);
         }
 
-        // Accumulate token usage from chunks
+        // Use Math.max — some providers send cumulative usage per chunk, not incremental
         if (chunk.usage) {
-          totalInputTokens += chunk.usage.prompt_tokens;
-          totalOutputTokens += chunk.usage.completion_tokens;
+          totalInputTokens = Math.max(totalInputTokens, chunk.usage.prompt_tokens);
+          totalOutputTokens = Math.max(totalOutputTokens, chunk.usage.completion_tokens);
         }
       }
 

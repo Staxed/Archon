@@ -90,7 +90,15 @@ function sendRequest(
   });
 }
 
-/** Parse JSON-RPC responses from the stdio buffer. */
+/**
+ * Parse JSON-RPC 2.0 responses from the stdio buffer using Content-Length framing.
+ *
+ * MCP stdio transport uses HTTP-style framing: each message is preceded by a
+ * `Content-Length: <n>\r\n\r\n` header indicating the byte length of the JSON body.
+ * This function scans the buffer for complete frames, parses the JSON body, and
+ * resolves/rejects the corresponding pending request promise by matching `msg.id`.
+ * Notifications (messages without `id`) are silently ignored per JSON-RPC spec.
+ */
 function processBuffer(server: ConnectedServer): void {
   while (true) {
     const headerEnd = server.buffer.indexOf('\r\n\r\n');
@@ -139,7 +147,10 @@ function processBuffer(server: ConnectedServer): void {
       }
       // Notifications (no id) are silently ignored
     } catch {
-      log.warn({ serverName: server.serverName }, 'mcp.json_parse_failed');
+      log.warn(
+        { serverName: server.serverName, rawBody: body.slice(0, 500) },
+        'mcp.json_parse_failed'
+      );
     }
   }
 }
@@ -244,7 +255,14 @@ function translateProperty(prop: Record<string, unknown>): JSONSchemaProperty {
   return result;
 }
 
-/** Convert an MCP tool to an OpenAI function-call ToolDefinition. */
+/**
+ * Convert an MCP tool to an OpenAI function-call ToolDefinition.
+ *
+ * Tool naming convention: `mcp__<serverName>__<toolName>`
+ * - Double underscores separate the three segments (prefix, server, tool)
+ * - This allows `callTool()` to reverse-map the qualified name back to server + tool
+ * - The `mcp__` prefix distinguishes MCP tools from built-in tools in the tool registry
+ */
 function mcpToolToDefinition(serverName: string, tool: McpToolInfo): ToolDefinition {
   return {
     type: 'function',
@@ -569,8 +587,8 @@ export class McpToolProvider {
         sendRequest(server, 'shutdown', {}),
         new Promise<void>(resolve => setTimeout(resolve, 5000)),
       ]);
-    } catch {
-      // Ignore shutdown errors — we're going to kill the process anyway
+    } catch (err) {
+      log.debug({ serverName, error: (err as Error).message }, 'mcp.graceful_shutdown_failed');
     }
 
     // Kill the process

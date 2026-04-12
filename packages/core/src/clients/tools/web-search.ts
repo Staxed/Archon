@@ -51,6 +51,7 @@ interface TavilyResponse {
   answer?: string;
 }
 
+/** Execute a search query against the Tavily API and return formatted results. */
 async function searchTavily(query: string, maxResults: number, apiKey: string): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -83,6 +84,7 @@ async function searchTavily(query: string, maxResults: number, apiKey: string): 
   return formatTavilyResults(data);
 }
 
+/** Format Tavily search response into markdown with answer box and numbered results. */
 function formatTavilyResults(data: TavilyResponse): string {
   const lines: string[] = [];
 
@@ -122,6 +124,7 @@ interface SerperResponse {
   answerBox?: { answer?: string; snippet?: string };
 }
 
+/** Execute a search query against the Serper (Google) API and return formatted results. */
 async function searchSerper(query: string, maxResults: number, apiKey: string): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -153,6 +156,7 @@ async function searchSerper(query: string, maxResults: number, apiKey: string): 
   return formatSerperResults(data);
 }
 
+/** Format Serper search response into markdown with answer box and numbered results. */
 function formatSerperResults(data: SerperResponse): string {
   const lines: string[] = [];
 

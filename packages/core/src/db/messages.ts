@@ -70,7 +70,9 @@ export async function addMessage(
   // Infer kind from context when not explicitly set
   const kind = options?.kind ?? inferKind(role, mergedMetadata, options);
 
-  // Build summary_of as JSON array string (SQLite TEXT, PostgreSQL UUID[])
+  // Build summary_of: serialized as a JSON array string for both backends.
+  // SQLite stores it as TEXT; PostgreSQL stores it as TEXT (not UUID[]).
+  // Consumers must JSON.parse() the value to get the array of summarized message IDs.
   const summaryOf = options?.summaryOf ? JSON.stringify(options.summaryOf) : null;
 
   const isSummary = kind === 'summary';

@@ -20,7 +20,19 @@ export class GbnfUnsupportedError extends Error {
   }
 }
 
-// Primitive GBNF rules shared across all generated grammars
+/**
+ * Primitive GBNF rules appended to all generated grammars.
+ *
+ * These rules define the terminal symbols for JSON values per RFC 8259:
+ * - `ws`: Optional whitespace (space, tab, newline)
+ * - `string`: JSON string with escape sequences (\", \\, \/, \b, \f, \n, \r, \t, \uXXXX)
+ * - `number`: JSON number with optional sign, decimal, and exponent
+ * - `integer`: JSON integer (no decimal or exponent)
+ * - `boolean`: Literal "true" or "false"
+ * - `null`: Literal "null"
+ *
+ * @see https://github.com/ggerganov/llama.cpp/blob/master/grammars/README.md
+ */
 const PRIMITIVE_RULES = `
 ws ::= [ \\t\\n]*
 string ::= "\\"" ([^"\\\\] | "\\\\" ["\\\\/bfnrt] | "\\\\u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])* "\\""
@@ -80,6 +92,7 @@ export function jsonSchemaToGbnf(schema: Record<string, unknown>): string {
   return allRules;
 }
 
+/** Throw GbnfUnsupportedError if the schema uses features outside our supported subset. */
 function checkUnsupportedFeatures(s: SchemaObject, context: string): void {
   if (s.$ref !== undefined) {
     throw new GbnfUnsupportedError(`$ref at ${context}`);
@@ -104,6 +117,7 @@ function checkUnsupportedFeatures(s: SchemaObject, context: string): void {
   }
 }
 
+/** Generate a GBNF rule expression for a given schema node, recursively creating sub-rules as needed. */
 function generateRule(
   s: SchemaObject,
   name: string,
@@ -144,6 +158,7 @@ function generateRule(
   }
 }
 
+/** Generate a GBNF rule for an enum: each value becomes an alternative in the rule. */
 function generateEnumRule(
   values: (string | number | boolean)[],
   name: string,
@@ -165,6 +180,7 @@ function generateEnumRule(
   return ruleName;
 }
 
+/** Generate a GBNF rule for an object type: emits key-value pairs for all properties. */
 function generateObjectRule(
   s: SchemaObject,
   name: string,
@@ -202,6 +218,7 @@ function generateObjectRule(
   return `"{" ws ${joined} ws "}"`;
 }
 
+/** Generate a GBNF rule for an array type: matches `[]` or `[item, item, ...]`. */
 function generateArrayRule(
   s: SchemaObject,
   name: string,
@@ -225,6 +242,7 @@ function generateArrayRule(
   return `"[" ws (${itemRule})? ws "]"`;
 }
 
+/** Escape special characters in a string for use inside a GBNF quoted literal. */
 function escapeGbnfString(s: string): string {
   return s
     .replace(/\\/g, '\\\\')
@@ -234,10 +252,12 @@ function escapeGbnfString(s: string): string {
     .replace(/\t/g, '\\t');
 }
 
+/** Replace non-alphanumeric chars with hyphens for use as a GBNF rule name. */
 function sanitizeRuleName(s: string): string {
   return s.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-');
 }
 
+/** Generate a unique GBNF rule name by appending a numeric suffix if the base name is taken. */
 function uniqueRuleName(base: string, existing: Set<string>): string {
   let name = base;
   let counter = 0;

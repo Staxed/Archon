@@ -103,14 +103,16 @@ export class LlamaCppClient extends OpenAICompatibleClient {
    * Check if an error indicates a connection failure (endpoint unreachable).
    */
   private isConnectionError(error: Error): boolean {
+    // Check error.code for errno constants (more reliable than substring matching)
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      code &&
+      ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH'].includes(code)
+    ) {
+      return true;
+    }
+    // Fallback to message check for errors without code (e.g., Bun fetch failures)
     const msg = error.message.toLowerCase();
-    return (
-      msg.includes('econnrefused') ||
-      msg.includes('enotfound') ||
-      msg.includes('econnreset') ||
-      msg.includes('etimedout') ||
-      msg.includes('fetch failed') ||
-      msg.includes('unable to connect')
-    );
+    return msg.includes('unable to connect') || msg.includes('fetch failed');
   }
 }
