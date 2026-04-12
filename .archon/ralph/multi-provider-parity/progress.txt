@@ -15,6 +15,11 @@
 - **Pattern**: All tools export `async function xxxTool(params: Record<string, unknown>, cwd: string): Promise<string>`. Path validation via shared `path-validation.ts` using `validatePath(filePath, cwd)`.
 - **Example**: `import { readTool } from './tools/read';`
 
+### Tool loop patterns
+- **Where**: `packages/core/src/clients/tool-loop.ts`
+- **Pattern**: `executeToolLoop(config)` is an `AsyncGenerator<MessageChunk>`. Uses a `toolRegistry` map for dispatch. SSE parsing via `parseSSEStream()`. Tool call deltas assembled via `assembleToolCalls()`.
+- **Key types**: `ToolLoopConfig`, `ChatMessage`, `ToolCall`, `ChatCompletionChunk`, `ChatCompletionResponse`, `ProviderEndpointConfig`
+
 ### Pre-existing test failures
 - `packages/core/src/orchestrator/prompt-builder-knowledge.test.ts`: "truncates logs that exceed token budget" — fails on main branch
 - `packages/cli/src/commands/workflow-run.test.ts`: 6 workflowRunCommand tests fail on main branch
@@ -195,5 +200,33 @@
 - WebSearch supports two providers (Tavily, Serper) with Tavily preferred when both keys are set.
 - HTML stripping removes script/style elements, strips tags, decodes entities, and collapses whitespace.
 - No mock.module() needed — globalThis.fetch override with afterEach restore is sufficient for test isolation.
+
+---
+
+## 2026-04-12 — US-007: Agentic tool-execution loop core
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/tool-loop.ts` — New file: agentic tool-execution loop with streaming SSE, tool dispatch, malformed detection, abort support
+- `packages/core/src/clients/tool-loop.test.ts` — 14 tests: single-turn, multi-turn, streaming, malformed detection (counter + reset), abort, HTTP errors, configurable threshold, token accumulation
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/tool-loop.ts`
+- [x] Loop accepts: messages history, tool definitions, provider endpoint config, streaming callback
+- [x] Loop implements: send request -> check for tool_calls -> execute tools -> append results -> repeat
+- [x] Single-turn path (no tool_calls): emits result and exits with zero extra overhead
+- [x] Tool execution uses the canonical tool implementations from US-004/005/006
+- [x] Loop yields `MessageChunk` events matching existing discriminated union
+- [x] Malformed tool-call detection: counter increments, resets on success, throws after 3 consecutive (configurable)
+- [x] Loop respects `abortSignal` for cancellation
+- [x] Streaming: chunks emitted in real-time as they arrive from the provider
+- [x] Type-check passes
+- [x] Tests pass (only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- Bun's `response.body.getReader()` returns `ReadableStreamDefaultReader<any>` — needs explicit cast to `<Uint8Array>`.
+- ESLint's `@typescript-eslint/no-empty-function` flags `catch(() => {})` — use `void reader.cancel()` instead.
+- No `mock.module()` needed — `spyOn(globalThis, 'fetch')` with `afterEach` restore works for tool loop tests.
+- Tests fit in the existing `bun test src/clients/` batch without mock pollution.
 
 ---
