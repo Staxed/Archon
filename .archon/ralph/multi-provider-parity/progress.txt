@@ -289,3 +289,29 @@
 - Tests fit in existing `bun test src/clients/` batch without mock pollution.
 
 ---
+
+## 2026-04-12 — US-010: JSON Schema to GBNF translator
+
+**Status**: PASSED
+**Files changed**:
+- `packages/core/src/clients/grammar/json-schema-to-gbnf.ts` — New file: pure function `jsonSchemaToGbnf()`, `GbnfUnsupportedError` class, GBNF primitive rules, object/array/enum/type generation
+- `packages/core/src/clients/grammar/json-schema-to-gbnf.test.ts` — 28 tests: all primitive types, enum (string/number/boolean), objects (required/optional/nested/empty), arrays (primitives/objects), unsupported features (7 cases), GBNF structure validation
+
+**Acceptance criteria verified**:
+- [x] New file `packages/core/src/clients/grammar/json-schema-to-gbnf.ts`
+- [x] Translates JSON Schema to GBNF grammar format
+- [x] Covers JSON Schema subset: object, string, number, integer, boolean, null, enum, array of primitives/objects, required, nested objects
+- [x] Throws loud classified error (GbnfUnsupportedError) for unsupported features: $ref, oneOf, anyOf, allOf, not, if/then/else, patternProperties
+- [x] Pure function with no side effects: `(schema: Record<string, unknown>) => string`
+- [x] No maintained library found; implemented minimal translator
+- [x] Type-check passes
+- [x] Tests pass (28/28, only pre-existing failure in prompt-builder-knowledge.test.ts)
+
+**Learnings**:
+- No npm packages exist for JSON Schema to GBNF translation — implemented from scratch.
+- GBNF property names must be escaped with `\"` in the grammar string, which means tests need `\\"` in assertions.
+- GBNF doesn't natively support optional object keys, so all properties are emitted as required — models filling JSON schemas tend to include all fields anyway.
+- No mock.module() needed — pure function tests with no external dependencies.
+- Tests fit in existing `bun test src/clients/` batch without mock pollution.
+
+---

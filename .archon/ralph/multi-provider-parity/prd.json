@@ -234,8 +234,8 @@
       "technicalNotes": "Per PRD section 3b. Llama.cpp uses GBNF via the `grammar` field, not OpenAI's `response_format`. Check for existing `json-schema-to-gbnf` npm packages first. Round-trip tests should verify GBNF constrains output to schema-conforming JSON.",
       "dependsOn": [],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 10. Files: grammar/json-schema-to-gbnf.ts, grammar/json-schema-to-gbnf.test.ts. No maintained npm package found; implemented minimal translator covering required JSON Schema subset."
     },
     {
       "id": "US-011",
