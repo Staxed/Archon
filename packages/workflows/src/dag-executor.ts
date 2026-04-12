@@ -1275,6 +1275,27 @@ async function executeNodeInternal(
       ...(nodeNumTurns !== undefined ? { numTurns: nodeNumTurns } : {}),
     });
 
+    // Record token usage (fire-and-forget — failures logged, never fail the workflow)
+    const inputTokens = nodeTokens?.input ?? 0;
+    const outputTokens = nodeTokens?.output ?? 0;
+    deps.store
+      .recordTokenUsage({
+        workflow_run_id: workflowRun.id,
+        node_id: node.id,
+        provider,
+        model: nodeOptions?.model ?? 'default',
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: nodeTokens?.total ?? inputTokens + outputTokens,
+        cost_usd: nodeCostUsd ?? null,
+      })
+      .catch((err: Error) => {
+        getLog().error(
+          { err, workflowRunId: workflowRun.id, nodeId: node.id },
+          'dag.token_usage_record_failed'
+        );
+      });
+
     // Clean up throttle entries on completion
     lastNodeCancelCheck.delete(`${workflowRun.id}:${node.id}`);
     lastNodeActivityUpdate.delete(`${workflowRun.id}:${node.id}`);
@@ -1825,6 +1846,30 @@ async function executeLoopNode(
           if (msg.numTurns !== undefined) {
             loopTotalNumTurns = (loopTotalNumTurns ?? 0) + msg.numTurns;
           }
+
+          // Record token usage per loop iteration (fire-and-forget)
+          {
+            const iterInput = msg.tokens?.input ?? 0;
+            const iterOutput = msg.tokens?.output ?? 0;
+            deps.store
+              .recordTokenUsage({
+                workflow_run_id: workflowRun.id,
+                node_id: node.id,
+                provider: workflowProvider,
+                model: resolvedOptions?.model ?? workflowModel ?? 'default',
+                input_tokens: iterInput,
+                output_tokens: iterOutput,
+                total_tokens: msg.tokens?.total ?? iterInput + iterOutput,
+                cost_usd: msg.cost ?? null,
+              })
+              .catch((err: Error) => {
+                getLog().error(
+                  { err, workflowRunId: workflowRun.id, nodeId: node.id, iteration: i },
+                  'dag.token_usage_record_failed'
+                );
+              });
+          }
+
           break; // Result is the "I'm done" signal — don't wait for subprocess to exit
         } else if (msg.type === 'tool' && msg.toolName) {
           const now = Date.now();
