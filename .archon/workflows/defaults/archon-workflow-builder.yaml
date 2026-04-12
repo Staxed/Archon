@@ -66,6 +66,18 @@ nodes:
       For prompt nodes that perform analysis, planning, or decision-making, note that
       they should include knowledge base awareness (the KB index is auto-injected into
       the agent context, so these nodes just need a "check knowledge base" instruction).
+
+      ## Provider Selection
+
+      For each proposed node, consider which provider is the best fit:
+      - **claude** — full agentic coding SDK, best for heavy implementation work, premium cost
+      - **codex** — OpenAI's agentic SDK, comparable to Claude for code work, premium cost
+      - **openrouter** — cloud gateway to 300+ models; use `model: <vendor>/<model>` format; variable cost from free to premium
+      - **llamacpp** — local endpoint; zero marginal cost; capability depends on the loaded model
+
+      Include a `proposed_providers` recommendation noting which provider/model each node
+      should use and why (e.g., "classify: openrouter/meta-llama/llama-4-scout — cheap
+      classification; implement: claude/opus — heavy agentic work").
     model: haiku
     allowed_tools: []
     output_format:
@@ -82,7 +94,9 @@ nodes:
         execution_mode:
           type: string
           enum: ["dag", "loop"]
-      required: [workflow_name, description, trigger_phrases, proposed_nodes, execution_mode]
+        proposed_providers:
+          type: string
+      required: [workflow_name, description, trigger_phrases, proposed_nodes, execution_mode, proposed_providers]
     depends_on: [scan-codebase]
 
   - id: generate-yaml
@@ -97,6 +111,7 @@ nodes:
       - **Trigger Phrases**: $extract-intent.output.trigger_phrases
       - **Proposed Nodes**: $extract-intent.output.proposed_nodes
       - **Execution Mode**: $extract-intent.output.execution_mode
+      - **Proposed Providers**: $extract-intent.output.proposed_providers
 
       ## Original User Request
       $ARGUMENTS
@@ -114,8 +129,8 @@ nodes:
         NOT for: ...
 
       # Optional top-level settings:
-      # provider: claude    (or codex)
-      # model: sonnet       (or haiku, opus, etc.)
+      # provider: claude    (or codex, openrouter, llamacpp)
+      # model: sonnet       (or haiku, opus, vendor/model for openrouter, any string for llamacpp)
       # interactive: true   (forces foreground execution in web UI)
 
       nodes:
@@ -125,7 +140,7 @@ nodes:
           # --- prompt node (AI-executed) ---
           prompt: |
             Instructions for the AI...
-          # Optional: model, allowed_tools, denied_tools, output_format, context, idle_timeout
+          # Optional: model, provider, allowed_tools, denied_tools, output_format, context, idle_timeout
 
           # --- bash node (shell script, no AI, stdout = $<nodeId>.output) ---
           bash: |
@@ -144,6 +159,10 @@ nodes:
             max_iterations: 10
             fresh_context: true  # optional: reset context each iteration
 
+          # Per-node provider and model override:
+          provider: claude          # claude | codex | openrouter | llamacpp
+          model: sonnet             # provider-specific model identifier
+
           # Common options for all node types:
           depends_on: [other-node-id]       # DAG edges
           when: "$<other-node>.output == 'value'"  # conditional execution
@@ -157,6 +176,36 @@ nodes:
       - `$<nodeId>.output` — stdout from a bash node or AI response from a prompt node
       - `$<nodeId>.output.field` — JSON field from a node with output_format
       - `$BASE_BRANCH` — base git branch
+
+      ## Provider Capability Profiles
+
+      Four providers are available. Each node can set `provider:` and `model:` independently:
+
+      | Provider | Model Format | Cost | Best For |
+      |----------|-------------|------|----------|
+      | `claude` | `sonnet`, `opus`, `haiku`, `claude-*` | Premium | Heavy agentic coding, complex implementation |
+      | `codex` | OpenAI model IDs | Premium | Code generation, comparable to Claude |
+      | `openrouter` | `vendor/model` (e.g., `meta-llama/llama-4-scout`) | Variable | Access to 300+ models, cost optimization |
+      | `llamacpp` | Any string (model loaded server-side) | Zero | Local inference, privacy, zero marginal cost |
+
+      All features (`allowed_tools`, `denied_tools`, `hooks`, `mcp`, `skills`, `output_format`,
+      `systemPrompt`) work identically on all four providers. No provider-specific restrictions.
+
+      ### Per-Node Provider Examples
+
+      Example mixing providers in a single workflow:
+      - Node `classify` with `provider: openrouter`, `model: meta-llama/llama-4-scout` — cheap classification
+      - Node `gather-ctx` with `bash:` — deterministic context gathering (no AI, no provider needed)
+      - Node `implement` with `provider: claude`, `model: opus` — heavy agentic coding
+      - Node `local-review` with `provider: llamacpp`, `allowed_tools: []` — local model review
+
+      ### Bash-Decomposition Heuristic
+
+      When a node targets a weaker provider (typically small local Llama.cpp models or
+      inexpensive OpenRouter models), prefer splitting tool-heavy work into a preceding
+      `bash:` node that gathers context via deterministic shell commands, then feeds the
+      output into a `prompt:` node that only needs to reason over the gathered text. This
+      avoids forcing a weak model to emit well-formed tool calls.
 
       ## Knowledge Base Integration
 
@@ -194,6 +243,13 @@ nodes:
       10. Prefer `model: haiku` for simple classification tasks to save cost
       11. Add a "Knowledge Base" section to prompt nodes that perform analysis, planning, or
           decision-making — use "if available" phrasing for graceful degradation
+      12. All features (`allowed_tools`, `denied_tools`, `hooks`, `mcp`, `skills`, `output_format`,
+          `systemPrompt`) work identically on all four providers — no provider-specific restrictions
+      13. When targeting weaker providers (small local models, inexpensive OpenRouter models),
+          split tool-heavy work into a `bash:` node for context gathering + a `prompt:` node for
+          reasoning — this avoids forcing weak models to emit well-formed tool calls
+      14. Use per-node `provider:` and `model:` to mix providers within a workflow — e.g.,
+          cheap classification on openrouter, heavy implementation on claude
 
       ## Output
 

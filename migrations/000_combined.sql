@@ -1,8 +1,8 @@
 -- Remote Coding Agent - Combined Schema
--- Version: Combined (final state after migrations 001-020)
+-- Version: Combined (final state after migrations 001-021)
 -- Description: Complete database schema (idempotent - safe to run multiple times)
 --
--- 8 Tables:
+-- 9 Tables:
 --   1. remote_agent_codebases
 --   1b. remote_agent_codebase_env_vars
 --   2. remote_agent_conversations
@@ -11,6 +11,7 @@
 --   5. remote_agent_workflow_runs
 --   6. remote_agent_workflow_events
 --   7. remote_agent_messages
+--   8. remote_agent_token_usage
 --
 -- Dropped tables (via migrations):
 --   - remote_agent_command_templates (017)
@@ -245,11 +246,42 @@ CREATE TABLE IF NOT EXISTS remote_agent_messages (
   role VARCHAR(20) NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata JSONB DEFAULT '{}'::jsonb,
+  kind VARCHAR(32) NOT NULL DEFAULT 'text',
+  summarized BOOLEAN NOT NULL DEFAULT FALSE,
+  summary_of UUID[] NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id
   ON remote_agent_messages(conversation_id, created_at ASC);
+
+-- ============================================================================
+-- Table 8: Token Usage
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS remote_agent_token_usage (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+  conversation_id UUID REFERENCES remote_agent_conversations(id) ON DELETE CASCADE,
+  node_id VARCHAR(255),
+  provider VARCHAR(32) NOT NULL,
+  model VARCHAR(255) NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd NUMERIC(12, 6),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_workflow_run
+  ON remote_agent_token_usage(workflow_run_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_conversation
+  ON remote_agent_token_usage(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_created_at
+  ON remote_agent_token_usage(created_at);
+
+COMMENT ON TABLE remote_agent_token_usage IS
+  'Per-node token usage and cost tracking across all providers.';
 
 -- ============================================================================
 -- Cleanup: Drop legacy objects from older schemas
@@ -307,3 +339,11 @@ ALTER TABLE remote_agent_conversations
 -- From migration 016: ended_reason on sessions
 ALTER TABLE remote_agent_sessions
   ADD COLUMN IF NOT EXISTS ended_reason TEXT;
+
+-- From migration 021: messages columns for stateless-provider replay
+ALTER TABLE remote_agent_messages
+  ADD COLUMN IF NOT EXISTS kind VARCHAR(32) NOT NULL DEFAULT 'text';
+ALTER TABLE remote_agent_messages
+  ADD COLUMN IF NOT EXISTS summarized BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE remote_agent_messages
+  ADD COLUMN IF NOT EXISTS summary_of UUID[] NULL;

@@ -1,3 +1,5 @@
+import type { ProviderType } from './schemas/provider';
+
 export function isClaudeModel(model: string): boolean {
   return (
     model === 'sonnet' ||
@@ -8,9 +10,20 @@ export function isClaudeModel(model: string): boolean {
   );
 }
 
-export function isModelCompatible(provider: 'claude' | 'codex', model?: string): boolean {
+export function isModelCompatible(provider: ProviderType, model?: string): boolean {
   if (!model) return true;
-  if (provider === 'claude') return isClaudeModel(model);
-  // Codex: accept most models, but reject obvious Claude aliases/prefixes
-  return !isClaudeModel(model);
+
+  switch (provider) {
+    case 'claude':
+      return isClaudeModel(model);
+    case 'codex':
+      // Codex: accept most models, but reject obvious Claude aliases/prefixes
+      return !isClaudeModel(model);
+    case 'openrouter':
+      // OpenRouter: accept vendor/model format; reject Claude aliases
+      return !isClaudeModel(model);
+    case 'llamacpp':
+      // Llama.cpp: accept any string (model loaded server-side); reject Claude aliases
+      return !isClaudeModel(model);
+  }
 }

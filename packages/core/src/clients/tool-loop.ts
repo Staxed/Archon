@@ -1,0 +1,921 @@
+/**
+ * Agentic tool-execution loop for OpenAI-compatible (stateless) providers.
+ *
+ * Core algorithm:
+ *   1. Send messages + tools to the provider endpoint
+ *   2. Parse the response for tool_calls
+ *   3. If no tool_calls → emit result and exit
+ *   4. If tool_calls → execute each tool → append results → repeat from 1
+ *
+ * The loop is provider-agnostic: it receives endpoint config and message format.
+ * Tool dispatch uses the canonical tool implementations (read, write, edit, bash, glob, grep, web-fetch, web-search).
+ */
+
+import type { ToolDefinition } from './tool-definitions';
+import type { MessageChunk } from '../types';
+import type { McpToolProvider } from './mcp-client';
+import type { SkillContext } from './skill-loader';
+import { createLogger } from '@archon/paths';
+import { jsonSchemaToGbnf } from './grammar/json-schema-to-gbnf';
+
+import { readTool } from './tools/read';
+import { writeTool } from './tools/write';
+import { editTool } from './tools/edit';
+import { bashTool } from './tools/bash';
+import { globTool } from './tools/glob';
+import { grepTool } from './tools/grep';
+import { webFetchTool } from './tools/web-fetch';
+import { webSearchTool } from './tools/web-search';
+
+const log = createLogger('tool-loop');
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+/** OpenAI chat/completions message format. */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  /** Present on assistant messages that contain tool calls. */
+  tool_calls?: ToolCall[];
+  /** Present on tool-result messages. */
+  tool_call_id?: string;
+  /** Tool name, required when role is 'tool'. */
+  name?: string;
+}
+
+/** A single tool call from the model. */
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+/** A streaming chunk from the OpenAI chat/completions endpoint. */
+export interface ChatCompletionChunk {
+  id: string;
+  choices: {
+    index: number;
+    delta: {
+      role?: string;
+      content?: string | null;
+      tool_calls?: {
+        index: number;
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }[];
+    };
+    finish_reason: string | null;
+  }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+/** Non-streaming response from the chat/completions endpoint. */
+export interface ChatCompletionResponse {
+  id: string;
+  choices: {
+    index: number;
+    message: {
+      role: string;
+      content: string | null;
+      tool_calls?: ToolCall[];
+    };
+    finish_reason: string | null;
+  }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+/** Configuration for the provider endpoint. */
+export interface ProviderEndpointConfig {
+  /** Full URL for the chat/completions endpoint. */
+  url: string;
+  /** API key for Authorization header. Optional (e.g., local llama.cpp). */
+  apiKey?: string;
+  /** Additional headers to send with every request. */
+  headers?: Record<string, string>;
+  /** Whether to request streaming responses. Default: true. */
+  stream?: boolean;
+}
+
+/** Configuration for the tool loop. */
+export interface ToolLoopConfig {
+  /** Provider endpoint configuration. */
+  endpoint: ProviderEndpointConfig;
+  /** Initial messages to send. */
+  messages: ChatMessage[];
+  /** Tool definitions available to the model. */
+  tools: ToolDefinition[];
+  /** Working directory for tool execution. */
+  cwd: string;
+  /** Model name to send in the request. */
+  model: string;
+  /** Optional abort signal for cancellation. */
+  abortSignal?: AbortSignal;
+  /** Max consecutive malformed tool-call attempts before throwing. Default: 3. */
+  maxMalformedToolCallAttempts?: number;
+  /** Additional request body fields (e.g., temperature). */
+  extraBody?: Record<string, unknown>;
+  /** Maximum number of tool-call rounds. Default: 100. */
+  maxIterations?: number;
+  /**
+   * Tool name whitelist. If set, only tools with these names are sent to the API.
+   * Filters the `tools` array before the first request.
+   */
+  allowedTools?: string[];
+  /**
+   * Tool name blocklist. These tool names are excluded from the tool list.
+   * Applied after `allowedTools` (if both are set, denied tools are removed from the whitelist result).
+   */
+  deniedTools?: string[];
+  /**
+   * System prompt prepended as the first system message in the messages array.
+   * Inserted before the first request; subsequent tool-loop iterations include it.
+   */
+  systemPrompt?: string;
+  /**
+   * Structured output format schema.
+   * Mapped to request body based on `outputFormatStyle`.
+   */
+  outputFormat?: { schema: Record<string, unknown>; name?: string };
+  /**
+   * How to map `outputFormat` to the request body.
+   * - `'response_format'` (default): OpenAI-standard `response_format: { type: 'json_schema', json_schema: ... }`
+   * - `'grammar'`: Llama.cpp-native GBNF grammar via the `grammar` request field
+   */
+  outputFormatStyle?: 'response_format' | 'grammar';
+  /**
+   * Hook callbacks fired at tool lifecycle points.
+   * Matches Claude SDK hook semantics: PreToolUse, PostToolUse, PostToolUseFailure.
+   */
+  hooks?: ToolLoopHooks;
+  /**
+   * Session identifier included in hook payloads.
+   * Matches Claude SDK's session_id field.
+   */
+  sessionId?: string;
+  /**
+   * MCP tool provider. If set, MCP tools are merged into the tool list
+   * and MCP tool calls are dispatched to the provider for execution.
+   * Caller is responsible for connecting before and shutting down after the loop.
+   */
+  mcpProvider?: McpToolProvider;
+  /**
+   * Skill context from the skill loader. If set:
+   * - `systemPromptAdditions` are appended to the system prompt.
+   * - `toolAllowlist` is intersected with `allowedTools` (if both are set).
+   */
+  skillContext?: SkillContext;
+}
+
+// ─── Hook Types ─────────────────────────────────────────────────────────────
+
+/** Payload for PreToolUse hook — matches Claude SDK's PreToolUseHookInput shape. */
+export interface PreToolUseHookInput {
+  hook_event_name: 'PreToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Payload for PostToolUse hook — matches Claude SDK's PostToolUseHookInput shape. */
+export interface PostToolUseHookInput {
+  hook_event_name: 'PostToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_response: unknown;
+  tool_use_id: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Payload for PostToolUseFailure hook — matches Claude SDK's PostToolUseFailureHookInput shape. */
+export interface PostToolUseFailureHookInput {
+  hook_event_name: 'PostToolUseFailure';
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  error: string;
+  session_id: string;
+  cwd: string;
+}
+
+/** Output from a hook callback — mirrors Claude SDK's SyncHookJSONOutput. */
+export interface HookOutput {
+  continue?: boolean;
+  suppressOutput?: boolean;
+  stopReason?: string;
+  decision?: 'approve' | 'block';
+  systemMessage?: string;
+  reason?: string;
+  hookSpecificOutput?: {
+    hookEventName: string;
+    permissionDecision?: 'allow' | 'deny' | 'ask' | 'defer';
+    permissionDecisionReason?: string;
+    updatedInput?: Record<string, unknown>;
+    additionalContext?: string;
+    updatedMCPToolOutput?: unknown;
+  };
+}
+
+/** A single hook callback matcher — matches SDK's HookCallbackMatcher. */
+export interface ToolLoopHookMatcher {
+  /** Regex pattern to match tool names. If undefined, matches all. */
+  matcher?: string;
+  /** Hook callback functions. */
+  hooks: ((
+    input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput
+  ) => Promise<HookOutput>)[];
+  /** Timeout in seconds. */
+  timeout?: number;
+}
+
+/** Hook configuration for the tool loop. */
+export interface ToolLoopHooks {
+  PreToolUse?: ToolLoopHookMatcher[];
+  PostToolUse?: ToolLoopHookMatcher[];
+  PostToolUseFailure?: ToolLoopHookMatcher[];
+}
+
+/**
+ * Run matching hooks for a given event and tool name.
+ * Returns the merged output from all matching hooks.
+ * Hook errors are surfaced (re-thrown) — not swallowed.
+ */
+async function runHooks(
+  matchers: ToolLoopHookMatcher[] | undefined,
+  input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput
+): Promise<HookOutput> {
+  if (!matchers || matchers.length === 0) return {};
+
+  let merged: HookOutput = {};
+  for (const m of matchers) {
+    // Check matcher regex against tool_name
+    if (m.matcher) {
+      const regex = new RegExp(m.matcher);
+      if (!regex.test(input.tool_name)) continue;
+    }
+    for (const hook of m.hooks) {
+      const output = await hook(input);
+      merged = { ...merged, ...output };
+      // hookSpecificOutput is deep-merged
+      if (output.hookSpecificOutput) {
+        merged.hookSpecificOutput = {
+          ...merged.hookSpecificOutput,
+          ...output.hookSpecificOutput,
+        };
+      }
+    }
+  }
+  return merged;
+}
+
+/** Type for a tool executor function. */
+type ToolExecutor = (params: Record<string, unknown>, cwd: string) => Promise<string>;
+
+// ─── Tool Registry ───────────────────────────────────────────────────────────
+
+const toolRegistry: ReadonlyMap<string, ToolExecutor> = new Map<string, ToolExecutor>([
+  ['Read', readTool],
+  ['Write', writeTool],
+  ['Edit', editTool],
+  ['Bash', bashTool],
+  ['Glob', globTool],
+  ['Grep', grepTool],
+  ['WebFetch', webFetchTool],
+  ['WebSearch', webSearchTool],
+]);
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Build the JSON body for an OpenAI chat/completions request, merging model, messages, tools, and extra fields. */
+function buildRequestBody(
+  model: string,
+  messages: ChatMessage[],
+  tools: ToolDefinition[],
+  stream: boolean,
+  extraBody?: Record<string, unknown>
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream,
+  };
+  if (tools.length > 0) {
+    body.tools = tools;
+  }
+  if (extraBody) {
+    Object.assign(body, extraBody);
+  }
+  return body;
+}
+
+/**
+ * Apply allowedTools and deniedTools filters to the tool definitions.
+ */
+function filterTools(
+  tools: ToolDefinition[],
+  allowedTools?: string[],
+  deniedTools?: string[]
+): ToolDefinition[] {
+  let result = tools;
+  if (allowedTools && allowedTools.length > 0) {
+    const allowed = new Set(allowedTools);
+    result = result.filter(t => allowed.has(t.function.name));
+  }
+  if (deniedTools && deniedTools.length > 0) {
+    const denied = new Set(deniedTools);
+    result = result.filter(t => !denied.has(t.function.name));
+  }
+  return result;
+}
+
+/**
+ * Build output format extra body based on style.
+ */
+function buildOutputFormatBody(
+  outputFormat: { schema: Record<string, unknown>; name?: string },
+  style: 'response_format' | 'grammar'
+): Record<string, unknown> {
+  if (style === 'grammar') {
+    return { grammar: jsonSchemaToGbnf(outputFormat.schema) };
+  }
+  return {
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: outputFormat.name ?? 'output',
+        schema: outputFormat.schema,
+      },
+    },
+  };
+}
+
+/** Build HTTP headers for the provider request, including Authorization and any custom headers. */
+function buildHeaders(endpoint: ProviderEndpointConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (endpoint.apiKey) {
+    headers.Authorization = `Bearer ${endpoint.apiKey}`;
+  }
+  if (endpoint.headers) {
+    Object.assign(headers, endpoint.headers);
+  }
+  return headers;
+}
+
+/**
+ * Parse a streaming SSE response into chunks.
+ * Handles `data: {...}` lines and the `data: [DONE]` terminator.
+ */
+async function* parseSSEStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  abortSignal?: AbortSignal
+): AsyncGenerator<ChatCompletionChunk> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    if (abortSignal?.aborted) {
+      void reader.cancel();
+      return;
+    }
+
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    // Keep the last (possibly incomplete) line in the buffer
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === '' || trimmed.startsWith(':')) continue;
+      if (trimmed === 'data: [DONE]') return;
+      if (!trimmed.startsWith('data: ')) continue;
+
+      const jsonStr = trimmed.slice(6);
+      try {
+        yield JSON.parse(jsonStr) as ChatCompletionChunk;
+      } catch {
+        // Skip malformed JSON lines in stream
+        log.debug({ jsonStr: jsonStr.slice(0, 200) }, 'tool-loop.sse_parse_skipped');
+      }
+    }
+  }
+
+  // Process any remaining buffer content
+  if (buffer.trim().startsWith('data: ') && buffer.trim() !== 'data: [DONE]') {
+    const jsonStr = buffer.trim().slice(6);
+    try {
+      yield JSON.parse(jsonStr) as ChatCompletionChunk;
+    } catch {
+      log.debug({ jsonStr: jsonStr.slice(0, 200) }, 'tool-loop.sse_trailing_parse_skipped');
+    }
+  }
+}
+
+/**
+ * Assemble streamed tool_calls deltas into complete ToolCall objects.
+ */
+function assembleToolCalls(
+  deltas: {
+    index: number;
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+  }[][]
+): ToolCall[] {
+  const assembled = new Map<number, { id: string; name: string; args: string }>();
+
+  for (const deltaArr of deltas) {
+    for (const delta of deltaArr) {
+      const existing = assembled.get(delta.index);
+      if (existing) {
+        if (delta.function?.arguments) {
+          existing.args += delta.function.arguments;
+        }
+      } else {
+        assembled.set(delta.index, {
+          id: delta.id ?? `call_${delta.index}`,
+          name: delta.function?.name ?? '',
+          args: delta.function?.arguments ?? '',
+        });
+      }
+    }
+  }
+
+  return Array.from(assembled.values()).map(tc => ({
+    id: tc.id,
+    type: 'function' as const,
+    function: { name: tc.name, arguments: tc.args },
+  }));
+}
+
+/**
+ * Validate a tool call: name must map to a known tool, arguments must be valid JSON.
+ * Returns parsed arguments or null if malformed.
+ */
+function validateToolCall(
+  tc: ToolCall,
+  availableTools: ReadonlySet<string>
+): Record<string, unknown> | null {
+  if (!tc.function.name || !availableTools.has(tc.function.name)) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(tc.function.arguments);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Main Loop ───────────────────────────────────────────────────────────────
+
+/**
+ * Execute the agentic tool-execution loop.
+ *
+ * Yields `MessageChunk` events as the loop progresses:
+ * - `assistant` chunks for streamed text content
+ * - `tool` chunks when a tool call is detected
+ * - `tool_result` chunks after tool execution
+ * - `result` chunk at the end with token usage
+ *
+ * @throws Error if the abort signal fires, if the provider returns errors,
+ *         or if malformed tool calls exceed the configured threshold.
+ */
+export async function* executeToolLoop(config: ToolLoopConfig): AsyncGenerator<MessageChunk> {
+  const maxMalformed = config.maxMalformedToolCallAttempts ?? 3;
+  const maxIterations = config.maxIterations ?? 100;
+  const streaming = config.endpoint.stream !== false;
+  const headers = buildHeaders(config.endpoint);
+
+  // ── Merge MCP tool definitions into the tool list ──
+  let allTools = [...config.tools];
+  if (config.mcpProvider) {
+    const mcpTools = config.mcpProvider.getToolDefinitions();
+    allTools = [...allTools, ...mcpTools];
+    log.debug({ mcpToolCount: mcpTools.length }, 'tool-loop.mcp_tools_merged');
+  }
+
+  // ── Compute effective allowedTools (intersect with skill allowlist) ──
+  let effectiveAllowedTools = config.allowedTools;
+  if (config.skillContext?.toolAllowlist && config.skillContext.toolAllowlist.length > 0) {
+    if (effectiveAllowedTools && effectiveAllowedTools.length > 0) {
+      // Intersection: only tools present in both lists
+      const skillSet = new Set(config.skillContext.toolAllowlist);
+      effectiveAllowedTools = effectiveAllowedTools.filter(t => skillSet.has(t));
+    } else {
+      // Skill allowlist becomes the effective allowlist
+      effectiveAllowedTools = config.skillContext.toolAllowlist;
+    }
+  }
+
+  // ── Apply allowedTools / deniedTools filters ──
+  const effectiveTools = filterTools(allTools, effectiveAllowedTools, config.deniedTools);
+  const availableTools = new Set(effectiveTools.map(t => t.function.name));
+
+  // ── Build effective extraBody (merge outputFormat + caller-provided extraBody) ──
+  const effectiveExtraBody: Record<string, unknown> = { ...config.extraBody };
+  if (config.outputFormat) {
+    const outputBody = buildOutputFormatBody(
+      config.outputFormat,
+      config.outputFormatStyle ?? 'response_format'
+    );
+    Object.assign(effectiveExtraBody, outputBody);
+  }
+
+  // ── Build messages with systemPrompt + skill prompt additions prepended ──
+  const messages = [...config.messages];
+  if (config.systemPrompt) {
+    messages.unshift({ role: 'system', content: config.systemPrompt });
+  }
+  if (
+    config.skillContext?.systemPromptAdditions &&
+    config.skillContext.systemPromptAdditions.length > 0
+  ) {
+    for (const addition of config.skillContext.systemPromptAdditions) {
+      messages.push({ role: 'system', content: addition });
+    }
+  }
+
+  let consecutiveMalformed = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    if (config.abortSignal?.aborted) {
+      throw new Error('Tool loop aborted');
+    }
+
+    const body = buildRequestBody(
+      config.model,
+      messages,
+      effectiveTools,
+      streaming,
+      Object.keys(effectiveExtraBody).length > 0 ? effectiveExtraBody : undefined
+    );
+
+    log.debug(
+      { iteration, messageCount: messages.length, toolCount: effectiveTools.length },
+      'tool-loop.request_started'
+    );
+
+    const response = await fetch(config.endpoint.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: config.abortSignal,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'Unknown error');
+      throw new Error(
+        `Tool loop: provider returned HTTP ${response.status}: ${errorText.slice(0, 500)}`
+      );
+    }
+
+    let assistantContent = '';
+    let toolCalls: ToolCall[] = [];
+    let finishReason: string | null = null;
+
+    if (streaming && response.body) {
+      // ── Streaming path ──
+      // Bun's fetch body type is ReadableStream<any>; cast to Uint8Array reader
+      const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+      const toolCallDeltas: {
+        index: number;
+        id?: string;
+        type?: string;
+        function?: { name?: string; arguments?: string };
+      }[][] = [];
+
+      for await (const chunk of parseSSEStream(reader, config.abortSignal)) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+
+        if (choice.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
+
+        // Content delta
+        if (choice.delta.content) {
+          assistantContent += choice.delta.content;
+          yield { type: 'assistant', content: choice.delta.content };
+        }
+
+        // Tool call deltas
+        if (choice.delta.tool_calls) {
+          toolCallDeltas.push(choice.delta.tool_calls);
+        }
+
+        // Use Math.max — some providers send cumulative usage per chunk, not incremental
+        if (chunk.usage) {
+          totalInputTokens = Math.max(totalInputTokens, chunk.usage.prompt_tokens);
+          totalOutputTokens = Math.max(totalOutputTokens, chunk.usage.completion_tokens);
+        }
+      }
+
+      if (toolCallDeltas.length > 0) {
+        toolCalls = assembleToolCalls(toolCallDeltas);
+      }
+    } else {
+      // ── Non-streaming path ──
+      const data = (await response.json()) as ChatCompletionResponse;
+      const choice = data.choices[0];
+      if (choice) {
+        assistantContent = choice.message.content ?? '';
+        toolCalls = choice.message.tool_calls ?? [];
+        finishReason = choice.finish_reason;
+
+        if (assistantContent) {
+          yield { type: 'assistant', content: assistantContent };
+        }
+      }
+
+      if (data.usage) {
+        totalInputTokens += data.usage.prompt_tokens;
+        totalOutputTokens += data.usage.completion_tokens;
+      }
+    }
+
+    log.debug(
+      { iteration, toolCallCount: toolCalls.length, finishReason },
+      'tool-loop.response_received'
+    );
+
+    // ── No tool calls → done ──
+    if (toolCalls.length === 0) {
+      yield {
+        type: 'result',
+        tokens: {
+          input: totalInputTokens,
+          output: totalOutputTokens,
+          total: totalInputTokens + totalOutputTokens,
+        },
+        stopReason: finishReason ?? 'stop',
+        numTurns: iteration + 1,
+      };
+      return;
+    }
+
+    // ── Validate tool calls ──
+    const parsedCalls: {
+      tc: ToolCall;
+      args: Record<string, unknown> | null;
+    }[] = toolCalls.map(tc => ({
+      tc,
+      args: validateToolCall(tc, availableTools),
+    }));
+
+    const allMalformed = parsedCalls.every(pc => pc.args === null);
+    if (allMalformed) {
+      consecutiveMalformed++;
+      log.warn(
+        {
+          iteration,
+          consecutiveMalformed,
+          maxMalformed,
+          toolCalls: toolCalls.map(tc => ({
+            name: tc.function.name,
+            args: tc.function.arguments.slice(0, 200),
+          })),
+        },
+        'tool-loop.malformed_tool_calls'
+      );
+
+      if (consecutiveMalformed >= maxMalformed) {
+        throw new Error(
+          `Tool loop: ${consecutiveMalformed} consecutive malformed tool calls. ` +
+            `Model: ${config.model}. Last tool calls: ${JSON.stringify(
+              toolCalls.map(tc => ({
+                name: tc.function.name,
+                args: tc.function.arguments.slice(0, 200),
+              }))
+            )}`
+        );
+      }
+
+      // Append the assistant message with tool_calls, then error results
+      const assistantMsg: ChatMessage = {
+        role: 'assistant',
+        content: assistantContent || null,
+        tool_calls: toolCalls,
+      };
+      messages.push(assistantMsg);
+
+      for (const { tc } of parsedCalls) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          name: tc.function.name,
+          content: `Error: Malformed tool call. Tool "${tc.function.name}" ${
+            !availableTools.has(tc.function.name)
+              ? 'is not available'
+              : 'received invalid arguments'
+          }. Available tools: ${Array.from(availableTools).join(', ')}`,
+        });
+      }
+      continue;
+    }
+
+    // Reset malformed counter on any successful parse
+    consecutiveMalformed = 0;
+
+    // ── Append assistant message with tool_calls ──
+    const assistantMsg: ChatMessage = {
+      role: 'assistant',
+      content: assistantContent || null,
+      tool_calls: toolCalls,
+    };
+    messages.push(assistantMsg);
+
+    // ── Execute tools and append results ──
+    const sessionId = config.sessionId ?? '';
+    for (const { tc, args } of parsedCalls) {
+      // Emit tool chunk
+      yield {
+        type: 'tool',
+        toolName: tc.function.name,
+        toolInput: args ?? undefined,
+        toolCallId: tc.id,
+      };
+
+      // ── PreToolUse hook ──
+      let skipTool = false;
+      let effectiveArgs = args;
+      if (config.hooks?.PreToolUse && args !== null) {
+        const preInput: PreToolUseHookInput = {
+          hook_event_name: 'PreToolUse',
+          tool_name: tc.function.name,
+          tool_input: args,
+          tool_use_id: tc.id,
+          session_id: sessionId,
+          cwd: config.cwd,
+        };
+        const preOutput = await runHooks(config.hooks.PreToolUse, preInput);
+        if (preOutput.hookSpecificOutput?.permissionDecision === 'deny') {
+          skipTool = true;
+          const reason = preOutput.hookSpecificOutput.permissionDecisionReason ?? 'denied by hook';
+          const result = `Error: Tool "${tc.function.name}" denied by PreToolUse hook: ${reason}`;
+          yield {
+            type: 'tool_result',
+            toolName: tc.function.name,
+            toolOutput: result,
+            toolCallId: tc.id,
+          };
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            name: tc.function.name,
+            content: result,
+          });
+        } else if (preOutput.hookSpecificOutput?.updatedInput) {
+          effectiveArgs = preOutput.hookSpecificOutput.updatedInput;
+        }
+      }
+
+      if (skipTool) continue;
+
+      let result: string;
+      if (effectiveArgs === null) {
+        result = `Error: Malformed tool call for "${tc.function.name}". Arguments must be valid JSON.`;
+      } else if (tc.function.name.startsWith('mcp__') && config.mcpProvider) {
+        // ── MCP tool dispatch ──
+        try {
+          result = await config.mcpProvider.callTool(tc.function.name, effectiveArgs);
+
+          // ── PostToolUse hook ──
+          if (config.hooks?.PostToolUse) {
+            const postInput: PostToolUseHookInput = {
+              hook_event_name: 'PostToolUse',
+              tool_name: tc.function.name,
+              tool_input: effectiveArgs,
+              tool_response: result,
+              tool_use_id: tc.id,
+              session_id: sessionId,
+              cwd: config.cwd,
+            };
+            await runHooks(config.hooks.PostToolUse, postInput);
+          }
+        } catch (err) {
+          const error = err as Error;
+          result = `Error executing MCP tool ${tc.function.name}: ${error.message}`;
+          log.warn(
+            { toolName: tc.function.name, error: error.message },
+            'tool-loop.mcp_tool_execution_failed'
+          );
+
+          // ── PostToolUseFailure hook ──
+          if (config.hooks?.PostToolUseFailure) {
+            const failInput: PostToolUseFailureHookInput = {
+              hook_event_name: 'PostToolUseFailure',
+              tool_name: tc.function.name,
+              tool_input: effectiveArgs,
+              tool_use_id: tc.id,
+              error: error.message,
+              session_id: sessionId,
+              cwd: config.cwd,
+            };
+            await runHooks(config.hooks.PostToolUseFailure, failInput);
+          }
+        }
+      } else {
+        const executor = toolRegistry.get(tc.function.name);
+        if (!executor) {
+          result = `Error: Unknown tool "${tc.function.name}". Available: ${Array.from(availableTools).join(', ')}`;
+        } else {
+          try {
+            result = await executor(effectiveArgs, config.cwd);
+
+            // ── PostToolUse hook ──
+            if (config.hooks?.PostToolUse) {
+              const postInput: PostToolUseHookInput = {
+                hook_event_name: 'PostToolUse',
+                tool_name: tc.function.name,
+                tool_input: effectiveArgs,
+                tool_response: result,
+                tool_use_id: tc.id,
+                session_id: sessionId,
+                cwd: config.cwd,
+              };
+              await runHooks(config.hooks.PostToolUse, postInput);
+            }
+          } catch (err) {
+            const error = err as Error;
+            result = `Error executing ${tc.function.name}: ${error.message}`;
+            log.warn(
+              { toolName: tc.function.name, error: error.message },
+              'tool-loop.tool_execution_failed'
+            );
+
+            // ── PostToolUseFailure hook ──
+            if (config.hooks?.PostToolUseFailure) {
+              const failInput: PostToolUseFailureHookInput = {
+                hook_event_name: 'PostToolUseFailure',
+                tool_name: tc.function.name,
+                tool_input: effectiveArgs,
+                tool_use_id: tc.id,
+                error: error.message,
+                session_id: sessionId,
+                cwd: config.cwd,
+              };
+              await runHooks(config.hooks.PostToolUseFailure, failInput);
+            }
+          }
+        }
+      }
+
+      // Emit tool_result chunk
+      yield {
+        type: 'tool_result',
+        toolName: tc.function.name,
+        toolOutput: result,
+        toolCallId: tc.id,
+      };
+
+      // Append tool result to messages
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: result,
+      });
+    }
+  }
+
+  // Exhausted max iterations
+  yield {
+    type: 'result',
+    tokens: {
+      input: totalInputTokens,
+      output: totalOutputTokens,
+      total: totalInputTokens + totalOutputTokens,
+    },
+    stopReason: 'max_iterations',
+    numTurns: maxIterations,
+    isError: true,
+    errorSubtype: 'max_iterations_exceeded',
+  };
+}

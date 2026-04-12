@@ -111,7 +111,8 @@ export async function captureKnowledge(
     // Call AI model to extract knowledge
     const extractedContent = await extractKnowledge(
       transcript,
-      mergedConfig.knowledge.captureModel
+      mergedConfig.knowledge.captureModel,
+      mergedConfig.knowledge.captureProvider ?? 'claude'
     );
 
     // Skip if nothing to extract
@@ -167,8 +168,12 @@ function formatTranscript(messages: readonly MessageRow[]): string {
  * Call AI model to extract structured knowledge from a transcript.
  * Falls back to default model if configured model is unavailable.
  */
-async function extractKnowledge(transcript: string, captureModel: string): Promise<string> {
-  const client = getAssistantClient('claude');
+async function extractKnowledge(
+  transcript: string,
+  captureModel: string,
+  captureProvider: string
+): Promise<string> {
+  const client = getAssistantClient(captureProvider);
   const prompt = EXTRACTION_PROMPT + transcript;
 
   const chunks: string[] = [];
@@ -257,7 +262,7 @@ export async function extractKnowledgeFromContext(
 
   // Call AI with the custom prompt + context
   const fullPrompt = `${prompt}\n\n---\n\nCONTEXT:\n${context}`;
-  const client = getAssistantClient('claude');
+  const client = getAssistantClient(mergedConfig.knowledge.captureProvider ?? 'claude');
   const chunks: string[] = [];
   const generator = client.sendQuery(fullPrompt, cwd, undefined, {
     model: mergedConfig.knowledge.captureModel,

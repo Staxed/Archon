@@ -176,6 +176,8 @@ function getDefaults(): MergedConfig {
     assistants: {
       claude: {},
       codex: {},
+      openrouter: {},
+      llamacpp: { endpoint: 'http://localhost:8080' },
     },
     streaming: {
       telegram: 'stream',
@@ -200,7 +202,9 @@ function getDefaults(): MergedConfig {
     },
     knowledge: {
       enabled: true,
+      captureProvider: 'claude',
       captureModel: 'haiku',
+      compileProvider: 'claude',
       compileModel: 'sonnet',
       flushDebounceMinutes: 10,
       domains: ['architecture', 'decisions', 'patterns', 'lessons', 'connections'],
@@ -220,7 +224,12 @@ function applyEnvOverrides(config: MergedConfig): MergedConfig {
 
   // Assistant override
   const envAssistant = process.env.DEFAULT_AI_ASSISTANT;
-  if (envAssistant === 'claude' || envAssistant === 'codex') {
+  if (
+    envAssistant === 'claude' ||
+    envAssistant === 'codex' ||
+    envAssistant === 'openrouter' ||
+    envAssistant === 'llamacpp'
+  ) {
     config.assistant = envAssistant;
   }
 
@@ -239,6 +248,18 @@ function applyEnvOverrides(config: MergedConfig): MergedConfig {
   const slackMode = process.env.SLACK_STREAMING_MODE;
   if (slackMode && streamingModes.includes(slackMode as 'stream' | 'batch')) {
     config.streaming.slack = slackMode as 'stream' | 'batch';
+  }
+
+  // OpenRouter API key override
+  const envOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  if (envOpenRouterKey) {
+    config.assistants.openrouter.apiKey = envOpenRouterKey;
+  }
+
+  // Llama.cpp endpoint override
+  const envLlamaCppEndpoint = process.env.LLAMACPP_ENDPOINT;
+  if (envLlamaCppEndpoint) {
+    config.assistants.llamacpp.endpoint = envLlamaCppEndpoint;
   }
 
   // Path overrides (these come from archon-paths.ts which already checks env vars)
@@ -265,6 +286,8 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     assistants: {
       claude: { ...defaults.assistants.claude },
       codex: { ...defaults.assistants.codex },
+      openrouter: { ...defaults.assistants.openrouter },
+      llamacpp: { ...defaults.assistants.llamacpp },
     },
   };
 
@@ -288,6 +311,18 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.assistants.codex = {
       ...result.assistants.codex,
       ...global.assistants.codex,
+    };
+  }
+  if (global.assistants?.openrouter) {
+    result.assistants.openrouter = {
+      ...result.assistants.openrouter,
+      ...global.assistants.openrouter,
+    };
+  }
+  if (global.assistants?.llamacpp) {
+    result.assistants.llamacpp = {
+      ...result.assistants.llamacpp,
+      ...global.assistants.llamacpp,
     };
   }
 
@@ -326,6 +361,8 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     assistants: {
       claude: { ...merged.assistants.claude },
       codex: { ...merged.assistants.codex },
+      openrouter: { ...merged.assistants.openrouter },
+      llamacpp: { ...merged.assistants.llamacpp },
     },
   };
 
@@ -344,6 +381,18 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     result.assistants.codex = {
       ...result.assistants.codex,
       ...repo.assistants.codex,
+    };
+  }
+  if (repo.assistants?.openrouter) {
+    result.assistants.openrouter = {
+      ...result.assistants.openrouter,
+      ...repo.assistants.openrouter,
+    };
+  }
+  if (repo.assistants?.llamacpp) {
+    result.assistants.llamacpp = {
+      ...result.assistants.llamacpp,
+      ...repo.assistants.llamacpp,
     };
   }
 
@@ -418,6 +467,14 @@ export async function loadConfig(repoPath?: string): Promise<MergedConfig> {
   // 4. Apply environment overrides (highest precedence)
   config = applyEnvOverrides(config);
 
+  // 5. Validate defaultAssistant value (YAML may provide arbitrary strings despite ProviderType)
+  const validProviders: readonly string[] = ['claude', 'codex', 'openrouter', 'llamacpp'];
+  if (!validProviders.includes(config.assistant)) {
+    const msg = `Invalid defaultAssistant value '${config.assistant}'. Must be one of: ${validProviders.join(', ')}`;
+    getLog().error({ assistant: config.assistant }, 'config.invalid_default_assistant');
+    throw new Error(msg);
+  }
+
   return config;
 }
 
@@ -463,6 +520,8 @@ export async function updateGlobalConfig(updates: Partial<GlobalConfig>): Promis
       merged.assistants = {
         claude: { ...current.assistants?.claude, ...updates.assistants.claude },
         codex: { ...current.assistants?.codex, ...updates.assistants.codex },
+        openrouter: { ...current.assistants?.openrouter, ...updates.assistants.openrouter },
+        llamacpp: { ...current.assistants?.llamacpp, ...updates.assistants.llamacpp },
       };
     }
 
@@ -512,6 +571,13 @@ export function toSafeConfig(config: MergedConfig): SafeConfig {
         model: config.assistants.codex.model,
         modelReasoningEffort: config.assistants.codex.modelReasoningEffort,
         webSearchMode: config.assistants.codex.webSearchMode,
+      },
+      openrouter: {
+        model: config.assistants.openrouter.model,
+      },
+      llamacpp: {
+        model: config.assistants.llamacpp.model,
+        endpoint: config.assistants.llamacpp.endpoint,
       },
     },
     streaming: {

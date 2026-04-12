@@ -8,6 +8,7 @@ import type { WorkflowRunStatus } from '@archon/workflows/schemas/workflow-run';
 import type { MergedConfig } from '../config/config-types';
 import * as workflowDb from '../db/workflows';
 import * as workflowEventDb from '../db/workflow-events';
+import * as tokenUsageDb from '../db/token-usage';
 import * as codebaseDb from '../db/codebases';
 import * as envVarDb from '../db/env-vars';
 import { getAssistantClient } from '../clients/factory';
@@ -69,6 +70,16 @@ export function createWorkflowStore(): IWorkflowStore {
       }
     },
     getCompletedDagNodeOutputs: workflowEventDb.getCompletedDagNodeOutputs,
+    recordTokenUsage: async (data): Promise<void> => {
+      try {
+        await tokenUsageDb.recordTokenUsage(data);
+      } catch (err) {
+        getLog().error(
+          { err: err as Error, provider: data.provider, model: data.model, nodeId: data.node_id },
+          'token_usage.record_failed'
+        );
+      }
+    },
     getCodebase: codebaseDb.getCodebase,
     getCodebaseEnvVars: envVarDb.getCodebaseEnvVars,
   };

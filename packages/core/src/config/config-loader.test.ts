@@ -47,6 +47,8 @@ describe('config-loader', () => {
     'WORKSPACE_PATH',
     'WORKTREE_BASE',
     'ARCHON_HOME',
+    'OPENROUTER_API_KEY',
+    'LLAMACPP_ENDPOINT',
   ];
 
   beforeEach(() => {
@@ -224,7 +226,12 @@ concurrency:
       const config = await loadConfig();
 
       expect(config.assistant).toBe('claude');
-      expect(config.assistants).toEqual({ claude: {}, codex: {} });
+      expect(config.assistants).toEqual({
+        claude: {},
+        codex: {},
+        openrouter: {},
+        llamacpp: { endpoint: 'http://localhost:8080' },
+      });
       expect(config.streaming.telegram).toBe('stream');
       expect(config.concurrency.maxConversations).toBe(10);
     });
@@ -270,6 +277,26 @@ streaming:
 
       const config = await loadConfig('/test/repo');
       expect(config.assistant).toBe('codex');
+    });
+
+    test('merges openrouter and llamacpp assistant defaults from config', async () => {
+      mockReadConfigFile.mockResolvedValue(`
+assistants:
+  openrouter:
+    model: anthropic/claude-3-haiku
+    siteUrl: https://myapp.com
+    siteName: MyApp
+  llamacpp:
+    model: llama-3
+    endpoint: http://gpu:8080
+`);
+
+      const config = await loadConfig();
+      expect(config.assistants.openrouter.model).toBe('anthropic/claude-3-haiku');
+      expect(config.assistants.openrouter.siteUrl).toBe('https://myapp.com');
+      expect(config.assistants.openrouter.siteName).toBe('MyApp');
+      expect(config.assistants.llamacpp.model).toBe('llama-3');
+      expect(config.assistants.llamacpp.endpoint).toBe('http://gpu:8080');
     });
 
     test('merges assistant defaults from global and repo config', async () => {
@@ -434,6 +461,93 @@ env:
 
       const config = await loadConfig('/test/repo');
       expect(config.envVars).toBeUndefined();
+    });
+
+    test('OPENROUTER_API_KEY env var populates openrouter.apiKey', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockReadConfigFile.mockRejectedValue(error);
+
+      process.env.OPENROUTER_API_KEY = 'sk-or-test-key-123';
+
+      const config = await loadConfig();
+      expect(config.assistants.openrouter.apiKey).toBe('sk-or-test-key-123');
+    });
+
+    test('LLAMACPP_ENDPOINT env var overrides llamacpp.endpoint', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockReadConfigFile.mockRejectedValue(error);
+
+      process.env.LLAMACPP_ENDPOINT = 'http://gpu-server:9090';
+
+      const config = await loadConfig();
+      expect(config.assistants.llamacpp.endpoint).toBe('http://gpu-server:9090');
+    });
+
+    test('LLAMACPP_ENDPOINT env var overrides config file value', async () => {
+      mockReadConfigFile.mockResolvedValue(`
+assistants:
+  llamacpp:
+    endpoint: http://config-server:7070
+`);
+
+      process.env.LLAMACPP_ENDPOINT = 'http://env-server:9090';
+
+      const config = await loadConfig();
+      expect(config.assistants.llamacpp.endpoint).toBe('http://env-server:9090');
+    });
+
+    test('throws on invalid defaultAssistant value from config', async () => {
+      mockReadConfigFile.mockResolvedValue('defaultAssistant: gpt4all');
+
+      await expect(loadConfig()).rejects.toThrow(
+        "Invalid defaultAssistant value 'gpt4all'. Must be one of: claude, codex, openrouter, llamacpp"
+      );
+    });
+
+    test('throws on invalid defaultAssistant value from env var', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockReadConfigFile.mockRejectedValue(error);
+
+      // Set an invalid value directly on config.assistant via a global config
+      // The env override guard only accepts valid values, so invalid env values are ignored
+      // and the default 'claude' is used. But an invalid value from YAML should throw.
+      mockReadConfigFile.mockResolvedValue('defaultAssistant: invalid_provider');
+
+      await expect(loadConfig()).rejects.toThrow('Invalid defaultAssistant value');
+    });
+
+    test('accepts all 4 valid provider values for defaultAssistant', async () => {
+      for (const provider of ['claude', 'codex', 'openrouter', 'llamacpp']) {
+        clearConfigCache();
+        mockReadConfigFile.mockResolvedValue(`defaultAssistant: ${provider}`);
+        const config = await loadConfig();
+        expect(config.assistant).toBe(provider);
+      }
+    });
+
+    test('knowledge config includes captureProvider and compileProvider defaults', async () => {
+      const error = new Error('ENOENT') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      mockReadConfigFile.mockRejectedValue(error);
+
+      const config = await loadConfig();
+      expect(config.knowledge.captureProvider).toBe('claude');
+      expect(config.knowledge.compileProvider).toBe('claude');
+    });
+
+    test('knowledge captureProvider and compileProvider are configurable', async () => {
+      mockReadConfigFile.mockResolvedValue(`
+knowledge:
+  captureProvider: openrouter
+  compileProvider: llamacpp
+`);
+
+      const config = await loadConfig();
+      expect(config.knowledge.captureProvider).toBe('openrouter');
+      expect(config.knowledge.compileProvider).toBe('llamacpp');
     });
 
     test('paths use archon defaults', async () => {

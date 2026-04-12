@@ -1,6 +1,13 @@
 /**
  * Codex SDK wrapper
- * Provides async generator interface for streaming Codex responses
+ * Provides async generator interface for streaming Codex responses.
+ *
+ * Dual-path dispatch:
+ *   - SDK path: Uses @openai/codex-sdk directly (for basic workflows)
+ *   - Tool-loop path: Uses Archon's agentic tool loop via OpenAI API
+ *     (for features the SDK doesn't support: allowed_tools, denied_tools,
+ *      hooks, skills, systemPrompt, effort, thinking, maxBudgetUsd,
+ *      fallbackModel, betas, sandbox, mcpConfigs)
  *
  * With Bun runtime, we can directly import ESM packages without the
  * dynamic import workaround that was needed for CommonJS/Node.js.
@@ -18,6 +25,11 @@ import {
   type TokenUsage,
 } from '../types';
 import { createLogger } from '@archon/paths';
+import { executeToolLoop, type ChatMessage, type ToolLoopConfig } from './tool-loop';
+import { toolDefinitions } from './tool-definitions';
+import { McpToolProvider, type McpServerConfig } from './mcp-client';
+import { loadSkills, type SkillContext } from './skill-loader';
+import { ContextWindowManager } from './context-window';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -109,6 +121,37 @@ const AUTH_PATTERNS = [
 /** Patterns indicating a transient process crash (worth retrying) */
 const SUBPROCESS_CRASH_PATTERNS = ['exited with code', 'killed', 'signal', 'codex exec'];
 
+/** OpenAI chat/completions endpoint used by the tool-loop fallback path. */
+const OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+
+/**
+ * Features the Codex SDK v0.116.0 supports natively:
+ *   model, modelReasoningEffort, webSearchMode, additionalDirectories,
+ *   outputFormat (as outputSchema), abortSignal
+ *
+ * Features requiring the tool-loop fallback:
+ *   tools (allowed_tools), disallowedTools (denied_tools), hooks,
+ *   mcpConfigs, skills, systemPrompt, effort, thinking, maxBudgetUsd,
+ *   fallbackModel, betas, sandbox
+ */
+function needsToolLoopFallback(options?: AssistantRequestOptions): boolean {
+  if (!options) return false;
+  return !!(
+    options.tools !== undefined ||
+    options.disallowedTools !== undefined ||
+    options.hooks ||
+    options.mcpConfigs ||
+    options.skills ||
+    options.systemPrompt ||
+    options.effort ||
+    options.thinking ||
+    options.maxBudgetUsd !== undefined ||
+    options.fallbackModel ||
+    options.betas ||
+    options.sandbox
+  );
+}
+
 function classifyCodexError(
   errorMessage: string
 ): 'rate_limit' | 'auth' | 'crash' | 'model_access' | 'unknown' {
@@ -143,7 +186,13 @@ export class CodexClient implements IAssistantClient {
   }
 
   /**
-   * Send a query to Codex and stream responses
+   * Send a query to Codex and stream responses.
+   *
+   * Dispatch logic:
+   *   - If the request uses features the Codex SDK doesn't support natively,
+   *     route through Archon's tool loop (calling OpenAI API with the Codex model).
+   *   - Otherwise, use the native Codex SDK path.
+   *
    * @param prompt - User message or prompt
    * @param cwd - Working directory for Codex
    * @param resumeSessionId - Optional thread ID to resume
@@ -154,6 +203,21 @@ export class CodexClient implements IAssistantClient {
     resumeSessionId?: string,
     options?: AssistantRequestOptions
   ): AsyncGenerator<MessageChunk> {
+    // ── Dispatch: tool-loop fallback for unsupported features ──
+    if (needsToolLoopFallback(options)) {
+      getLog().info(
+        {
+          features: getUnsupportedFeatures(options),
+          model: options?.model,
+        },
+        'codex.tool_loop_dispatch'
+      );
+      yield* this.sendQueryViaToolLoop(prompt, cwd, options);
+      return;
+    }
+
+    getLog().debug({ model: options?.model }, 'codex.sdk_dispatch');
+
     const codex = getCodex();
     const threadOptions = buildThreadOptions(cwd, options);
 
@@ -520,9 +584,128 @@ export class CodexClient implements IAssistantClient {
   }
 
   /**
+   * Tool-loop fallback path for features the Codex SDK doesn't support natively.
+   * Calls the OpenAI chat/completions API directly with the Codex model ID.
+   */
+  private async *sendQueryViaToolLoop(
+    prompt: string,
+    cwd: string,
+    options?: AssistantRequestOptions
+  ): AsyncGenerator<MessageChunk> {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        'Codex tool-loop fallback requires OPENAI_API_KEY environment variable to call the OpenAI API directly.'
+      );
+    }
+
+    const model = options?.model ?? 'codex-mini-latest';
+
+    // ── Build messages ──
+    const messages: ChatMessage[] = [];
+    if (options?.systemPrompt) {
+      messages.push({ role: 'system', content: options.systemPrompt });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    // ── Resolve tools (full canonical set — filtering delegated to tool loop) ──
+    const tools = options?.tools?.length === 0 ? [] : [...toolDefinitions];
+
+    // ── MCP lifecycle: connect before loop, shutdown after ──
+    let mcpProvider: McpToolProvider | undefined;
+    if (options?.mcpConfigs && Object.keys(options.mcpConfigs).length > 0) {
+      mcpProvider = new McpToolProvider(options.mcpConfigs as Record<string, McpServerConfig>);
+      await mcpProvider.connect();
+      getLog().info(
+        { mcpToolCount: mcpProvider.getToolDefinitions().length },
+        'codex.tool_loop_mcp_connected'
+      );
+    }
+
+    // ── Load skills ──
+    let skillContext: SkillContext | undefined;
+    if (options?.skills && options.skills.length > 0) {
+      skillContext = await loadSkills(options.skills, cwd);
+      getLog().info({ skillCount: options.skills.length }, 'codex.tool_loop_skills_loaded');
+    }
+
+    // ── Context window management ──
+    const endpoint = {
+      url: OPENAI_CHAT_ENDPOINT,
+      apiKey,
+    };
+    const ctxManager = new ContextWindowManager({ model, endpoint });
+    let finalMessages = messages;
+    if (ctxManager.shouldSummarize(messages, tools)) {
+      getLog().info({ model, messageCount: messages.length }, 'codex.tool_loop_context_summarize');
+      const { messages: summarized } = await ctxManager.summarize(messages, tools);
+      finalMessages = summarized;
+    }
+
+    // ── Build tool loop config ──
+    const loopConfig: ToolLoopConfig = {
+      endpoint,
+      messages: finalMessages,
+      tools,
+      cwd,
+      model,
+      abortSignal: options?.abortSignal,
+      allowedTools: options?.tools,
+      deniedTools: options?.disallowedTools,
+      outputFormat: options?.outputFormat ? { schema: options.outputFormat.schema } : undefined,
+      outputFormatStyle: 'response_format',
+      mcpProvider,
+      skillContext,
+    };
+
+    // ── Map hooks from AssistantRequestOptions format to ToolLoopHooks ──
+    if (options?.hooks) {
+      loopConfig.hooks = options.hooks;
+    }
+
+    try {
+      // ── Emit system message tagging tool-loop path ──
+      yield {
+        type: 'system',
+        content: `[codex:tool-loop] Using Archon tool loop for features: ${getUnsupportedFeatures(options).join(', ')}`,
+      };
+
+      yield* executeToolLoop(loopConfig);
+    } finally {
+      if (mcpProvider) {
+        await mcpProvider.shutdown().catch((err: unknown) => {
+          getLog().warn({ error: (err as Error).message }, 'codex.tool_loop_mcp_shutdown_error');
+        });
+      }
+    }
+  }
+
+  /**
    * Get the assistant type identifier
    */
   getType(): string {
     return 'codex';
   }
+}
+
+/**
+ * Returns the list of feature names that require the tool-loop fallback.
+ * Used for logging/observability.
+ */
+function getUnsupportedFeatures(options?: AssistantRequestOptions): string[] {
+  if (!options) return [];
+  const features: string[] = [];
+  if (options.tools !== undefined) features.push('allowed_tools');
+  if (options.disallowedTools !== undefined) features.push('denied_tools');
+  if (options.hooks) features.push('hooks');
+  if (options.mcpConfigs) features.push('mcp');
+  if (options.skills) features.push('skills');
+  if (options.systemPrompt) features.push('systemPrompt');
+  if (options.effort) features.push('effort');
+  if (options.thinking) features.push('thinking');
+  if (options.maxBudgetUsd !== undefined) features.push('maxBudgetUsd');
+  if (options.fallbackModel) features.push('fallbackModel');
+  if (options.betas) features.push('betas');
+  if (options.sandbox) features.push('sandbox');
+  return features;
 }

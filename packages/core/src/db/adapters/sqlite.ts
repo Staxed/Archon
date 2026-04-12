@@ -179,7 +179,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN hidden INTEGER DEFAULT 0');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
     }
 
     // Workflow runs columns
@@ -199,7 +199,7 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN working_path TEXT');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
     }
 
     // Sessions columns
@@ -213,7 +213,31 @@ export class SqliteAdapter implements IDatabase {
         this.db.run('ALTER TABLE remote_agent_sessions ADD COLUMN ended_reason TEXT');
       }
     } catch (e: unknown) {
-      getLog().warn({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_session_columns_failed');
+    }
+
+    // Messages columns (for stateless-provider replay)
+    try {
+      const msgCols = this.db.prepare("PRAGMA table_info('remote_agent_messages')").all() as {
+        name: string;
+      }[];
+      const msgColNames = new Set(msgCols.map(c => c.name));
+
+      if (!msgColNames.has('kind')) {
+        this.db.run(
+          "ALTER TABLE remote_agent_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'"
+        );
+      }
+      if (!msgColNames.has('summarized')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_messages ADD COLUMN summarized INTEGER NOT NULL DEFAULT 0'
+        );
+      }
+      if (!msgColNames.has('summary_of')) {
+        this.db.run('ALTER TABLE remote_agent_messages ADD COLUMN summary_of TEXT');
+      }
+    } catch (e: unknown) {
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
     }
   }
 
@@ -343,7 +367,25 @@ export class SqliteAdapter implements IDatabase {
         role TEXT NOT NULL,
         content TEXT NOT NULL DEFAULT '',
         metadata TEXT DEFAULT '{}',
+        kind TEXT NOT NULL DEFAULT 'text',
+        summarized INTEGER NOT NULL DEFAULT 0,
+        summary_of TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Token usage tracking table
+      CREATE TABLE IF NOT EXISTS remote_agent_token_usage (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+        conversation_id TEXT REFERENCES remote_agent_conversations(id) ON DELETE CASCADE,
+        node_id TEXT,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL,
+        created_at TEXT DEFAULT (datetime('now'))
       );
 
       -- Indexes
@@ -358,6 +400,9 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_workflow_events_run_id ON remote_agent_workflow_events(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON remote_agent_workflow_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON remote_agent_messages(conversation_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_token_usage_workflow_run ON remote_agent_token_usage(workflow_run_id);
+      CREATE INDEX IF NOT EXISTS idx_token_usage_conversation ON remote_agent_token_usage(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON remote_agent_token_usage(created_at);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv ON remote_agent_workflow_runs(parent_conversation_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden);
       DROP INDEX IF EXISTS idx_conversations_codebase;

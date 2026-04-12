@@ -32,6 +32,8 @@ describe('model-validation', () => {
     it('should accept any model when model is undefined', () => {
       expect(isModelCompatible('claude')).toBe(true);
       expect(isModelCompatible('codex')).toBe(true);
+      expect(isModelCompatible('openrouter')).toBe(true);
+      expect(isModelCompatible('llamacpp')).toBe(true);
     });
 
     it('should accept Claude models with claude provider', () => {
@@ -60,10 +62,40 @@ describe('model-validation', () => {
       expect(isModelCompatible('codex', 'claude-opus-4-6')).toBe(false);
     });
 
+    it('should accept vendor/model format with openrouter provider', () => {
+      expect(isModelCompatible('openrouter', 'anthropic/claude-3-haiku')).toBe(true);
+      expect(isModelCompatible('openrouter', 'meta-llama/llama-4-scout')).toBe(true);
+      expect(isModelCompatible('openrouter', 'openai/gpt-4')).toBe(true);
+    });
+
+    it('should reject Claude aliases with openrouter provider', () => {
+      expect(isModelCompatible('openrouter', 'sonnet')).toBe(false);
+      expect(isModelCompatible('openrouter', 'opus')).toBe(false);
+      expect(isModelCompatible('openrouter', 'haiku')).toBe(false);
+      expect(isModelCompatible('openrouter', 'inherit')).toBe(false);
+      expect(isModelCompatible('openrouter', 'claude-opus-4-6')).toBe(false);
+    });
+
+    it('should accept any string with llamacpp provider', () => {
+      expect(isModelCompatible('llamacpp', 'llama-3-8b')).toBe(true);
+      expect(isModelCompatible('llamacpp', 'my-custom-model')).toBe(true);
+      expect(isModelCompatible('llamacpp', 'mistral-7b')).toBe(true);
+    });
+
+    it('should reject Claude aliases with llamacpp provider', () => {
+      expect(isModelCompatible('llamacpp', 'sonnet')).toBe(false);
+      expect(isModelCompatible('llamacpp', 'opus')).toBe(false);
+      expect(isModelCompatible('llamacpp', 'haiku')).toBe(false);
+      expect(isModelCompatible('llamacpp', 'inherit')).toBe(false);
+      expect(isModelCompatible('llamacpp', 'claude-opus-4-6')).toBe(false);
+    });
+
     it('should handle empty string model', () => {
       // Empty string is falsy, so treated as "no model specified"
       expect(isModelCompatible('claude', '')).toBe(true);
       expect(isModelCompatible('codex', '')).toBe(true);
+      expect(isModelCompatible('openrouter', '')).toBe(true);
+      expect(isModelCompatible('llamacpp', '')).toBe(true);
     });
   });
 });

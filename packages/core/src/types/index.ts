@@ -230,6 +230,8 @@ export type MessageChunk =
 
 import type { ModelReasoningEffort, WebSearchMode } from '@archon/workflows/schemas/workflow';
 export type { ModelReasoningEffort, WebSearchMode };
+import type { ProviderType } from '@archon/workflows/schemas/provider';
+export type { ProviderType };
 import type {
   EffortLevel,
   ThinkingConfig,
@@ -354,6 +356,22 @@ export interface AssistantRequestOptions {
    * Claude only — ignored for Codex.
    */
   sandbox?: SandboxSettings;
+  /**
+   * MCP server configs for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * Consumed by the Archon tool loop's McpToolProvider.
+   * Format matches MCP YAML config but typed independently of Claude SDK.
+   */
+  mcpConfigs?: Record<
+    string,
+    | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+    | { type: 'sse'; url: string; headers?: Record<string, string> }
+    | { type: 'http'; url: string; headers?: Record<string, string> }
+  >;
+  /**
+   * Skill names for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * The tool loop's skill loader resolves these to system prompt additions + tool allowlists.
+   */
+  skills?: string[];
 }
 
 /**

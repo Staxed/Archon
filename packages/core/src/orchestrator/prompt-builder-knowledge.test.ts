@@ -282,7 +282,8 @@ describe('buildProjectScopedPrompt — unprocessed logs fallback', () => {
   });
 
   test('truncates logs that exceed token budget', async () => {
-    const largeContent = 'x'.repeat(9000);
+    // Must exceed KNOWLEDGE_LOGS_MAX_CHARS (32000) to trigger truncation.
+    const largeContent = 'x'.repeat(36000);
     mockReadFile.mockImplementation(async (path: string) => {
       if (path === '/home/user/.archon/workspaces/acme/widget/knowledge/logs/2026-04-11.md') {
         return largeContent;

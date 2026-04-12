@@ -9,6 +9,10 @@ import {
   thinkingConfigSchema,
   sandboxSettingsSchema,
 } from './dag-node';
+import { providerSchema } from './provider';
+
+export { providerSchema } from './provider';
+export type { ProviderType } from './provider';
 
 // ---------------------------------------------------------------------------
 // Shared enum schemas
@@ -29,7 +33,7 @@ export type WebSearchMode = z.infer<typeof webSearchModeSchema>;
 export const workflowBaseSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
-  provider: z.enum(['claude', 'codex']).optional(),
+  provider: providerSchema.optional(),
   model: z.string().optional(),
   modelReasoningEffort: modelReasoningEffortSchema.optional(),
   webSearchMode: webSearchModeSchema.optional(),

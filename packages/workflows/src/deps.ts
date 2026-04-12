@@ -7,6 +7,7 @@
 import type { IWorkflowStore } from './store';
 import type {
   ModelReasoningEffort,
+  ProviderType,
   WebSearchMode,
   EffortLevel,
   ThinkingConfig,
@@ -190,6 +191,23 @@ export interface WorkflowAssistantOptions {
    * Structural match for SDK SandboxSettings.
    */
   sandbox?: SandboxSettings;
+  /**
+   * MCP server configs for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * Consumed by the Archon tool loop's McpToolProvider.
+   * Format matches MCP YAML config. Discriminated union is structurally identical
+   * to mcpServers but flows through the tool loop instead of the Claude SDK.
+   */
+  mcpConfigs?: Record<
+    string,
+    | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+    | { type: 'sse'; url: string; headers?: Record<string, string> }
+    | { type: 'http'; url: string; headers?: Record<string, string> }
+  >;
+  /**
+   * Skill names for non-Claude providers (openrouter, llamacpp, codex-fallback).
+   * The tool loop's skill loader resolves these to system prompt additions + tool allowlists.
+   */
+  skills?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +244,7 @@ export interface IWorkflowAssistantClient {
   getType(): string;
 }
 
-export type AssistantClientFactory = (provider: 'claude' | 'codex') => IWorkflowAssistantClient;
+export type AssistantClientFactory = (provider: ProviderType) => IWorkflowAssistantClient;
 
 // ---------------------------------------------------------------------------
 // Narrow config interface (subset of MergedConfig)
@@ -237,8 +255,8 @@ export type AssistantClientFactory = (provider: 'claude' | 'codex') => IWorkflow
 // ---------------------------------------------------------------------------
 
 export interface WorkflowConfig {
-  /** Default assistant provider ('claude' | 'codex') */
-  assistant: 'claude' | 'codex';
+  /** Default assistant provider */
+  assistant: ProviderType;
   baseBranch?: string;
   docsPath?: string;
   /**
@@ -262,6 +280,16 @@ export interface WorkflowConfig {
       modelReasoningEffort?: ModelReasoningEffort;
       webSearchMode?: WebSearchMode;
       additionalDirectories?: string[];
+    };
+    openrouter: {
+      model?: string;
+      apiKey?: string;
+      siteUrl?: string;
+      siteName?: string;
+    };
+    llamacpp: {
+      model?: string;
+      endpoint?: string;
     };
   };
 }

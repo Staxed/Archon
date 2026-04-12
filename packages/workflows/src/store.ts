@@ -80,6 +80,23 @@ export interface IWorkflowStore {
    */
   getCompletedDagNodeOutputs(workflowRunId: string): Promise<Map<string, string>>;
 
+  /**
+   * Record token usage for a workflow node execution.
+   * Implementations MUST NOT throw — catch all errors internally and log them.
+   * Missing token data results in zeros, not errors.
+   */
+  recordTokenUsage(data: {
+    workflow_run_id?: string | null;
+    conversation_id?: string | null;
+    node_id?: string | null;
+    provider: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    cost_usd?: number | null;
+  }): Promise<void>;
+
   // Per-codebase env vars for workflow node injection
   getCodebaseEnvVars(codebaseId: string): Promise<Record<string, string>>;
 
