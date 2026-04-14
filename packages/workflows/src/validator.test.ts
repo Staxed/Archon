@@ -175,6 +175,30 @@ describe('validateWorkflowResources — MCP validation', () => {
     expect(issues.some(i => i.field === 'mcp' && i.level === 'error')).toBe(true);
   });
 
+  test('warning (not error) when MCP config is missing on a when-gated node', async () => {
+    // Opt-in integration pattern: a node gated by a `when:` clause checking for
+    // the MCP file's presence. Missing file should be a warning so validation
+    // passes out of the box; the node is skipped at runtime if still missing.
+    const workflow = makeWorkflow('test', [
+      {
+        id: 'check',
+        bash: 'test -f opt.json && printf true || printf false',
+      } as unknown as DagNode,
+      {
+        id: 'notify',
+        prompt: 'ping',
+        mcp: 'missing.json',
+        when: "$check.output == 'true'",
+        depends_on: ['check'],
+      } as unknown as DagNode,
+    ]);
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    const mcpIssues = issues.filter(i => i.field === 'mcp' && i.nodeId === 'notify');
+    expect(mcpIssues).toHaveLength(1);
+    expect(mcpIssues[0].level).toBe('warning');
+    expect(mcpIssues[0].message).toContain('gated by');
+  });
+
   test('error when MCP config has invalid JSON', async () => {
     const mcpPath = join(tmpDir, 'bad.json');
     await writeFile(mcpPath, '{bad json');

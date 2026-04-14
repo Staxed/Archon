@@ -247,11 +247,19 @@ export async function validateWorkflowResources(
       const mcpPath = isAbsolute(node.mcp) ? node.mcp : resolve(cwd, node.mcp);
 
       if (!(await fileExists(mcpPath))) {
+        // If the node is gated by a `when:` clause, treat missing MCP config as
+        // a warning rather than an error. This supports the opt-in integration
+        // pattern (e.g. a notify node gated on `test -f .archon/mcp/ntfy.json`)
+        // where the MCP file is intentionally absent until the user installs it.
+        // A malformed file (parse error below) remains a hard error.
+        const isGated = 'when' in node && typeof node.when === 'string' && node.when.length > 0;
         issues.push({
-          level: 'error',
+          level: isGated ? 'warning' : 'error',
           nodeId: node.id,
           field: 'mcp',
-          message: `MCP config file not found: '${node.mcp}'`,
+          message: isGated
+            ? `MCP config file not found: '${node.mcp}' (node is gated by 'when:', so this is a warning — the node will be skipped at runtime if the file is still missing)`
+            : `MCP config file not found: '${node.mcp}'`,
           hint: `Create the file at ${mcpPath} with MCP server definitions (JSON format). Example:\n  {"server-name": {"command": "npx", "args": ["-y", "@package/name"], "env": {}}}`,
         });
       } else {
