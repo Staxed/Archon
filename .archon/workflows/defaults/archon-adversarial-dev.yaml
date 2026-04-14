@@ -61,9 +61,20 @@ nodes:
       it as conversation text.
     allowed_tools: [Read, Write, Glob, Grep]
 
+  # Hard verification: plan node must have written the spec file.
+  - id: verify-spec
+    depends_on: [plan]
+    bash: |
+      if [ ! -f "$ARTIFACTS_DIR/spec.md" ] || [ ! -s "$ARTIFACTS_DIR/spec.md" ]; then
+        echo "ERROR: plan node did not write \$ARTIFACTS_DIR/spec.md (or wrote it empty)" >&2
+        echo "The adversarial-dev workflow cannot proceed without a spec." >&2
+        exit 1
+      fi
+      echo "spec.md verified ($(wc -c < "$ARTIFACTS_DIR/spec.md") bytes)"
+
   # ─── Phase 2: Workspace Initialization ───────────────────────────────
   - id: init-workspace
-    depends_on: [plan]
+    depends_on: [verify-spec]
     bash: |
       ARTIFACTS="$ARTIFACTS_DIR"
 
@@ -344,3 +355,13 @@ nodes:
       Write this report to `$ARTIFACTS_DIR/report.md` AND output it as your response so the user
       sees it directly.
     allowed_tools: [Read, Write, Glob, Grep]
+
+  # Hard verification: report node must have written the final report file.
+  - id: verify-report
+    depends_on: [report]
+    bash: |
+      if [ ! -f "$ARTIFACTS_DIR/report.md" ] || [ ! -s "$ARTIFACTS_DIR/report.md" ]; then
+        echo "ERROR: report node did not write \$ARTIFACTS_DIR/report.md" >&2
+        exit 1
+      fi
+      echo "$ARTIFACTS_DIR/report.md"

@@ -120,8 +120,7 @@ nodes:
   # Optional: push notification when review completes.
   # To enable, create .archon/mcp/ntfy.json — see docs/mcp-servers.md
   - id: check-ntfy
-    model: haiku
-    bash: "test -f .archon/mcp/ntfy.json && echo 'true' || echo 'false'"
+    bash: "test -f .archon/mcp/ntfy.json && printf 'true' || printf 'false'"
     depends_on: [implement-fixes]
 
   - id: notify

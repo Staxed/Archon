@@ -21,6 +21,10 @@ nodes:
       echo "Remotion project detected."
       npx remotion compositions src/index.ts 2>&1 | tail -5
       echo ""
+      # Record a timestamp marker so verify-generated can detect whether
+      # the generate node actually modified any source files.
+      mkdir -p "$ARTIFACTS_DIR"
+      touch "$ARTIFACTS_DIR/.pre-generate-marker"
       echo "PROJECT_READY"
     timeout: 60000
 
@@ -56,6 +60,36 @@ nodes:
       - Edit
       - Glob
 
+  # Hard verification: generate must have actually modified at least one
+  # source file, AND the resulting composition must still parse. Without
+  # this, a silent AI skip leaves the old composition intact and the user
+  # gets a video of the PREVIOUS request — the worst kind of silent failure.
+  - id: verify-generated
+    depends_on: [generate]
+    bash: |
+      MARKER="$ARTIFACTS_DIR/.pre-generate-marker"
+      if [ ! -f "$MARKER" ]; then
+        echo "ERROR: pre-generate marker missing — cannot verify changes" >&2
+        exit 1
+      fi
+      CHANGED=$(find src -type f \( -name '*.ts' -o -name '*.tsx' \) -newer "$MARKER" 2>/dev/null | head -5)
+      if [ -z "$CHANGED" ]; then
+        echo "ERROR: generate node did not modify any files in src/" >&2
+        echo "The AI skipped the Write step — aborting to prevent rendering the wrong composition." >&2
+        exit 1
+      fi
+      echo "Files modified by generate:"
+      echo "$CHANGED"
+      echo ""
+      echo "Verifying composition still parses..."
+      if ! npx remotion compositions src/index.ts >/dev/null 2>&1; then
+        echo "ERROR: generated composition fails to parse — remotion compositions command errored" >&2
+        npx remotion compositions src/index.ts 2>&1 | tail -20 >&2
+        exit 1
+      fi
+      echo "Composition parses successfully"
+    timeout: 60000
+
   # ── Layer 2: Render preview stills ────────────────────────────────────
   - id: render-preview
     bash: |
@@ -84,7 +118,7 @@ nodes:
       else
         echo "RENDER_FAILED"
       fi
-    depends_on: [generate]
+    depends_on: [verify-generated]
     timeout: 120000
 
   # ── Layer 3: Render full video ────────────────────────────────────────

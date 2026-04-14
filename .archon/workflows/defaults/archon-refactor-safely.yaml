@@ -123,6 +123,16 @@ nodes:
     context: fresh
     denied_tools: [Write, Edit, Bash]
 
+  # Hard verification: analyze-impact must write impact-analysis.md
+  - id: verify-impact-analysis
+    depends_on: [analyze-impact]
+    bash: |
+      if [ ! -f "$ARTIFACTS_DIR/impact-analysis.md" ] || [ ! -s "$ARTIFACTS_DIR/impact-analysis.md" ]; then
+        echo "ERROR: analyze-impact did not write \$ARTIFACTS_DIR/impact-analysis.md" >&2
+        exit 1
+      fi
+      echo "impact-analysis.md verified"
+
   # ═══════════════════════════════════════════════════════════════
   # PHASE 3: PLAN REFACTOR — Ordered task list with rollback strategy
   # Read-only: produces the plan, does not execute it
@@ -201,9 +211,19 @@ nodes:
       - Lint: `bun run lint`
       - Tests: `bun run test`
       - Format: `bun run format:check`
-    depends_on: [analyze-impact]
+    depends_on: [verify-impact-analysis]
     context: fresh
     denied_tools: [Write, Edit, Bash]
+
+  # Hard verification: plan-refactor must write refactor-plan.md
+  - id: verify-refactor-plan
+    depends_on: [plan-refactor]
+    bash: |
+      if [ ! -f "$ARTIFACTS_DIR/refactor-plan.md" ] || [ ! -s "$ARTIFACTS_DIR/refactor-plan.md" ]; then
+        echo "ERROR: plan-refactor did not write \$ARTIFACTS_DIR/refactor-plan.md" >&2
+        exit 1
+      fi
+      echo "refactor-plan.md verified"
 
   # ═══════════════════════════════════════════════════════════════
   # PHASE 4: EXECUTE REFACTOR — Implements the plan with guardrails
@@ -248,7 +268,7 @@ nodes:
       - If a task is more complex than planned: complete it anyway, note the deviation
       - If you discover the plan missed an import site: update it and note it
       - NEVER skip a task — complete them in order
-    depends_on: [plan-refactor]
+    depends_on: [verify-refactor-plan]
     context: fresh
     hooks:
       PreToolUse:
@@ -429,6 +449,16 @@ nodes:
     context: fresh
     denied_tools: [Write, Edit, Bash]
 
+  # Hard verification: verify-behavior must write behavior-verification.md
+  - id: verify-behavior-file
+    depends_on: [verify-behavior]
+    bash: |
+      if [ ! -f "$ARTIFACTS_DIR/behavior-verification.md" ] || [ ! -s "$ARTIFACTS_DIR/behavior-verification.md" ]; then
+        echo "ERROR: verify-behavior did not write \$ARTIFACTS_DIR/behavior-verification.md" >&2
+        exit 1
+      fi
+      echo "behavior-verification.md verified"
+
   # ═══════════════════════════════════════════════════════════════
   # PHASE 8: CREATE PR — Detailed description with before/after
   # ═══════════════════════════════════════════════════════════════
@@ -495,7 +525,7 @@ nodes:
       Each commit represents one extraction step. Review commits individually for easiest review.
       All commits are behavior-preserving structural moves.
       ```
-    depends_on: [verify-behavior]
+    depends_on: [verify-behavior-file]
     context: fresh
     hooks:
       PreToolUse:

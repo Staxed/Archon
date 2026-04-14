@@ -183,6 +183,10 @@ nodes:
   # PHASE 4: GENERATE — Write the PRD
   # ═══════════════════════════════════════════════════════════════
 
+  - id: ensure-prd-dir
+    bash: "mkdir -p .claude/PRPs/prds && echo '.claude/PRPs/prds ready'"
+    depends_on: [scope-gate]
+
   - id: generate
     model: claude-opus-4-6[1m]
     prompt: |
@@ -194,11 +198,7 @@ nodes:
       **Scope answers**: $scope-gate.output
 
       Generate a complete PRD file at `.claude/PRPs/prds/{kebab-case-name}.prd.md`.
-
-      First create the directory:
-      ```bash
-      mkdir -p .claude/PRPs/prds
-      ```
+      The directory `.claude/PRPs/prds` has already been created for you.
 
       **First principles rule**: Before writing the Technical Approach section, READ the
       actual codebase files you're referencing. Verify:
@@ -234,7 +234,25 @@ nodes:
       - Prefer "extend X" over "create new Y" in implementation phases
 
       After writing the file, output the file path only — the validator will check it.
-    depends_on: [scope-gate]
+    depends_on: [ensure-prd-dir]
+
+  # Hard verification: fail the workflow if no PRD file was actually written.
+  # The AI cannot lie its way past this — it's a real bash exit code.
+  - id: verify-prd-file
+    bash: |
+      set -e
+      prd_file=$(ls -t .claude/PRPs/prds/*.prd.md 2>/dev/null | head -1)
+      if [ -z "$prd_file" ]; then
+        echo "ERROR: generate node did not create any .prd.md file in .claude/PRPs/prds/" >&2
+        echo "The workflow cannot complete — no PRD was written to disk." >&2
+        exit 1
+      fi
+      if [ ! -s "$prd_file" ]; then
+        echo "ERROR: PRD file $prd_file exists but is empty" >&2
+        exit 1
+      fi
+      echo "$prd_file"
+    depends_on: [generate]
 
   # ═══════════════════════════════════════════════════════════════
   # PHASE 5: VALIDATE — Check technical claims against codebase
@@ -245,15 +263,10 @@ nodes:
     prompt: |
       You are a technical validator checking a PRD for accuracy.
 
-      Read the PRD file that was just generated. The generate node output the file path:
-      $generate.output
+      The PRD file path has been verified to exist on disk:
+      $verify-prd-file.output
 
-      Find the PRD file — check `.claude/PRPs/prds/` for the most recently created `.prd.md` file:
-      ```bash
-      ls -t .claude/PRPs/prds/*.prd.md | head -1
-      ```
-
-      Read the entire PRD, then verify EVERY technical claim against the actual codebase:
+      Read that exact file. Then verify EVERY technical claim against the actual codebase:
 
       **Check 1: File paths** — For every file referenced in "Technical Approach" and
       "Implementation Phases", verify it exists. If it doesn't, note the correction.
@@ -297,4 +310,4 @@ nodes:
 
       To start implementation: `/prp-plan {prd-path}`
       ```
-    depends_on: [generate]
+    depends_on: [verify-prd-file]

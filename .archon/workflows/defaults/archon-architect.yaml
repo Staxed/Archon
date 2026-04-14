@@ -96,7 +96,8 @@ nodes:
 
       ## Output
 
-      Write a structured assessment to $ARTIFACTS_DIR/architecture-assessment.md with:
+      Output a structured assessment as your response (this node is read-only — do NOT
+      try to write files; your text output is captured and passed to the plan node):
       - Executive summary (3-5 sentences)
       - Top findings ranked by impact
       - For each finding: file, what's wrong, why it matters, estimated effort

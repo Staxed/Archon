@@ -557,6 +557,24 @@ nodes:
     when: "$check-reproduction.output != 'NOT_REPRODUCED'"
     context: fresh
 
+  # Hard verification: draft-issue must have written all three files that
+  # create-issue will `cat`. Missing files would cause a garbage issue.
+  - id: verify-draft-files
+    depends_on: [draft-issue]
+    bash: |
+      missing=""
+      for f in issue-draft.md .issue-title .issue-labels; do
+        if [ ! -s "$ARTIFACTS_DIR/$f" ]; then
+          missing="$missing $f"
+        fi
+      done
+      if [ -n "$missing" ]; then
+        echo "ERROR: draft-issue did not write required artifact(s):$missing" >&2
+        echo "Cannot create GitHub issue without title, body, and labels." >&2
+        exit 1
+      fi
+      echo "All draft files present"
+
   # ═══════════════════════════════════════════════════════════════
   # PHASE 7: CREATE ISSUE
   # ═══════════════════════════════════════════════════════════════
@@ -598,5 +616,5 @@ nodes:
          - Labels applied
          - Whether duplicates were found
          - Summary of reproduction results (reproduced/partial)
-    depends_on: [draft-issue]
+    depends_on: [verify-draft-files]
     context: fresh

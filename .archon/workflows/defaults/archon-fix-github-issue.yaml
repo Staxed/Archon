@@ -192,13 +192,35 @@ nodes:
     depends_on: [validate]
     context: fresh
 
+  # Hard verification: create-pr must have written .pr-number and .pr-url,
+  # AND the PR must actually exist on GitHub. Downstream review commands
+  # assume the PR exists — silent failure here is catastrophic.
+  - id: verify-pr-created
+    depends_on: [create-pr]
+    bash: |
+      if [ ! -s "$ARTIFACTS_DIR/.pr-number" ] || [ ! -s "$ARTIFACTS_DIR/.pr-url" ]; then
+        echo "ERROR: create-pr did not write .pr-number and/or .pr-url" >&2
+        echo "The PR was likely never created on GitHub." >&2
+        exit 1
+      fi
+      PR_NUMBER=$(tr -d '[:space:]' < "$ARTIFACTS_DIR/.pr-number")
+      if ! echo "$PR_NUMBER" | grep -qE '^[0-9]+$'; then
+        echo "ERROR: .pr-number is not a valid number: '$PR_NUMBER'" >&2
+        exit 1
+      fi
+      if ! gh pr view "$PR_NUMBER" --json number >/dev/null 2>&1; then
+        echo "ERROR: PR #$PR_NUMBER does not exist on GitHub (create-pr silently failed)" >&2
+        exit 1
+      fi
+      echo "PR #$PR_NUMBER verified on GitHub"
+
   # ═══════════════════════════════════════════════════════════════
   # PHASE 7: REVIEW
   # ═══════════════════════════════════════════════════════════════
 
   - id: review-scope
     command: archon-pr-review-scope
-    depends_on: [create-pr]
+    depends_on: [verify-pr-created]
     context: fresh
 
   - id: review-classify
