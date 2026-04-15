@@ -22,6 +22,7 @@ import {
   substituteWorkflowVariables,
   buildPromptWithContext,
   detectCreditExhaustion,
+  prependCwdNotice,
 } from './executor-shared';
 
 describe('substituteWorkflowVariables', () => {
@@ -308,5 +309,66 @@ describe('detectCreditExhaustion', () => {
 
   it('is case-insensitive', () => {
     expect(detectCreditExhaustion("YOU'RE OUT OF EXTRA USAGE")).not.toBeNull();
+  });
+});
+
+describe('prependCwdNotice', () => {
+  const cwd = '/home/user/.archon/worktrees/projects/myrepo/archon/task-feat';
+
+  it('prepends a system-context block that names the working directory', () => {
+    const result = prependCwdNotice('Original prompt body', cwd);
+    expect(result).toContain('<system-context>');
+    expect(result).toContain('</system-context>');
+    expect(result).toContain(cwd);
+  });
+
+  it('explicitly forbids Write/Edit outside the working directory', () => {
+    const result = prependCwdNotice('Body', cwd);
+    // The exact wording matters — it has to be unambiguous to the model that
+    // outside-cwd writes are forbidden, not just discouraged.
+    expect(result).toMatch(/NEVER Write or Edit/);
+    expect(result).toContain('read-only');
+  });
+
+  it('preserves the original prompt body verbatim after the notice', () => {
+    const body = 'Step 1: do the thing.\nStep 2: do another thing.';
+    const result = prependCwdNotice(body, cwd);
+    // The body must appear unchanged after the closing tag, so variable
+    // substitution and node-output references downstream still work.
+    expect(result.endsWith(body)).toBe(true);
+  });
+
+  it('places the notice before the body, not after', () => {
+    const body = 'BODY_MARKER';
+    const result = prependCwdNotice(body, cwd);
+    const noticeIdx = result.indexOf('<system-context>');
+    const bodyIdx = result.indexOf(body);
+    expect(noticeIdx).toBeGreaterThanOrEqual(0);
+    expect(bodyIdx).toBeGreaterThan(noticeIdx);
+  });
+
+  it('handles an empty prompt body without throwing', () => {
+    const result = prependCwdNotice('', cwd);
+    expect(result).toContain('<system-context>');
+    expect(result).toContain(cwd);
+  });
+
+  it('is a pure function — different cwds produce different notices', () => {
+    const a = prependCwdNotice('body', '/cwd/a');
+    const b = prependCwdNotice('body', '/cwd/b');
+    expect(a).not.toBe(b);
+    expect(a).toContain('/cwd/a');
+    expect(b).toContain('/cwd/b');
+  });
+
+  it('does not mention any specific provider (provider-agnostic)', () => {
+    const result = prependCwdNotice('body', cwd);
+    // The notice is wrapped at the dag-executor before dispatch to ANY of the
+    // four providers (Claude/Codex/OpenRouter/Llama.cpp), so it must not be
+    // worded as if it were Claude-specific.
+    expect(result.toLowerCase()).not.toContain('claude');
+    expect(result.toLowerCase()).not.toContain('codex');
+    expect(result.toLowerCase()).not.toContain('openrouter');
+    expect(result.toLowerCase()).not.toContain('llama');
   });
 });

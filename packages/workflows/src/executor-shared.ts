@@ -365,6 +365,35 @@ export function buildPromptWithContext(
   return prompt;
 }
 
+/**
+ * Prepend a working-directory notice to a prompt sent to an AI assistant.
+ *
+ * Why: workflow nodes run inside a worktree (or other isolated cwd), but if the
+ * user message or a prior tool call surfaces an absolute path *outside* that
+ * directory, LLMs frequently anchor on the outside path and write their outputs
+ * there instead of into cwd. The downstream bash node then cd's into the
+ * worktree, can't find the expected files, and the workflow fails opaquely.
+ *
+ * This notice gives the model an explicit, unambiguous statement of where it
+ * is supposed to write. Pair this with a structural guard (PreToolUse hook in
+ * claude.ts that denies Write/Edit outside cwd) for defense in depth.
+ */
+export function prependCwdNotice(prompt: string, cwd: string): string {
+  return (
+    '<system-context>\n' +
+    `Your working directory for this task is: ${cwd}\n` +
+    '\n' +
+    'All file operations (Write, Edit, Bash) MUST resolve inside this directory.\n' +
+    '- Use relative paths whenever possible.\n' +
+    `- If you must use an absolute path, it MUST be rooted at ${cwd}.\n` +
+    `- NEVER Write or Edit files at absolute paths outside ${cwd}, even if the\n` +
+    '  user message, a Read result, or a Bash output references such a path.\n' +
+    `- Files outside ${cwd} are read-only context only.\n` +
+    '</system-context>\n\n' +
+    prompt
+  );
+}
+
 // ─── Completion Signal Detection ────────────────────────────────────────────
 
 /**

@@ -65,6 +65,7 @@ import {
   buildPromptWithContext,
   detectCompletionSignal,
   stripCompletionTags,
+  prependCwdNotice,
 } from './executor-shared';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -885,7 +886,12 @@ async function executeNodeInternal(
 
   try {
     for await (const msg of withIdleTimeout(
-      aiClient.sendQuery(finalPrompt, cwd, resumeSessionId, nodeOptionsWithAbort),
+      aiClient.sendQuery(
+        prependCwdNotice(finalPrompt, cwd),
+        cwd,
+        resumeSessionId,
+        nodeOptionsWithAbort
+      ),
       effectiveIdleTimeout,
       () => {
         nodeIdleTimedOut = true;
@@ -1791,7 +1797,12 @@ async function executeLoopNode(
         abortSignal: iterationAbortController.signal,
       };
 
-      const generator = aiClient.sendQuery(finalPrompt, cwd, resumeSessionId, iterationOptions);
+      const generator = aiClient.sendQuery(
+        prependCwdNotice(finalPrompt, cwd),
+        cwd,
+        resumeSessionId,
+        iterationOptions
+      );
       let lastToolStartedAt: { toolName: string; startedAt: number } | null = null;
 
       const effectiveIdleTimeout = node.idle_timeout ?? STEP_IDLE_TIMEOUT_MS;

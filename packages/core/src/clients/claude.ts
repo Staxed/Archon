@@ -27,6 +27,7 @@ import {
 } from '../types';
 import { createLogger } from '@archon/paths';
 import { buildCleanSubprocessEnv } from '../utils/env-allowlist';
+import { createPreToolUsePathGuardHook } from './path-guard-hook';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -345,6 +346,19 @@ export class ClaudeClient implements IAssistantClient {
         // Merge user-provided hooks with our PostToolUse capture hook
         hooks: {
           ...(requestOptions?.hooks ?? {}),
+          // Structural guard: deny Write/Edit/MultiEdit/NotebookEdit when the
+          // target path resolves outside the agent's cwd. Catches absolute-path
+          // leaks from the prompt or prior tool output (e.g. `git worktree list`)
+          // that would otherwise let the model write into the source repo
+          // instead of the worktree. See path-guard-hook.ts for the rationale
+          // and dag-executor's `prependCwdNotice` for the companion soft guard.
+          // Note: the equivalent enforcement for Codex/OpenRouter/Llama.cpp
+          // happens inside `tools/write.ts` and `tools/edit.ts` via the same
+          // `validatePath()` call, so all four providers share one boundary check.
+          PreToolUse: [
+            ...((requestOptions?.hooks?.PreToolUse ?? []) as HookCallbackMatcher[]),
+            { hooks: [createPreToolUsePathGuardHook(cwd)] },
+          ],
           PostToolUse: [
             ...((requestOptions?.hooks?.PostToolUse ?? []) as HookCallbackMatcher[]),
             {
