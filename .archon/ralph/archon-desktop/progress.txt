@@ -50,6 +50,11 @@
 - **Pattern**: `createBunWebSocket()` from `hono/bun` returns `{ upgradeWebSocket, websocket }`. `upgradeWebSocket` is used in route handlers; `websocket` must be passed to `Bun.serve()`. Both are exported from `ws.ts` and imported where needed.
 - **Note**: WS routes use `app.get('/path', upgradeWebSocket(...))` (not `registerOpenApiRoute`). Buffer→WS send requires `data.buffer.slice()` cast as `ArrayBuffer` to satisfy type constraints.
 
+### Desktop Test Batching for localStorage Mocks
+- **Where**: `packages/desktop/package.json` test script
+- **Pattern**: Tests that use `Object.defineProperty(globalThis, 'localStorage', ...)` (LaunchProfile.test.ts, ProfileEditor.test.ts) must run in a separate `bun test` invocation from tests that use `globalThis.localStorage = ...` (PreflightBanner.test.ts). The two patterns are incompatible in the same process.
+- **Note**: Always use `writable: true, configurable: true` when using `Object.defineProperty` for localStorage mocks
+
 ### PTY-over-WS via script wrapper
 - **Where**: `packages/server/src/routes/desktop.ts`
 - **Pattern**: tmux needs a real TTY for `attach-session`. Use `script -qfc 'tmux attach-session -t <name>' /dev/null` to provide a PTY wrapper with piped stdio. Linux only (macOS `script` has different flags, but server is always Linux).
@@ -554,5 +559,31 @@
 - migrateProfile needs explicit `typeof p !== 'object'` guard before accessing pane fields to skip non-object entries in arrays
 - Discriminated union via `z.discriminatedUnion('kind', [...])` cleanly models StartupAction's none vs agent variants
 - Same localStorage persistence pattern as AddFolderModal — real Tauri app uses Tauri's fs API for per-OS paths
+
+---
+
+## 2026-04-17 — US-020: LaunchProfile editor UI
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/ProfileEditor.tsx` — New component: ProfileEditor with list view (name, pane count, date, Edit/Duplicate/Delete) and detail view (pane table, grid preview, startup action dropdown); pure helpers exported for testing
+- `packages/desktop/src/ProfileEditor.test.ts` — 20 tests covering createBlankProfile, createBlankPane, duplicateProfile, updatePaneField, removePane, addPane, and persistence round-trips
+- `packages/desktop/src/App.tsx` — Integrated ProfileEditor modal, added "Profiles" button to StatusBar
+- `packages/desktop/src/styles.css` — Profile editor CSS (modal, list items, detail view, grid preview, pane rows)
+- `packages/desktop/package.json` — Split test batches to separate localStorage-mocking tests (LaunchProfile + ProfileEditor) from other tests
+
+**Acceptance criteria verified**:
+- [x] Settings → Launch Profiles opens editor (StatusBar "Profiles" button opens ProfileEditor modal)
+- [x] List view: profile name, pane count, last-used; actions: Edit, Duplicate, Delete (ProfileListItem component with sorted list)
+- [x] Detail view: pane table with inline rename, host picker, cwd browser, grid position (x/y/w/h), startup action dropdown (None / Agent preset) (PaneRow component with all fields)
+- [x] Visual grid preview showing pane placement (GridPreview component with 6x3 cell grid, occupied cells highlighted)
+- [x] Save button persists via `saveProfile()` from US-019 (handleSave calls saveProfile then refreshes list)
+- [x] Unit tests cover editor state + persistence (20 tests)
+
+**Learnings**:
+- localStorage mock via `Object.defineProperty` needs `writable: true, configurable: true` to avoid locking the property for other tests in the same process
+- Test batching is critical when multiple test files mock localStorage differently — PreflightBanner uses `globalThis.localStorage = ...` while LaunchProfile/ProfileEditor use `Object.defineProperty`
+- Grid preview is a simple 6x3 cell grid rendered from pane x/y/w/h data — much simpler than reusing the full react-grid-layout engine in read-only mode
+- `prefer-optional-chain` ESLint rule: `pane && pane.x === c` must be `pane?.x === c`
 
 ---

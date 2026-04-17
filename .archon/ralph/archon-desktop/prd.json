@@ -414,8 +414,8 @@
         "US-019"
       ],
       "priority": 20,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 20. Files: packages/desktop/src/ProfileEditor.tsx, packages/desktop/src/ProfileEditor.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-021",
