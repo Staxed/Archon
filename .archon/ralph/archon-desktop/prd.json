@@ -248,8 +248,8 @@
       "technicalNotes": "Per §10.6. `isArchonCodebase` computed by checking root path against `GET /api/codebases` (cached). Do this check later in US-015.",
       "dependsOn": ["US-012"],
       "priority": 13,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 13. Files: packages/desktop/src/FileTree.tsx, packages/desktop/src/FileTree.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-014",

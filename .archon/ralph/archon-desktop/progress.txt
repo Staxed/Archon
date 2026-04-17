@@ -382,3 +382,29 @@
 - Entries that can't be `stat()`ed (broken symlinks, permission on individual files) are silently skipped rather than failing the whole listing
 
 ---
+
+## 2026-04-17 — US-013: Multi-root FileTree component with core context menu
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/FileTree.tsx` — New component: FileTree with tree state reducer, lazy-loading, host badges, context menu (New File/Folder, Copy Path, Copy Relative Path, Remove from Workspace), confirm modal, name prompt modal
+- `packages/desktop/src/FileTree.test.ts` — 26 tests covering pure helpers (buildCopyPath, buildRelativePath, isLocalHost, getHostBadge, joinPath), tree reducer (ADD/REMOVE/TOGGLE/SET_CHILDREN/SET_LOADING/COLLAPSE_ALL), context menu actions
+- `packages/desktop/src/App.tsx` — Replaced placeholder Sidebar with FileTree; added workspace roots state and onRemoveRoot handler
+- `packages/desktop/src/styles.css` — File tree CSS (tree nodes, roots, badges, context menu, modals)
+- `packages/desktop/package.json` — Added FileTree.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] `FileTree` component lists roots grouped by host with 🖥️ or 🪟 badge (getHostBadge helper)
+- [x] Each root is collapsible; children loaded lazily via `GET /api/desktop/fs/tree` (remote) or Tauri command (local, stubbed)
+- [x] Context menu includes: New File, New Folder, Copy Path (ssh://host/path for remote), Copy Relative Path, Remove from Workspace
+- [x] New File/Folder prompts for name and calls PUT /api/desktop/fs/file (via createRemoteFile)
+- [x] Remove from Workspace shows confirm modal; does not delete files on disk
+- [x] Unit tests cover tree state, expand/collapse, and each menu action (26 tests)
+
+**Learnings**:
+- Tree state uses useState with functional updates instead of useReducer to allow async fetch → dispatch in a single flow
+- Arrow functions returning void in JSX onClick need braces: `onClick={(): void => { fn(); }}` not `onClick={(): void => fn()}`
+- Context menu close-on-click pattern: `window.addEventListener('click', handler)` in useEffect triggered when contextMenu is non-null
+- Node key pattern `${rootId}:${path}` keeps expanded/children/loading state scoped per-root
+
+---
