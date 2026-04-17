@@ -40,6 +40,16 @@
 - **Pattern**: Test files (`src/**/*.test.ts`) are excluded from tsconfig because the desktop package has `types: ["vite/client"]` which overrides bun types. Tests run fine via `bun test` which has its own type resolution.
 - **Note**: Same pattern applies to any future test files in the desktop package
 
+### Bun WebSocket Setup for Hono
+- **Where**: `packages/server/src/ws.ts`, `packages/server/src/index.ts`
+- **Pattern**: `createBunWebSocket()` from `hono/bun` returns `{ upgradeWebSocket, websocket }`. `upgradeWebSocket` is used in route handlers; `websocket` must be passed to `Bun.serve()`. Both are exported from `ws.ts` and imported where needed.
+- **Note**: WS routes use `app.get('/path', upgradeWebSocket(...))` (not `registerOpenApiRoute`). Buffer→WS send requires `data.buffer.slice()` cast as `ArrayBuffer` to satisfy type constraints.
+
+### PTY-over-WS via script wrapper
+- **Where**: `packages/server/src/routes/desktop.ts`
+- **Pattern**: tmux needs a real TTY for `attach-session`. Use `script -qfc 'tmux attach-session -t <name>' /dev/null` to provide a PTY wrapper with piped stdio. Linux only (macOS `script` has different flags, but server is always Linux).
+- **Note**: Session name is validated against `/^archon-desktop:[a-z0-9:-]+$/` before any shell command construction.
+
 ---
 
 ## 2026-04-17 — US-001: Scaffold @archon/desktop Tauri v2 package
@@ -209,5 +219,32 @@
 - Reader thread needs a signaling mechanism (Arc<Mutex<bool>>) since portable-pty readers block on read()
 - base64 0.22 uses the `Engine` trait pattern — import `base64::Engine as _` then use `general_purpose::STANDARD.encode()`
 - uuid crate with `v4` feature for generating PTY IDs
+
+---
+
+## 2026-04-17 — US-007: Remote PTY WebSocket endpoint wrapping tmux new-session -A
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/ws.ts` — New shared Bun WebSocket setup (createBunWebSocket, exports upgradeWebSocket + websocket)
+- `packages/server/src/routes/desktop.ts` — Real WS /api/desktop/pty handler replacing 501 placeholder; helper functions for session validation, tmux argv construction
+- `packages/server/src/index.ts` — Import websocket handler, pass to Bun.serve()
+- `packages/server/src/routes/desktop.test.ts` — 27 new tests for PTY helpers (session validation, argv builders, spawnProcess verification); removed PTY from 501 placeholder list
+
+**Acceptance criteria verified**:
+- [x] WS endpoint accepts query params host, sessionName, cwd, command
+- [x] Server spawns `tmux new-session -A -d -s <name> -c <cwd> '<command>'`, then `tmux attach -t <name>` with stdio bridged to WS via script -qfc PTY wrapper
+- [x] Binary-safe bidirectional byte relay (ArrayBuffer copy for WS send, Buffer.from for WS receive)
+- [x] Resize messages ({ type: 'resize', cols, rows }) forward to tmux resize-window
+- [x] Session name validated against /^archon-desktop:[a-z0-9:-]+$/ to prevent shell injection
+- [x] Unit tests mock tmux spawn via spyOn(spawnProcess) and verify argv construction (3 tests)
+- [x] Integration test with real tmux skippable — no tmux in CI environment; pure helper tests cover all logic
+
+**Learnings**:
+- Bun WS requires `websocket` handler in `Bun.serve()` — can't just register WS routes without it
+- Buffer → WS send type mismatch: `Buffer.buffer` is `ArrayBufferLike` not `ArrayBuffer`; use `.slice()` + cast
+- Hono `upgradeWebSocket` callbacks need explicit `: void` return type annotations for ESLint
+- `script -qfc` on Linux provides a PTY wrapper for processes that need a terminal (like tmux attach)
+- WS routes use plain `app.get()` with `upgradeWebSocket()`, not `registerOpenApiRoute` (WS upgrade isn't OpenAPI-spec'd)
 
 ---

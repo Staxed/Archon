@@ -136,8 +136,8 @@
       "technicalNotes": "Per §10.3 'tmux bridge' + §10.1 WS endpoint spec. Hono supports WS via `app.get('/path', upgradeWebSocket(...))`. Use `child_process.spawn` (Bun) to spawn tmux — do NOT use shell interpolation; pass args as array.",
       "dependsOn": ["US-002"],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 7. Files: packages/server/src/routes/desktop.ts, packages/server/src/ws.ts, packages/server/src/index.ts, packages/server/src/routes/desktop.test.ts."
     },
     {
       "id": "US-008",
