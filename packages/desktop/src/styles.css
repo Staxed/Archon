@@ -503,6 +503,26 @@ body,
   color: var(--text-secondary);
 }
 
+.file-tree-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-tree-reload-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.file-tree-reload-btn:hover {
+  color: var(--text-primary);
+}
+
 .file-tree-add-btn {
   background: none;
   border: none;
@@ -554,6 +574,21 @@ body,
 .tree-root-badge {
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.tree-root-archon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--border-accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-right: 2px;
 }
 
 .tree-root-label {

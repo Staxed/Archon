@@ -7,6 +7,7 @@ import {
   isLocalHost,
   getHostBadge,
   joinPath,
+  matchesCodebasePath,
 } from './FileTree';
 import type { TreeRoot, TreeEntry, TreeState } from './FileTree';
 
@@ -209,5 +210,62 @@ describe('context menu actions', () => {
     const parentPath = '/home/staxed/projects';
     const folderName = 'new-dir';
     expect(joinPath(parentPath, folderName)).toBe('/home/staxed/projects/new-dir');
+  });
+});
+
+// ── Archon codebase badge tests ──────────────────────────────
+
+describe('matchesCodebasePath', () => {
+  test('exact match returns true', () => {
+    expect(
+      matchesCodebasePath('/home/staxed/projects/Archon', '/home/staxed/projects/Archon')
+    ).toBe(true);
+  });
+
+  test('matches with trailing slash on root', () => {
+    expect(
+      matchesCodebasePath('/home/staxed/projects/Archon/', '/home/staxed/projects/Archon')
+    ).toBe(true);
+  });
+
+  test('matches with trailing slash on codebase cwd', () => {
+    expect(
+      matchesCodebasePath('/home/staxed/projects/Archon', '/home/staxed/projects/Archon/')
+    ).toBe(true);
+  });
+
+  test('non-matching paths return false', () => {
+    expect(matchesCodebasePath('/home/staxed/projects/Other', '/home/staxed/projects/Archon')).toBe(
+      false
+    );
+  });
+
+  test('partial prefix does not match', () => {
+    expect(matchesCodebasePath('/home/staxed/projects/Arch', '/home/staxed/projects/Archon')).toBe(
+      false
+    );
+  });
+});
+
+describe('codebase badge visibility', () => {
+  test('badge shown when root path matches any codebase', () => {
+    const codebasePaths = ['/home/staxed/projects/Archon', '/home/staxed/projects/Other'];
+    const rootPath = '/home/staxed/projects/Archon';
+    const hasBadge = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
+    expect(hasBadge).toBe(true);
+  });
+
+  test('badge not shown when root path matches no codebase', () => {
+    const codebasePaths = ['/home/staxed/projects/Archon'];
+    const rootPath = '/home/staxed/projects/Unknown';
+    const hasBadge = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
+    expect(hasBadge).toBe(false);
+  });
+
+  test('badge shown with trailing slash normalization', () => {
+    const codebasePaths = ['/home/staxed/projects/Archon/'];
+    const rootPath = '/home/staxed/projects/Archon';
+    const hasBadge = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
+    expect(hasBadge).toBe(true);
   });
 });

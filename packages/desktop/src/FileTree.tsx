@@ -88,6 +88,15 @@ export function joinPath(parentPath: string, childName: string): string {
   return parentPath + '/' + childName;
 }
 
+/**
+ * Check whether a root path matches a codebase's default_cwd.
+ * Normalizes trailing slashes for comparison.
+ */
+export function matchesCodebasePath(rootPath: string, codebaseCwd: string): boolean {
+  const normalize = (p: string): string => (p.endsWith('/') ? p.slice(0, -1) : p);
+  return normalize(rootPath) === normalize(codebaseCwd);
+}
+
 // ── Tree state reducer ────────────────────────────────────────
 
 export interface TreeState {
@@ -223,6 +232,24 @@ async function createRemoteFile(
   }
 }
 
+// ── Codebase fetch helper ────────────────────────────────────
+
+interface CodebaseEntry {
+  id: string;
+  default_cwd: string;
+}
+
+async function fetchCodebases(serverUrl: string): Promise<CodebaseEntry[]> {
+  try {
+    const res = await fetch(`${serverUrl}/api/codebases`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as CodebaseEntry[];
+    return data;
+  } catch {
+    return [];
+  }
+}
+
 // ── React component ───────────────────────────────────────────
 
 interface FileTreeProps {
@@ -330,6 +357,20 @@ export function FileTree({
   const [nameInput, setNameInput] = useState('');
   const [confirmModal, setConfirmModal] = useState<ConfirmModalState | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // Archon codebase badge state — cached in memory, refreshed on reload
+  const [archonCodebasePaths, setArchonCodebasePaths] = useState<string[]>([]);
+
+  const loadCodebases = useCallback((): void => {
+    void fetchCodebases(serverUrl).then(codebases => {
+      setArchonCodebasePaths(codebases.map(cb => cb.default_cwd));
+    });
+  }, [serverUrl]);
+
+  // Fetch codebases on mount
+  useEffect(() => {
+    loadCodebases();
+  }, [loadCodebases]);
 
   // Sync roots prop into tree state
   useEffect(() => {
@@ -533,11 +574,24 @@ export function FileTree({
     <div className="file-tree">
       <div className="file-tree-header">
         <span className="file-tree-title">Explorer</span>
-        {onAddRoot && (
-          <button className="file-tree-add-btn" onClick={onAddRoot} title="Add Folder to Workspace">
-            +
+        <div className="file-tree-header-actions">
+          <button
+            className="file-tree-reload-btn"
+            onClick={loadCodebases}
+            title="Reload tree (refresh codebase badges)"
+          >
+            &#x21bb;
           </button>
-        )}
+          {onAddRoot && (
+            <button
+              className="file-tree-add-btn"
+              onClick={onAddRoot}
+              title="Add Folder to Workspace"
+            >
+              +
+            </button>
+          )}
+        </div>
       </div>
       <div className="file-tree-content" role="tree">
         {roots.length === 0 && <div className="file-tree-empty">No folders in workspace</div>}
@@ -564,6 +618,11 @@ export function FileTree({
                 <span className="tree-root-badge" title={root.host}>
                   {getHostBadge(root.host)}
                 </span>
+                {archonCodebasePaths.some(cwd => matchesCodebasePath(root.path, cwd)) && (
+                  <span className="tree-root-archon-badge" title="Archon codebase">
+                    A
+                  </span>
+                )}
                 <span className="tree-root-label">{root.label}</span>
                 <span className="tree-root-host">{root.host}</span>
                 {isLoading && <span className="tree-node-spinner">...</span>}
