@@ -1579,10 +1579,13 @@ async function executeKnowledgeExtractNode(
     }
     const context = contextParts.join('\n\n');
 
-    const extracted = await deps.extractKnowledge(finalPrompt, context, cwd, {
-      workflowRunId: workflowRun.id,
-      nodeId: node.id,
-    });
+    const extracted = await deps.extractKnowledge(
+      finalPrompt,
+      context,
+      cwd,
+      { workflowRunId: workflowRun.id, nodeId: node.id },
+      node.scope ?? 'both'
+    );
 
     const duration = Date.now() - startTime;
     await logNodeComplete(logDir, workflowRun.id, node.id, 'knowledge-extract', {

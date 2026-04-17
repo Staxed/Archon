@@ -301,19 +301,21 @@ export interface WorkflowConfig {
 /**
  * Callback for knowledge-extract DAG nodes.
  * Calls AI (capture model) with a custom prompt + context, appends extracted knowledge
- * to the daily log, and returns the extracted content as node output.
+ * to the appropriate daily log(s), and returns the extracted content as node output.
  *
  * @param prompt - Extraction prompt describing what knowledge to extract
  * @param context - Upstream node outputs and workflow context
  * @param cwd - Working directory (used to resolve owner/repo)
  * @param metadata - Workflow run and node identifiers for log entries
+ * @param scope - Where to route extracted knowledge: 'project', 'global', or 'both' (default)
  * @returns Extracted knowledge content
  */
 export type KnowledgeExtractFn = (
   prompt: string,
   context: string,
   cwd: string,
-  metadata: { workflowRunId: string; nodeId: string }
+  metadata: { workflowRunId: string; nodeId: string },
+  scope?: 'project' | 'global' | 'both'
 ) => Promise<string>;
 
 /**

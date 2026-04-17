@@ -1148,6 +1148,55 @@ describe('knowledge-flush', () => {
     expect(mockSendQuery).not.toHaveBeenCalled();
   });
 
+  test('flushGlobalKnowledge uses codebase-agnostic synthesis prompt with contradiction detection', async () => {
+    directories[`${GLOBAL_KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${GLOBAL_KB_PATH}/domains`] = [];
+
+    fileSystem[`${GLOBAL_KB_PATH}/logs/2026-04-11.md`] = '## Global pattern\n- Some lesson\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushGlobalKnowledge();
+
+    const prompt = mockSendQuery.mock.calls[0]![0] as string;
+    // Global prompt should contain codebase-agnostic rules
+    expect(prompt).toContain('GLOBAL knowledge base');
+    expect(prompt).toContain('codebase-agnostic');
+    // Should contain Sources footnotes requirement
+    expect(prompt).toContain('## Sources');
+    // Should contain contradiction detection
+    expect(prompt).toContain('## Contradictions');
+    expect(prompt).toContain('contradictory');
+  });
+
+  test('flushKnowledge (project) does NOT use global synthesis prompt', async () => {
+    directories[`${KB_PATH}/logs`] = ['2026-04-11.md'];
+    directories[`${KB_PATH}/domains`] = [];
+
+    fileSystem[`${KB_PATH}/logs/2026-04-11.md`] = '## Content\n';
+
+    mockSendQueryChunks = [
+      {
+        type: 'assistant',
+        content: JSON.stringify({ articles: [], domainSummaries: {}, indexSummary: '' }),
+      },
+    ];
+
+    await flushKnowledge('acme', 'widget');
+
+    const prompt = mockSendQuery.mock.calls[0]![0] as string;
+    // Project prompt should NOT contain global-specific instructions
+    expect(prompt).not.toContain('GLOBAL knowledge base');
+    expect(prompt).not.toContain('contradictory');
+    // But should still contain standard synthesis rules
+    expect(prompt).toContain('knowledge base compiler');
+  });
+
   // --- AI JSON parse failure tests ---
 
   test('throws on malformed JSON from AI synthesis', async () => {

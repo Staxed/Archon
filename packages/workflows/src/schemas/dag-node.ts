@@ -267,9 +267,10 @@ export type CancelNode = z.infer<typeof cancelNodeSchema> & {
  */
 export const knowledgeExtractNodeSchema = dagNodeBaseSchema.extend({
   knowledge_extract: z.string().min(1, "'knowledge_extract' prompt must not be empty"),
+  scope: z.enum(['project', 'global', 'both']).default('both'),
 });
 
-/** DAG node that runs targeted knowledge extraction and appends to the daily log */
+/** DAG node that runs targeted knowledge extraction and appends to the appropriate daily log(s) */
 export type KnowledgeExtractNode = z.infer<typeof knowledgeExtractNodeSchema> & {
   command?: never;
   prompt?: never;

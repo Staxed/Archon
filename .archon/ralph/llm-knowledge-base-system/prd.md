@@ -201,6 +201,10 @@ knowledge/
 | US-018 | Update default workflows with KB awareness | 11 | US-007, US-017 |
 | US-019 | Update workflow builder for KB awareness | 12 | US-018 |
 | US-020 | Add explicit knowledge-extract node type | 12 | US-017 |
+| US-021 | Add scope field to knowledge-extract nodes (project/global/both) | 13 | US-020, US-013 |
+| US-022 | Scoped extraction routing (project log, global log, or both) | 13 | US-021 |
+| US-023 | Global synthesis prompt (codebase-agnostic, Sources, contradictions) | 13 | US-013 |
+| US-024 | Knowledge correction workflow (archon-knowledge-correct) | 13 | US-013 |
 
 ### Dependency Graph
 ```
@@ -248,6 +252,9 @@ Every story must pass:
 | File-based flush lock | `knowledge/meta/flush.lock` | Simplest option for single-developer, single-machine use case. |
 | Capture triggers | `conversation-closed` + `reset-requested` | NOT `isolation-changed`. Reset is ending a line of work. |
 | KB not in git | `~/.archon/` directory | User-specific, not project-specific. Avoids polluting repo. |
+| Scope classification in extraction | AI classifies as PROJECT/GLOBAL with project fallback | Conservative default prevents low-quality global entries. |
+| Global synthesis prompt | Codebase-agnostic with Sources + Contradictions sections | Global articles must generalize; contradiction detection surfaces conflicting claims across projects. |
+| Knowledge correction workflow | AI-mediated with approval gate | User review before destructive operations (delete/merge) — matches interactive-prd pattern. |
 | Flush atomicity | Write to temp files, atomic rename | Crash-safe, idempotent — next flush re-runs from scratch. |
 | Obsidian compatibility | Standard markdown with `[[wikilinks]]` | KB browsable in Obsidian with graph view. No special tooling needed. |
 
