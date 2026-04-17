@@ -532,3 +532,27 @@
 - Kill confirmation uses local component state (confirmKill) rather than a modal — cleaner for inline actions in a compact drawer
 
 ---
+
+## 2026-04-17 — US-019: LaunchProfile + ProfilePane schema with JSON persistence
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/LaunchProfile.ts` — New module: Zod schemas (startupActionSchema, profilePaneSchema, launchProfileSchema), derived types via z.infer, toSlug helper, migrateProfile migration-safe parser, CRUD helpers (listProfiles, getProfile, saveProfile, deleteProfile)
+- `packages/desktop/src/LaunchProfile.test.ts` — 27 tests covering schemas, slug generation, migration (defaults, older shapes, invalid panes), and CRUD round-trips
+- `packages/desktop/package.json` — Added zod dependency, added LaunchProfile.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] TypeScript types match §11.1 exactly (LaunchProfile, ProfilePane, StartupAction)
+- [x] Zod schemas derived via z.infer pattern per CLAUDE.md conventions
+- [x] Profiles persisted to localStorage (Tauri fs API for per-OS app-data in real app, same pattern as AddFolderModal)
+- [x] CRUD helper functions: listProfiles(), getProfile(id), saveProfile(p), deleteProfile(id)
+- [x] Migration-safe: reading an older-shape file returns defaults for missing fields (migrateProfile fills slug, createdAt, pane defaults)
+- [x] Unit tests cover round-trip + migration (27 tests)
+
+**Learnings**:
+- Desktop package uses `zod` directly (not `@hono/zod-openapi`) since it's a frontend package
+- migrateProfile needs explicit `typeof p !== 'object'` guard before accessing pane fields to skip non-object entries in arrays
+- Discriminated union via `z.discriminatedUnion('kind', [...])` cleanly models StartupAction's none vs agent variants
+- Same localStorage persistence pattern as AddFolderModal — real Tauri app uses Tauri's fs API for per-OS paths
+
+---

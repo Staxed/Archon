@@ -394,8 +394,8 @@
         "US-001"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 16. Files: packages/desktop/src/LaunchProfile.ts, packages/desktop/src/LaunchProfile.test.ts, packages/desktop/package.json."
     },
     {
       "id": "US-020",
