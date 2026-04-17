@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { PreflightBanner } from './PreflightBanner';
+import { GridEngine, useGridEngine } from './GridEngine';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -32,13 +33,13 @@ function EditorColumn(): React.JSX.Element {
   );
 }
 
-function TerminalGrid(): React.JSX.Element {
-  return (
-    <div className="region">
-      <span className="region-label">Terminal Grid</span>
-      <span className="region-sublabel">3 x 6</span>
-    </div>
-  );
+interface TerminalGridProps {
+  gridState: ReturnType<typeof useGridEngine>['state'];
+  gridDispatch: ReturnType<typeof useGridEngine>['dispatch'];
+}
+
+function TerminalGrid({ gridState, gridDispatch }: TerminalGridProps): React.JSX.Element {
+  return <GridEngine state={gridState} dispatch={gridDispatch} />;
 }
 
 interface HostSessionsDrawerProps {
@@ -90,6 +91,7 @@ function StatusBar({ drawerOpen, onToggleDrawer }: StatusBarProps): React.JSX.El
 
 function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { state: gridState, dispatch: gridDispatch } = useGridEngine();
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -114,7 +116,7 @@ function App(): React.JSX.Element {
             </Panel>
             <ResizeHandle />
             <Panel defaultSize={55} minSize={20} id="grid">
-              <TerminalGrid />
+              <TerminalGrid gridState={gridState} gridDispatch={gridDispatch} />
             </Panel>
           </Group>
         </div>
