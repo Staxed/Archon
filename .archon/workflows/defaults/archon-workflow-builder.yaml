@@ -100,7 +100,7 @@ nodes:
     depends_on: [scan-codebase]
 
   - id: generate-yaml
-    model: claude-opus-4-6[1m]
+    model: claude-opus-4-7[1m]
     prompt: |
       You are an Archon workflow author. Generate a complete, valid workflow YAML file
       based on the structured intent provided.

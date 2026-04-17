@@ -94,7 +94,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: generate-prd
-    model: claude-opus-4-6[1m]
+    model: claude-opus-4-7[1m]
     depends_on: [detect-input]
     when: "$detect-input.output.input_type != 'ready'"
     command: archon-ralph-generate
@@ -190,7 +190,7 @@ nodes:
   - id: implement
     depends_on: [validate-prd]
     idle_timeout: 600000
-    model: claude-opus-4-6[1m]
+    model: claude-opus-4-7[1m]
     loop:
       prompt: |
         # Ralph Agent — Autonomous Story Implementation

@@ -25,7 +25,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: implement
-    model: claude-opus-4-6[1m]
+    model: claude-opus-4-7[1m]
     command: archon-implement-issue
     depends_on: [investigate]
     context: fresh
