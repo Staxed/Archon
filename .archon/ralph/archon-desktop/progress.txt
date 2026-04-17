@@ -587,3 +587,29 @@
 - `prefer-optional-chain` ESLint rule: `pane && pane.x === c` must be `pane?.x === c`
 
 ---
+
+## 2026-04-17 — US-021: Additive profile launcher with 18-slot cap
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/ProfileLauncher.ts` — New module: computeLaunchPanes, buildSessionName, resolveStartupPresetId, launchProfile; additive placement using findFreeSlot with fallback to 1x1 on large panes
+- `packages/desktop/src/ProfileLauncher.test.ts` — 22 tests covering session naming (4), startup preset resolution (4), pane placement (8), launchProfile integration (3), edge cases (3)
+- `packages/desktop/src/ProfileEditor.tsx` — Added onLaunch prop to ProfileEditorProps and Launch button to ProfileListItem
+- `packages/desktop/src/App.tsx` — Added handleLaunchProfile callback, imported launchProfile, wired to ProfileEditor onLaunch prop
+- `packages/desktop/src/styles.css` — Added .launch-btn style for accent-colored launch button
+- `packages/desktop/package.json` — Added ProfileLauncher.test.ts to localStorage-mock test batch
+
+**Acceptance criteria verified**:
+- [x] `launchProfile(id)` computes next free grid slots and creates panes there, preserving each pane's intended `w`/`h` (computeLaunchPanes + findFreeSlot)
+- [x] If profile panes + existing panes > 18, show warning: `Only N of M panes fit — close a pane and launch again for the rest`, open what fits (warning string + partial placement)
+- [x] For each remote pane, resolve tmux session name as `archon-desktop:{profileSlug}:{paneSlug}` and use attach-if-exists semantics (buildSessionName + toSlug)
+- [x] Startup command invoked per pane based on `startupAction.presetId` (resolveStartupPresetId extracts presetId + modelOverride)
+- [x] Unit tests cover slot allocation with varying pane sizes, over-cap warning, and session naming (22 tests)
+
+**Learnings**:
+- computeLaunchPanes tracks evolving set of panes (existing + newly placed) to prevent overlap across profile panes
+- findFreeSlot reuse from GridEngine keeps slot allocation logic in one place
+- ProfileLauncher.test.ts uses Object.defineProperty localStorage mock — same batch as LaunchProfile + ProfileEditor tests
+- Launch button wired through ProfileEditor → App.tsx avoids coupling the launcher to the editor component
+
+---
