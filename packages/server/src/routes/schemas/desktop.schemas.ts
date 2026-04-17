@@ -100,3 +100,21 @@ export const loopbackForbiddenResponseSchema = z
     error: z.string(),
   })
   .openapi('DesktopLoopbackForbidden');
+
+/** A single preflight dependency check result. */
+const preflightCheckSchema = z
+  .object({
+    name: z.string(),
+    present: z.boolean(),
+    version: z.string().optional(),
+    installCommand: z.string().optional(),
+    warning: z.string().optional(),
+  })
+  .openapi('PreflightCheck');
+
+/** GET /api/desktop/preflight response. */
+export const preflightResponseSchema = z
+  .object({
+    checks: z.array(preflightCheckSchema),
+  })
+  .openapi('PreflightResponse');

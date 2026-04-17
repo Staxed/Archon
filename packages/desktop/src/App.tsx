@@ -1,6 +1,10 @@
 import { useState, useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
+import { PreflightBanner } from './PreflightBanner';
 import './styles.css';
+
+/** Default server URL — overridden once SSH tunnel is established. */
+const DEFAULT_SERVER_URL = 'http://localhost:3090';
 
 function ResizeHandle(): React.JSX.Element {
   return (
@@ -97,6 +101,7 @@ function App(): React.JSX.Element {
 
   return (
     <div className="app-shell">
+      <PreflightBanner serverUrl={DEFAULT_SERVER_URL} />
       <div className="app-main">
         <div className="app-content">
           <Group orientation="horizontal" id="app-layout">

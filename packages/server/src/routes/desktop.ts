@@ -7,6 +7,8 @@ import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import {
   desktopHealthResponseSchema,
   fsTreeQuerySchema,
@@ -19,7 +21,10 @@ import {
   tmuxKillQuerySchema,
   notImplementedResponseSchema,
   loopbackForbiddenResponseSchema,
+  preflightResponseSchema,
 } from './schemas/desktop.schemas';
+
+const execFileAsync = promisify(execFile);
 
 // Read app version once at module load
 let appVersion = 'unknown';
@@ -60,6 +65,97 @@ export function isLoopback(address: string): boolean {
 }
 
 // =========================================================================
+// Preflight dependency checks
+// =========================================================================
+
+interface PreflightCheck {
+  name: string;
+  present: boolean;
+  version?: string;
+  installCommand?: string;
+  warning?: string;
+}
+
+/**
+ * Run a command and return its stdout, or null if it fails.
+ */
+export async function checkCommand(
+  command: string,
+  args: string[]
+): Promise<{ stdout: string } | null> {
+  try {
+    const { stdout } = await execFileAsync(command, args, { timeout: 10_000 });
+    return { stdout: stdout.trim() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse version string from tmux -V output (e.g. "tmux 3.4" → "3.4").
+ */
+function parseTmuxVersion(output: string): string | undefined {
+  const match = /tmux\s+(\d+\.\d+[a-z]?)/.exec(output);
+  return match?.[1];
+}
+
+/**
+ * Check if tmux version is less than 3.0 (needs -A flag support).
+ */
+function isTmuxVersionLow(version: string): boolean {
+  const major = parseInt(version.split('.')[0], 10);
+  return major < 3;
+}
+
+/**
+ * Run all preflight dependency checks on the local (server) host.
+ */
+export async function runPreflightChecks(): Promise<PreflightCheck[]> {
+  const checks: PreflightCheck[] = [];
+
+  // tmux
+  const tmux = await checkCommand('tmux', ['-V']);
+  const tmuxVersion = tmux ? parseTmuxVersion(tmux.stdout) : undefined;
+  const tmuxCheck: PreflightCheck = {
+    name: 'tmux',
+    present: tmux !== null,
+    version: tmuxVersion,
+    installCommand: 'sudo apt install tmux',
+  };
+  if (tmux && tmuxVersion && isTmuxVersionLow(tmuxVersion)) {
+    tmuxCheck.warning = `tmux ${tmuxVersion} is below 3.0 — the -A flag (attach-or-create) requires tmux 3.0+`;
+  }
+  checks.push(tmuxCheck);
+
+  // aichat
+  const aichat = await checkCommand('aichat', ['--version']);
+  checks.push({
+    name: 'aichat',
+    present: aichat !== null,
+    version: aichat?.stdout.replace(/^aichat\s+/i, ''),
+    installCommand: 'cargo install aichat',
+  });
+
+  // typescript-language-server
+  const tsls = await checkCommand('typescript-language-server', ['--version']);
+  checks.push({
+    name: 'typescript-language-server',
+    present: tsls !== null,
+    version: tsls?.stdout,
+    installCommand: 'npm i -g typescript-language-server typescript',
+  });
+
+  // Archon (check via own health endpoint — just use the module-scoped version)
+  checks.push({
+    name: 'archon',
+    present: appVersion !== 'unknown',
+    version: appVersion !== 'unknown' ? appVersion : undefined,
+  });
+
+  return checks;
+}
+
+// =========================================================================
 // Route definitions (module-scope — pure config, no runtime dependencies)
 // =========================================================================
 
@@ -79,6 +175,23 @@ const desktopHealthRoute = createRoute({
     200: {
       content: { 'application/json': { schema: desktopHealthResponseSchema } },
       description: 'Health status',
+    },
+    403: {
+      content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
+      description: 'Forbidden — non-loopback request',
+    },
+  },
+});
+
+const preflightRoute = createRoute({
+  method: 'get',
+  path: '/api/desktop/preflight',
+  tags: ['Desktop'],
+  summary: 'Check remote host dependencies (tmux, aichat, language servers, archon)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: preflightResponseSchema } },
+      description: 'Preflight check results',
     },
     403: {
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
@@ -248,6 +361,12 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
   // GET /api/desktop/health — returns 200 with ok + version
   registerOpenApiRoute(desktopHealthRoute, c => {
     return c.json({ ok: true, version: appVersion });
+  });
+
+  // GET /api/desktop/preflight — check remote host dependencies
+  registerOpenApiRoute(preflightRoute, async c => {
+    const checks = await runPreflightChecks();
+    return c.json({ checks });
   });
 
   // Placeholder 501 handlers
