@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { PreflightBanner } from './PreflightBanner';
 import { GridEngine, useGridEngine } from './GridEngine';
+import { openAdHocTerminal } from './AdHocTerminal';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -89,8 +90,12 @@ function StatusBar({ drawerOpen, onToggleDrawer }: StatusBarProps): React.JSX.El
   );
 }
 
+/** Primary host alias used for ad-hoc terminals when no project context. */
+const PRIMARY_HOST = 'linux-beast';
+
 function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const { state: gridState, dispatch: gridDispatch } = useGridEngine();
 
   const toggleDrawer = useCallback(() => {
@@ -100,6 +105,41 @@ function App(): React.JSX.Element {
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
   }, []);
+
+  // Show toast with auto-dismiss
+  const showToast = useCallback((message: string): void => {
+    setToast(message);
+    setTimeout(() => {
+      setToast(null);
+    }, 3000);
+  }, []);
+
+  // Open an ad-hoc terminal in the first free grid slot
+  const handleOpenAdHoc = useCallback(
+    (host: string, cwd: string): void => {
+      const result = openAdHocTerminal(gridState.panes, { host, cwd });
+      if (result.kind === 'toast') {
+        showToast(result.message);
+      } else {
+        gridDispatch({ type: 'ADD_PANE', pane: result.pane });
+      }
+    },
+    [gridState.panes, gridDispatch, showToast]
+  );
+
+  // Keyboard shortcut: Ctrl+Shift+` opens ad-hoc terminal
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (e.ctrlKey && e.shiftKey && e.key === '`') {
+        e.preventDefault();
+        handleOpenAdHoc(PRIMARY_HOST, '$HOME');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return (): void => {
+      window.removeEventListener('keydown', handler);
+    };
+  }, [handleOpenAdHoc]);
 
   return (
     <div className="app-shell">
@@ -123,6 +163,7 @@ function App(): React.JSX.Element {
         <HostSessionsDrawer open={drawerOpen} onClose={closeDrawer} />
       </div>
       <StatusBar drawerOpen={drawerOpen} onToggleDrawer={toggleDrawer} />
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }
