@@ -266,8 +266,8 @@
       "technicalNotes": "Per §10.6 'Add Folder to Workspace'. Use Tauri's `path` API to resolve app-data dirs. Store list only; contents not cached.",
       "dependsOn": ["US-013"],
       "priority": 14,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 14. Files: packages/desktop/src/AddFolderModal.tsx, packages/desktop/src/AddFolderModal.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-015",

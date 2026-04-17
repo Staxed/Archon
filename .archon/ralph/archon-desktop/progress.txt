@@ -408,3 +408,29 @@
 - Node key pattern `${rootId}:${path}` keeps expanded/children/loading state scoped per-root
 
 ---
+
+## 2026-04-17 — US-014: Add Folder to Workspace modal
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/AddFolderModal.tsx` — New component: AddFolderModal with host picker dropdown, path browser with breadcrumb navigation, workspace persistence helpers
+- `packages/desktop/src/AddFolderModal.test.ts` — 18 tests covering pathBasename, buildBreadcrumbs, loadWorkspace, saveWorkspace, addRootToWorkspace, removeRootFromWorkspace, round-trip
+- `packages/desktop/src/App.tsx` — Integrated AddFolderModal, loads workspace roots from persistence, persists on remove
+- `packages/desktop/src/styles.css` — Added add-folder modal CSS (host picker, breadcrumb, directory browser)
+- `packages/desktop/package.json` — Added AddFolderModal.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] Modal opens from a `+` button at the top of the FileTree (onAddRoot prop wired to handleOpenAddFolder)
+- [x] Host picker: dropdown of saved SSH hosts + `local-windows` / `local-macos` (DEFAULT_HOSTS + savedHosts prop)
+- [x] Path browser: column-based navigation (click dir to descend); shows current path breadcrumb (buildBreadcrumbs + handleDirClick)
+- [x] OK button adds root to workspace JSON (addRootToWorkspace persists to localStorage; Tauri fs API note for real app)
+- [x] Cancel button closes with no change (onCancel callback)
+- [x] Unit test covers workspace persistence round-trip (18 tests including full add/remove/verify cycle)
+
+**Learnings**:
+- Workspace persistence via localStorage works cleanly for development; real Tauri app would use Tauri's fs API with per-OS app-data paths
+- Path breadcrumb is a simple split('/').filter(Boolean) with accumulated path segments
+- Duplicate prevention by host+path pair avoids re-adding the same folder
+- `format:check` and `format` scripts aren't in root package.json — use `bun x prettier` directly from project root
+
+---
