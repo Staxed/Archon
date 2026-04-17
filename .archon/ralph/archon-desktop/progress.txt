@@ -50,6 +50,11 @@
 - **Pattern**: `createBunWebSocket()` from `hono/bun` returns `{ upgradeWebSocket, websocket }`. `upgradeWebSocket` is used in route handlers; `websocket` must be passed to `Bun.serve()`. Both are exported from `ws.ts` and imported where needed.
 - **Note**: WS routes use `app.get('/path', upgradeWebSocket(...))` (not `registerOpenApiRoute`). Buffer→WS send requires `data.buffer.slice()` cast as `ArrayBuffer` to satisfy type constraints.
 
+### Collapsible Panel with Snap
+- **Where**: `packages/desktop/src/App.tsx`, `packages/desktop/src/EditorColumn.tsx`
+- **Pattern**: Use `Panel` with `collapsible`, `collapsedSize="30px"`, `panelRef` for collapse/expand. Use `Group`'s `onLayoutChanged` (fires on pointer release) to snap to nearest grid-column-width. `PanelImperativeHandle` has `collapse()`, `expand()`, `resize()`, `isCollapsed()`, `getSize()`.
+- **Note**: Access layout object with dot notation (`layout.editor`) not bracket notation. Guard against infinite snap loops by checking `Math.abs(snapped - size) > 0.5`.
+
 ### Desktop Test Batching for localStorage Mocks
 - **Where**: `packages/desktop/package.json` test script
 - **Pattern**: Tests that use `Object.defineProperty(globalThis, 'localStorage', ...)` (LaunchProfile.test.ts, ProfileEditor.test.ts) must run in a separate `bun test` invocation from tests that use `globalThis.localStorage = ...` (PreflightBanner.test.ts). The two patterns are incompatible in the same process.
@@ -687,5 +692,33 @@
 - spyOn(desktopModule, 'ensureAichatConfig') cleanly intercepts the async function for endpoint tests
 - spyOn(desktopModule, 'fileExists') allows testing idempotency without touching the filesystem
 - aichat config format uses openai-compatible client type for both OpenRouter and Llama.cpp
+
+---
+
+## 2026-04-17 — US-025: Collapsible editor column with horizontal resize and snap widths
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/EditorColumn.tsx` — New module: snapWidth(), SNAP_WIDTHS constants, loadEditorColumnState/saveEditorColumnState persistence, EditorColumnContent component (rail vs expanded view)
+- `packages/desktop/src/EditorColumn.test.ts` — 14 tests covering snapWidth (6), loadEditorColumnState (3), saveEditorColumnState (2), collapse/expand state (3)
+- `packages/desktop/src/App.tsx` — Integrated EditorColumnContent with Panel collapsible/collapsedSize/panelRef, Group onLayoutChanged for snap, handleToggleEditorCollapse/handleLayoutChanged/handleEditorResize callbacks
+- `packages/desktop/src/AddFolderModal.tsx` — Extended WorkspaceData with optional editorColumn field, updated loadWorkspace to preserve it
+- `packages/desktop/src/styles.css` — Added editor-column, editor-column-header, editor-column-body, editor-rail, editor-rail-icon styles
+- `packages/desktop/package.json` — Added EditorColumn.test.ts to localStorage-mock test batch
+
+**Acceptance criteria verified**:
+- [x] Column renders between sidebar and grid per §10.7 layout (Panel between sidebar and grid in Group)
+- [x] Drag right edge to resize; snaps to 1 × grid-column-width (17%), 2× (33%), or 3× (50%) via onLayoutChanged + snapWidth
+- [x] Collapse toggle reduces column to a thin vertical rail with open-file icons; click rail to expand (collapsible Panel + EditorColumnContent rail view)
+- [x] When no tabs open, collapsed rail is empty (openFiles=[] renders no rail icons)
+- [x] Column state (width, collapsed) persisted to workspace JSON (saveEditorColumnState writes to WorkspaceData.editorColumn)
+- [x] Unit tests cover resize snap behavior + collapse/expand state (14 tests)
+
+**Learnings**:
+- react-resizable-panels v4 has built-in collapsible support: `collapsible`, `collapsedSize`, `panelRef` with `collapse()/expand()/isCollapsed()` methods
+- Group's `onLayoutChanged` fires after pointer release — perfect for snap-after-drag behavior
+- Panel size accessed via `Layout` object keyed by Panel `id` prop — use dot notation (`layout.editor`) not bracket (`layout['editor']`) for ESLint
+- WorkspaceData.editorColumn field needed to be explicitly included in loadWorkspace's return value — the previous implementation only extracted `roots`
+- PanelImperativeHandle, GroupImperativeHandle, Layout, PanelSize are importable types from react-resizable-panels
 
 ---

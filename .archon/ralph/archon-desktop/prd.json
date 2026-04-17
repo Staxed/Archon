@@ -514,8 +514,8 @@
         "US-004"
       ],
       "priority": 25,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 25. Files: packages/desktop/src/EditorColumn.tsx, packages/desktop/src/EditorColumn.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/AddFolderModal.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-026",
