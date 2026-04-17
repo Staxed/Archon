@@ -248,3 +248,28 @@
 - WS routes use plain `app.get()` with `upgradeWebSocket()`, not `registerOpenApiRoute` (WS upgrade isn't OpenAPI-spec'd)
 
 ---
+
+## 2026-04-17 — US-008: TerminalPane component with xterm.js + WebGL + fit
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/TerminalPane.tsx` — New component: TerminalPane with xterm.js + WebGL + FitAddon; TerminalBackend interface; createLocalBackend (Tauri IPC) and createRemoteBackend (WebSocket) factories
+- `packages/desktop/src/TerminalPane.test.ts` — 10 unit tests covering mock backend (write, resize, onData, dispose, bidirectional flow, multiple handlers)
+- `packages/desktop/package.json` — Added @xterm/xterm, @xterm/addon-webgl, @xterm/addon-fit deps; updated test script
+
+**Acceptance criteria verified**:
+- [x] `TerminalPane` React component wraps `xterm.js` Terminal instance
+- [x] Uses `@xterm/addon-webgl` for rendering and `@xterm/addon-fit` for cell sizing
+- [x] Supports both local (Tauri IPC) and remote (WebSocket) PTY backends via a `backend` prop (TerminalBackend interface)
+- [x] Scrollback: 10,000 lines per pane, not configurable in v1
+- [x] Resize events trigger PTY resize on the backend (via ResizeObserver + FitAddon + backend.resize())
+- [x] Component disposes xterm + addons on unmount (cleanup function in useEffect)
+- [x] Unit test with a mocked backend verifies input/output flow (10 tests)
+
+**Learnings**:
+- xterm.js v6 uses `@xterm/xterm` package name (not `xterm`)
+- WebGL addon has an `onContextLoss` event — dispose the addon on context loss to fall back gracefully
+- TerminalBackend abstraction cleanly separates PTY transport from xterm.js rendering
+- Test files in desktop package are excluded from tsconfig (as established in US-005) — tests can be pure backend logic tests without DOM
+
+---

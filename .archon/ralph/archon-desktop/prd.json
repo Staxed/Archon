@@ -155,8 +155,8 @@
       "technicalNotes": "Per §10.4. Add deps: `@xterm/xterm`, `@xterm/addon-webgl`, `@xterm/addon-fit`. Base `xterm.js` config on BridgeSpace reference (evidence §2).",
       "dependsOn": ["US-006", "US-007"],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 8. Files: packages/desktop/src/TerminalPane.tsx, packages/desktop/src/TerminalPane.test.ts, packages/desktop/package.json."
     },
     {
       "id": "US-009",
