@@ -51,6 +51,13 @@ export const fsFileReadResponseSchema = z
   })
   .openapi('FsFileReadResponse');
 
+/** Query params for fs/file PUT endpoint (extends read query with createParents flag). */
+export const fsFileWriteQuerySchema = z.object({
+  host: z.string(),
+  path: z.string(),
+  createParents: z.string().optional(),
+});
+
 /** PUT /api/desktop/fs/file request body. */
 export const fsFileWriteBodySchema = z
   .object({
@@ -58,6 +65,32 @@ export const fsFileWriteBodySchema = z
     expectedMtime: z.string().optional(),
   })
   .openapi('FsFileWriteBody');
+
+/** PUT /api/desktop/fs/file 200 response. */
+export const fsFileWriteResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    mtime: z.string(),
+  })
+  .openapi('FsFileWriteResponse');
+
+/** 409 Conflict response (file changed on disk). */
+export const conflictResponseSchema = z
+  .object({
+    error: z.string(),
+    currentContent: z.string(),
+    currentMtime: z.string(),
+  })
+  .openapi('DesktopConflict');
+
+/** 413 Payload Too Large response. */
+export const tooLargeResponseSchema = z
+  .object({
+    error: z.string(),
+    size: z.number(),
+    maxSize: z.number(),
+  })
+  .openapi('DesktopTooLarge');
 
 /** Query params for tmux/list endpoint. */
 export const tmuxListQuerySchema = z.object({

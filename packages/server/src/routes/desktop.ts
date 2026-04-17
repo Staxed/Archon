@@ -6,7 +6,15 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { readFileSync } from 'fs';
-import { access, mkdir, readdir, stat, writeFile } from 'fs/promises';
+import {
+  access,
+  mkdir,
+  readdir,
+  readFile as fsReadFile,
+  rename,
+  stat,
+  writeFile,
+} from 'fs/promises';
 import { dirname, join, normalize, resolve } from 'path';
 import { homedir } from 'os';
 import { execFile, spawn } from 'child_process';
@@ -19,7 +27,11 @@ import {
   fsTreeResponseSchema,
   fsFileReadQuerySchema,
   fsFileReadResponseSchema,
+  fsFileWriteQuerySchema,
   fsFileWriteBodySchema,
+  fsFileWriteResponseSchema,
+  conflictResponseSchema,
+  tooLargeResponseSchema,
   tmuxListQuerySchema,
   tmuxListResponseSchema,
   tmuxKillQuerySchema,
@@ -219,6 +231,79 @@ export async function listDirectory(dirPath: string): Promise<FsTreeEntry[]> {
   return results.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Maximum file size for read (10 MB). */
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+/**
+ * Read a file and return its content, encoding, mtime, and size.
+ * Throws if the file is larger than MAX_FILE_SIZE.
+ */
+export async function readFileContent(
+  filePath: string
+): Promise<{ content: string; encoding: string; mtime: string; size: number }> {
+  const stats = await stat(filePath);
+
+  if (stats.size > MAX_FILE_SIZE) {
+    const err = new Error('File too large') as Error & { code: string; size: number };
+    err.code = 'TOO_LARGE';
+    err.size = stats.size;
+    throw err;
+  }
+
+  const content = await fsReadFile(filePath, 'utf-8');
+  return {
+    content,
+    encoding: 'utf-8',
+    mtime: stats.mtime.toISOString(),
+    size: stats.size,
+  };
+}
+
+/**
+ * Write a file atomically using tempfile + rename.
+ * If expectedMtime is provided and the file's current mtime differs, returns conflict info.
+ * If createParents is true, creates parent directories as needed.
+ */
+export async function writeFileAtomically(
+  filePath: string,
+  content: string,
+  options: { expectedMtime?: string; createParents?: boolean }
+): Promise<
+  { ok: true; mtime: string } | { conflict: true; currentContent: string; currentMtime: string }
+> {
+  // Check for mtime conflict if expectedMtime is provided
+  if (options.expectedMtime) {
+    try {
+      const currentStats = await stat(filePath);
+      const currentMtime = currentStats.mtime.toISOString();
+      if (currentMtime !== options.expectedMtime) {
+        const currentContent = await fsReadFile(filePath, 'utf-8');
+        return { conflict: true, currentContent, currentMtime };
+      }
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      // File doesn't exist yet — no conflict possible, proceed with write
+      if (error.code !== 'ENOENT') throw err;
+    }
+  }
+
+  const dir = dirname(filePath);
+
+  // Create parent directories if requested
+  if (options.createParents) {
+    await mkdir(dir, { recursive: true });
+  }
+
+  // Write to a tempfile in the same directory, then rename (atomic on same filesystem)
+  const tmpPath = filePath + `.tmp.${Date.now()}`;
+  await writeFile(tmpPath, content, 'utf-8');
+  await rename(tmpPath, filePath);
+
+  // Return the new mtime
+  const newStats = await stat(filePath);
+  return { ok: true, mtime: newStats.mtime.toISOString() };
+}
+
 // =========================================================================
 // aichat config helpers
 // =========================================================================
@@ -404,9 +489,16 @@ const fsFileReadRoute = createRoute({
     },
     403: {
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
-      description: 'Forbidden',
+      description: 'Forbidden — path traversal or loopback violation',
     },
-    501: json501('Not implemented'),
+    404: {
+      content: { 'application/json': { schema: notFoundResponseSchema } },
+      description: 'File not found',
+    },
+    413: {
+      content: { 'application/json': { schema: tooLargeResponseSchema } },
+      description: 'File exceeds 10 MB limit',
+    },
   },
 });
 
@@ -416,23 +508,22 @@ const fsFileWriteRoute = createRoute({
   tags: ['Desktop'],
   summary: 'Write a remote file atomically',
   request: {
-    query: fsFileReadQuerySchema,
+    query: fsFileWriteQuerySchema,
     body: { content: { 'application/json': { schema: fsFileWriteBodySchema } }, required: true },
   },
   responses: {
     200: {
-      content: {
-        'application/json': {
-          schema: z.object({ ok: z.boolean() }).openapi('FsFileWriteResponse'),
-        },
-      },
+      content: { 'application/json': { schema: fsFileWriteResponseSchema } },
       description: 'File written',
     },
     403: {
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
-      description: 'Forbidden',
+      description: 'Forbidden — path traversal or loopback violation',
     },
-    501: json501('Not implemented'),
+    409: {
+      content: { 'application/json': { schema: conflictResponseSchema } },
+      description: 'Conflict — file changed on disk since last read',
+    },
   },
 });
 
@@ -697,10 +788,90 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
     }
   });
 
-  // Placeholder 501 handlers
+  // -----------------------------------------------------------------------
+  // GET /api/desktop/fs/file — read a file
+  // -----------------------------------------------------------------------
+  registerOpenApiRoute(fsFileReadRoute, async c => {
+    const { path: filePath } = c.req.query();
+
+    if (containsTraversal(filePath)) {
+      return c.json({ error: 'Forbidden — path traversal detected' }, 403);
+    }
+
+    const resolvedPath = resolve(normalize(filePath));
+
+    try {
+      const result = await readFileContent(resolvedPath);
+      return c.json(result);
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException & { size?: number };
+      if (error.code === 'TOO_LARGE') {
+        return c.json(
+          { error: 'File exceeds 10 MB limit', size: error.size ?? 0, maxSize: MAX_FILE_SIZE },
+          413
+        );
+      }
+      if (error.code === 'ENOENT') {
+        return c.json({ error: `File not found: ${filePath}` }, 404);
+      }
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        return c.json({ error: `Permission denied: ${filePath}` }, 403);
+      }
+      return c.json({ error: `Failed to read file: ${error.message}` }, 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // PUT /api/desktop/fs/file — write a file atomically
+  // -----------------------------------------------------------------------
+  registerOpenApiRoute(fsFileWriteRoute, async c => {
+    const { path: filePath, createParents } = c.req.query();
+
+    if (containsTraversal(filePath)) {
+      return c.json({ error: 'Forbidden — path traversal detected' }, 403);
+    }
+
+    const resolvedPath = resolve(normalize(filePath));
+    const body = await c.req.json();
+    const { content, expectedMtime } = body as { content: string; expectedMtime?: string };
+
+    try {
+      const result = await writeFileAtomically(resolvedPath, content, {
+        expectedMtime,
+        createParents: createParents === 'true',
+      });
+
+      if ('conflict' in result) {
+        return c.json(
+          {
+            error: 'File changed on disk since last read',
+            currentContent: result.currentContent,
+            currentMtime: result.currentMtime,
+          },
+          409
+        );
+      }
+
+      return c.json({ ok: true, mtime: result.mtime });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code === 'ENOENT') {
+        return c.json(
+          {
+            error: `Parent directory does not exist: ${filePath}. Use createParents=true to create it.`,
+          },
+          404
+        );
+      }
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        return c.json({ error: `Permission denied: ${filePath}` }, 403);
+      }
+      return c.json({ error: `Failed to write file: ${error.message}` }, 500);
+    }
+  });
+
+  // Placeholder 501 handler
   const notImplemented = (c: Context): Response => c.json({ error: 'Not implemented' }, 501);
-  registerOpenApiRoute(fsFileReadRoute, notImplemented);
-  registerOpenApiRoute(fsFileWriteRoute, notImplemented);
   registerOpenApiRoute(lspRoute, notImplemented);
 
   // -----------------------------------------------------------------------

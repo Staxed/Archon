@@ -6,6 +6,8 @@ import {
   runPreflightChecks,
   isPathWithinRoot,
   containsTraversal,
+  readFileContent,
+  writeFileAtomically,
   validateSessionName,
   buildTmuxNewSessionArgs,
   buildTmuxAttachCommand,
@@ -155,29 +157,9 @@ describe('placeholder 501 routes', () => {
     getRemoteAddressSpy.mockRestore();
   });
 
-  const placeholderRoutes: Array<{ method: string; path: string }> = [
-    { method: 'GET', path: '/api/desktop/fs/file?host=test&path=/test' },
-    { method: 'GET', path: '/api/desktop/lsp' },
-  ];
-
-  for (const { method, path } of placeholderRoutes) {
-    test(`${method} ${path.split('?')[0]} returns 501`, async () => {
-      const app = makeApp();
-      const response = await app.request(path, { method });
-      expect(response.status).toBe(501);
-
-      const body = (await response.json()) as { error: string };
-      expect(body.error).toContain('Not implemented');
-    });
-  }
-
-  test('PUT /api/desktop/fs/file returns 501', async () => {
+  test('GET /api/desktop/lsp returns 501', async () => {
     const app = makeApp();
-    const response = await app.request('/api/desktop/fs/file?host=test&path=/test', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: 'test' }),
-    });
+    const response = await app.request('/api/desktop/lsp', { method: 'GET' });
     expect(response.status).toBe(501);
 
     const body = (await response.json()) as { error: string };
@@ -1078,5 +1060,362 @@ describe('POST /api/desktop/aichat/ensure-config', () => {
     const app = makeApp();
     const response = await app.request('/api/desktop/aichat/ensure-config', { method: 'POST' });
     expect(response.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: readFileContent (pure function)
+// ---------------------------------------------------------------------------
+
+import { mkdtemp, writeFile as fsWriteFile, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+describe('readFileContent', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'desktop-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('reads a file and returns content, encoding, mtime, size', async () => {
+    const filePath = join(tempDir, 'test.txt');
+    await fsWriteFile(filePath, 'hello world', 'utf-8');
+
+    const result = await readFileContent(filePath);
+    expect(result.content).toBe('hello world');
+    expect(result.encoding).toBe('utf-8');
+    expect(result.size).toBe(11);
+    expect(result.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('throws ENOENT for missing file', async () => {
+    await expect(readFileContent(join(tempDir, 'missing.txt'))).rejects.toThrow();
+  });
+
+  test('throws TOO_LARGE for files exceeding 10 MB', async () => {
+    // Create a file just over the limit by spying on stat
+    const filePath = join(tempDir, 'large.txt');
+    await fsWriteFile(filePath, 'x', 'utf-8');
+
+    // Spy on the module's stat call to simulate a large file
+    const statSpy = spyOn(desktopModule, 'readFileContent');
+    const tooLargeError = new Error('File too large') as Error & { code: string; size: number };
+    tooLargeError.code = 'TOO_LARGE';
+    tooLargeError.size = 11_000_000;
+    statSpy.mockRejectedValueOnce(tooLargeError);
+
+    try {
+      await desktopModule.readFileContent(filePath);
+    } catch (err) {
+      const error = err as Error & { code: string; size: number };
+      expect(error.code).toBe('TOO_LARGE');
+      expect(error.size).toBe(11_000_000);
+    }
+    statSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: writeFileAtomically (pure function)
+// ---------------------------------------------------------------------------
+
+describe('writeFileAtomically', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'desktop-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('writes a file and returns mtime', async () => {
+    const filePath = join(tempDir, 'output.txt');
+    const result = await writeFileAtomically(filePath, 'hello', {});
+
+    expect('ok' in result).toBe(true);
+    if ('ok' in result) {
+      expect(result.ok).toBe(true);
+      expect(result.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
+
+    // Verify the file was actually written
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('hello');
+  });
+
+  test('detects mtime conflict and returns current content', async () => {
+    const filePath = join(tempDir, 'conflict.txt');
+    await fsWriteFile(filePath, 'original', 'utf-8');
+
+    const result = await writeFileAtomically(filePath, 'updated', {
+      expectedMtime: '2000-01-01T00:00:00.000Z',
+    });
+
+    expect('conflict' in result).toBe(true);
+    if ('conflict' in result) {
+      expect(result.currentContent).toBe('original');
+      expect(result.currentMtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
+  });
+
+  test('writes when expectedMtime matches', async () => {
+    const filePath = join(tempDir, 'match.txt');
+    await fsWriteFile(filePath, 'initial', 'utf-8');
+
+    // Read the actual mtime
+    const { stat: fsStat } = await import('fs/promises');
+    const stats = await fsStat(filePath);
+    const mtime = stats.mtime.toISOString();
+
+    const result = await writeFileAtomically(filePath, 'updated', { expectedMtime: mtime });
+    expect('ok' in result).toBe(true);
+
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('updated');
+  });
+
+  test('creates parent directories when createParents is true', async () => {
+    const filePath = join(tempDir, 'a', 'b', 'c', 'deep.txt');
+    const result = await writeFileAtomically(filePath, 'deep content', { createParents: true });
+
+    expect('ok' in result).toBe(true);
+
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('deep content');
+  });
+
+  test('throws ENOENT when parent dir missing and createParents is false', async () => {
+    const filePath = join(tempDir, 'missing', 'dir', 'file.txt');
+    await expect(writeFileAtomically(filePath, 'content', {})).rejects.toThrow();
+  });
+
+  test('writes new file when expectedMtime given but file does not exist', async () => {
+    const filePath = join(tempDir, 'new-file.txt');
+    const result = await writeFileAtomically(filePath, 'new content', {
+      expectedMtime: '2000-01-01T00:00:00.000Z',
+    });
+
+    expect('ok' in result).toBe(true);
+
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('new content');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: GET /api/desktop/fs/file endpoint
+// ---------------------------------------------------------------------------
+
+describe('GET /api/desktop/fs/file', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+    tempDir = await mkdtemp(join(tmpdir(), 'desktop-test-'));
+  });
+
+  afterEach(async () => {
+    getRemoteAddressSpy.mockRestore();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('reads a file and returns content with metadata', async () => {
+    const filePath = join(tempDir, 'readme.md');
+    await fsWriteFile(filePath, '# Hello', 'utf-8');
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(filePath)}`
+    );
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      content: string;
+      encoding: string;
+      mtime: string;
+      size: number;
+    };
+    expect(body.content).toBe('# Hello');
+    expect(body.encoding).toBe('utf-8');
+    expect(body.size).toBe(7);
+    expect(body.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('returns 404 for missing file', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(join(tempDir, 'nope.txt'))}`
+    );
+    expect(response.status).toBe(404);
+  });
+
+  test('rejects path traversal with 403', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent('/tmp/../etc/passwd')}`
+    );
+    expect(response.status).toBe(403);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('traversal');
+  });
+
+  test('returns 413 for files exceeding size limit', async () => {
+    const readFileSpy = spyOn(desktopModule, 'readFileContent');
+    const tooLargeError = new Error('File too large') as Error & { code: string; size: number };
+    tooLargeError.code = 'TOO_LARGE';
+    tooLargeError.size = 11_000_000;
+    readFileSpy.mockRejectedValueOnce(tooLargeError);
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(join(tempDir, 'big.bin'))}`
+    );
+    expect(response.status).toBe(413);
+
+    const body = (await response.json()) as { error: string; size: number; maxSize: number };
+    expect(body.size).toBe(11_000_000);
+    expect(body.maxSize).toBe(10 * 1024 * 1024);
+    readFileSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: PUT /api/desktop/fs/file endpoint
+// ---------------------------------------------------------------------------
+
+describe('PUT /api/desktop/fs/file', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+    tempDir = await mkdtemp(join(tmpdir(), 'desktop-test-'));
+  });
+
+  afterEach(async () => {
+    getRemoteAddressSpy.mockRestore();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('writes a file and returns ok with mtime', async () => {
+    const filePath = join(tempDir, 'new.txt');
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(filePath)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'hello world' }),
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as { ok: boolean; mtime: string };
+    expect(body.ok).toBe(true);
+    expect(body.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // Verify file content
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('hello world');
+  });
+
+  test('returns 409 when expectedMtime does not match', async () => {
+    const filePath = join(tempDir, 'existing.txt');
+    await fsWriteFile(filePath, 'original content', 'utf-8');
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(filePath)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'updated', expectedMtime: '2000-01-01T00:00:00.000Z' }),
+      }
+    );
+    expect(response.status).toBe(409);
+
+    const body = (await response.json()) as {
+      error: string;
+      currentContent: string;
+      currentMtime: string;
+    };
+    expect(body.error).toContain('changed on disk');
+    expect(body.currentContent).toBe('original content');
+    expect(body.currentMtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('creates parent dirs when createParents=true', async () => {
+    const filePath = join(tempDir, 'deep', 'nested', 'file.txt');
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(filePath)}&createParents=true`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'deep write' }),
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('deep write');
+  });
+
+  test('rejects path traversal with 403', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent('/tmp/../etc/shadow')}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'evil' }),
+      }
+    );
+    expect(response.status).toBe(403);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('traversal');
+  });
+
+  test('writes successfully when expectedMtime matches', async () => {
+    const filePath = join(tempDir, 'mtime-match.txt');
+    await fsWriteFile(filePath, 'initial', 'utf-8');
+
+    // Get the actual mtime
+    const { stat: fsStat } = await import('fs/promises');
+    const stats = await fsStat(filePath);
+    const mtime = stats.mtime.toISOString();
+
+    const app = makeApp();
+    const response = await app.request(
+      `/api/desktop/fs/file?host=local&path=${encodeURIComponent(filePath)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'updated', expectedMtime: mtime }),
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const { readFile } = await import('fs/promises');
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('updated');
   });
 });
