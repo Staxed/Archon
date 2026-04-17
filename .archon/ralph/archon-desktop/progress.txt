@@ -781,3 +781,30 @@
 - The 501 placeholder list shrinks to just LSP endpoint now
 
 ---
+
+## 2026-04-17 — US-028: Save flow with Ctrl+S, unsaved guard, and conflict detection
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/SaveFlow.ts` — New module: saveFile() API call with conflict detection, isSaveShortcut(), getDirtyFileNames(), hasDirtyTabs() helpers
+- `packages/desktop/src/SaveFlow.test.ts` — 17 tests: saveFile success/conflict/error/URL encoding, isSaveShortcut Ctrl+S/Cmd+S, getDirtyFileNames, hasDirtyTabs
+- `packages/desktop/src/EditorColumn.tsx` — Added ConflictBanner, WindowCloseDirtyModal, getEditorContent/replaceEditorContent for CM6 document access, editorViewMap for tracking live editors, wired onSaveTab/conflict/window-close props
+- `packages/desktop/src/App.tsx` — Added handleSaveTab with saveFile() call, Ctrl+S/Cmd+S keyboard shortcut via isSaveShortcut(), conflict state + reload/overwrite handlers, beforeunload guard for dirty tabs, fileMtimes tracking from server responses
+- `packages/desktop/src/styles.css` — Added conflict banner CSS (amber warning), dirty file list styles
+- `packages/desktop/package.json` — Added SaveFlow.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] Ctrl+S (Cmd+S on macOS) triggers save for focused tab (isSaveShortcut + handleSaveTab in useEffect keydown handler)
+- [x] Remote file save calls `PUT /api/desktop/fs/file` with `expectedMtime` (saveFile() sends body.expectedMtime from fileMtimes ref)
+- [x] 409 conflict shows a banner with `Reload` / `Overwrite anyway` buttons (ConflictBanner + handleConflictReload/handleConflictOverwrite)
+- [x] Closing window with any dirty tab shows confirm modal listing dirty files (beforeunload guard + WindowCloseDirtyModal)
+- [x] Tab close with dirty state shows per-file Save/Discard/Cancel (CloseDirtyModal wired to onSaveTab)
+- [x] Unit tests cover save, conflict path, and close-with-dirty (17 tests)
+
+**Learnings**:
+- EditorView instances need a module-level Map (editorViewMap) for parent components to read current content — React refs alone don't expose child instance methods cleanly
+- replaceEditorContent() uses view.dispatch({ changes: { from: 0, to: doc.length, insert: newContent } }) to atomically replace the document
+- showToast must be declared before handlers that reference it — React hooks ordering matters for variable hoisting in function components
+- FileMtimeMap tracked via useRef (not state) to avoid re-renders on every mtime update — only the save flow reads it
+
+---
