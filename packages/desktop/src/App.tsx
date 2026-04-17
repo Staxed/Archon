@@ -8,6 +8,7 @@ import { FileTree } from './FileTree';
 import type { TreeRoot } from './FileTree';
 import { AddFolderModal, loadWorkspace, removeRootFromWorkspace } from './AddFolderModal';
 import { HostSessionsPanel } from './HostSessionsPanel';
+import { ProfileEditor } from './ProfileEditor';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -45,15 +46,23 @@ const SAVED_HOSTS = ['linux-beast'];
 interface StatusBarProps {
   drawerOpen: boolean;
   onToggleDrawer: () => void;
+  onOpenProfiles: () => void;
 }
 
-function StatusBar({ drawerOpen, onToggleDrawer }: StatusBarProps): React.JSX.Element {
+function StatusBar({
+  drawerOpen,
+  onToggleDrawer,
+  onOpenProfiles,
+}: StatusBarProps): React.JSX.Element {
   return (
     <div className="status-bar">
       <div className="status-bar-left">
         <span>Archon Desktop</span>
       </div>
       <div className="status-bar-right">
+        <button className="status-bar-btn" onClick={onOpenProfiles} title="Launch Profiles">
+          Profiles
+        </button>
         <button
           className="status-bar-btn"
           onClick={onToggleDrawer}
@@ -75,6 +84,7 @@ function App(): React.JSX.Element {
   const { state: gridState, dispatch: gridDispatch } = useGridEngine();
   const [workspaceRoots, setWorkspaceRoots] = useState<TreeRoot[]>(() => loadWorkspace().roots);
   const [addFolderOpen, setAddFolderOpen] = useState(false);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -180,13 +190,26 @@ function App(): React.JSX.Element {
           onToast={showToast}
         />
       </div>
-      <StatusBar drawerOpen={drawerOpen} onToggleDrawer={toggleDrawer} />
+      <StatusBar
+        drawerOpen={drawerOpen}
+        onToggleDrawer={toggleDrawer}
+        onOpenProfiles={(): void => {
+          setProfileEditorOpen(true);
+        }}
+      />
       {addFolderOpen && (
         <AddFolderModal
           serverUrl={DEFAULT_SERVER_URL}
           savedHosts={[{ alias: 'linux-beast', label: 'Linux Beast' }]}
           onAdd={handleAddRoot}
           onCancel={handleCloseAddFolder}
+        />
+      )}
+      {profileEditorOpen && (
+        <ProfileEditor
+          onClose={(): void => {
+            setProfileEditorOpen(false);
+          }}
         />
       )}
       {toast && <div className="toast">{toast}</div>}
