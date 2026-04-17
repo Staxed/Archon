@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "bun test src/PreflightBanner.test.ts src/TerminalPane.test.ts src/Osc133Addon.test.ts src/GridEngine.test.ts src/AdHocTerminal.test.ts",
+    "test": "bun test src/PreflightBanner.test.ts src/TerminalPane.test.ts src/Osc133Addon.test.ts src/GridEngine.test.ts src/AdHocTerminal.test.ts src/FileTree.test.ts",
     "type-check": "tsc --noEmit",
     "tauri": "tauri"
   },

@@ -3,6 +3,8 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import { PreflightBanner } from './PreflightBanner';
 import { GridEngine, useGridEngine } from './GridEngine';
 import { openAdHocTerminal } from './AdHocTerminal';
+import { FileTree } from './FileTree';
+import type { TreeRoot } from './FileTree';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -13,15 +15,6 @@ function ResizeHandle(): React.JSX.Element {
     <Separator className="resize-handle" style={{ width: 4 }}>
       <div className="resize-handle-bar" />
     </Separator>
-  );
-}
-
-function Sidebar(): React.JSX.Element {
-  return (
-    <div className="region">
-      <span className="region-label">File Tree</span>
-      <span className="region-sublabel">Sidebar</span>
-    </div>
   );
 }
 
@@ -97,6 +90,7 @@ function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const { state: gridState, dispatch: gridDispatch } = useGridEngine();
+  const [workspaceRoots, setWorkspaceRoots] = useState<TreeRoot[]>([]);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -127,6 +121,10 @@ function App(): React.JSX.Element {
     [gridState.panes, gridDispatch, showToast]
   );
 
+  const handleRemoveRoot = useCallback((rootId: string): void => {
+    setWorkspaceRoots(prev => prev.filter(r => r.id !== rootId));
+  }, []);
+
   // Keyboard shortcut: Ctrl+Shift+` opens ad-hoc terminal
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
@@ -148,7 +146,11 @@ function App(): React.JSX.Element {
         <div className="app-content">
           <Group orientation="horizontal" id="app-layout">
             <Panel defaultSize={15} minSize={10} maxSize={30} id="sidebar">
-              <Sidebar />
+              <FileTree
+                serverUrl={DEFAULT_SERVER_URL}
+                roots={workspaceRoots}
+                onRemoveRoot={handleRemoveRoot}
+              />
             </Panel>
             <ResizeHandle />
             <Panel defaultSize={30} minSize={10} maxSize={60} id="editor">
