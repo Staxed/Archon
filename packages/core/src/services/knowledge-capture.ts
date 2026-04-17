@@ -4,14 +4,14 @@
  */
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getProjectKnowledgePath, parseOwnerRepo } from '@archon/paths';
+import { getProjectKnowledgePath, getGlobalKnowledgePath, parseOwnerRepo } from '@archon/paths';
 import { createLogger } from '@archon/paths';
 import { getAssistantClient } from '../clients/factory';
 import * as messageDb from '../db/messages';
 import * as codebaseDb from '../db/codebases';
 import { loadConfig } from '../config/config-loader';
-import { initKnowledgeDir } from './knowledge-init';
-import { scheduleFlush } from './knowledge-scheduler';
+import { initKnowledgeDir, initGlobalKnowledgeDir } from './knowledge-init';
+import { scheduleFlush, scheduleGlobalFlush } from './knowledge-scheduler';
 import type { MergedConfig } from '../config/config-types';
 import type { MessageRow } from '../db/messages';
 
@@ -220,6 +220,58 @@ async function appendToDailyLog(
   return logFile;
 }
 
+/** Scope addendum appended to extraction prompts when scope is 'both' */
+const SCOPE_CLASSIFICATION_ADDENDUM = `
+
+## Scope Classification
+
+Classify each extracted item as PROJECT-scoped or GLOBAL-scoped:
+
+- **PROJECT**: Knowledge specific to this repository — file paths, internal APIs, project-specific conventions, repo-specific decisions.
+- **GLOBAL**: Knowledge applicable across any codebase — general engineering patterns, language idioms, tool usage tips, debugging techniques, universal best practices.
+
+When in doubt, classify as PROJECT (conservative default).
+
+Format your response with two clearly separated sections:
+
+## PROJECT
+
+{project-scoped knowledge items here}
+
+## GLOBAL
+
+{global-scoped knowledge items here}
+
+If all items belong to one scope, include only that section.
+`;
+
+/**
+ * Parse scoped extraction output into project and global sections.
+ * Handles: both blocks present, only one block, and malformed (fallback to project).
+ */
+export function parseScopedOutput(
+  content: string,
+  scope: 'project' | 'global' | 'both'
+): { project: string; global: string } {
+  // Single-scope modes: all content goes to the requested scope
+  if (scope === 'project') return { project: content, global: '' };
+  if (scope === 'global') return { project: '', global: content };
+
+  // 'both' scope: parse ## PROJECT and ## GLOBAL blocks
+  const projectMatch = /## PROJECT\s*\n([\s\S]*?)(?=## GLOBAL|$)/i.exec(content);
+  const globalMatch = /## GLOBAL\s*\n([\s\S]*?)$/i.exec(content);
+
+  const projectContent = projectMatch?.[1]?.trim() ?? '';
+  const globalContent = globalMatch?.[1]?.trim() ?? '';
+
+  // If neither block was found, fall back to project (conservative default)
+  if (!projectContent && !globalContent) {
+    return { project: content.trim(), global: '' };
+  }
+
+  return { project: projectContent, global: globalContent };
+}
+
 /**
  * Extract knowledge using a custom prompt and context.
  * Used by knowledge-extract workflow nodes for targeted extraction.
@@ -228,13 +280,15 @@ async function appendToDailyLog(
  * @param context - Upstream context (e.g. workflow node outputs)
  * @param cwd - Working directory (used to resolve owner/repo via git remote)
  * @param metadata - Workflow run and node identifiers for log entries
+ * @param scope - Where to route extracted knowledge: 'project', 'global', or 'both' (default)
  * @returns Extracted knowledge content
  */
 export async function extractKnowledgeFromContext(
   prompt: string,
   context: string,
   cwd: string,
-  metadata: { workflowRunId: string; nodeId: string }
+  metadata: { workflowRunId: string; nodeId: string },
+  scope: 'project' | 'global' | 'both' = 'both'
 ): Promise<string> {
   const log = getLog();
 
@@ -258,10 +312,11 @@ export async function extractKnowledgeFromContext(
     return '';
   }
 
-  log.info({ owner, repo, nodeId: metadata.nodeId }, 'knowledge.extract_started');
+  log.info({ owner, repo, nodeId: metadata.nodeId, scope }, 'knowledge.extract_started');
 
-  // Call AI with the custom prompt + context
-  const fullPrompt = `${prompt}\n\n---\n\nCONTEXT:\n${context}`;
+  // Build prompt — append scope classification instructions for 'both' scope
+  const scopeAddendum = scope === 'both' ? SCOPE_CLASSIFICATION_ADDENDUM : '';
+  const fullPrompt = `${prompt}${scopeAddendum}\n\n---\n\nCONTEXT:\n${context}`;
   const client = getAssistantClient(mergedConfig.knowledge.captureProvider ?? 'claude');
   const chunks: string[] = [];
   const generator = client.sendQuery(fullPrompt, cwd, undefined, {
@@ -281,28 +336,71 @@ export async function extractKnowledgeFromContext(
     return '';
   }
 
-  // Append to daily log with workflow metadata
-  await initKnowledgeDir(owner, repo);
-  const knowledgePath = getProjectKnowledgePath(owner, repo);
-  const logsDir = join(knowledgePath, 'logs');
+  // Parse scoped output
+  const scoped = parseScopedOutput(extracted, scope);
+
+  // Write project-scoped entries to project daily log
+  if (scoped.project) {
+    await initKnowledgeDir(owner, repo);
+    const knowledgePath = getProjectKnowledgePath(owner, repo);
+    const logsDir = join(knowledgePath, 'logs');
+    await mkdir(logsDir, { recursive: true });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const logFile = join(logsDir, `${today}.md`);
+    const timestamp = new Date().toISOString();
+    const entry = `\n---\n\n### Knowledge Extract: ${timestamp}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}\n\n${scoped.project}\n`;
+
+    await appendFile(logFile, entry);
+
+    log.info(
+      { owner, repo, nodeId: metadata.nodeId, logFile, contentLength: scoped.project.length },
+      'knowledge.extract_project_completed'
+    );
+
+    // Schedule debounced flush after project extraction
+    await scheduleFlush(owner, repo);
+  }
+
+  // Write global-scoped entries to global daily log
+  if (scoped.global) {
+    await initGlobalKnowledgeDir();
+    await appendToGlobalDailyLog(owner, repo, metadata, scoped.global);
+
+    log.info(
+      { nodeId: metadata.nodeId, contentLength: scoped.global.length },
+      'knowledge.extract_global_completed'
+    );
+
+    // Schedule debounced global flush
+    await scheduleGlobalFlush();
+  }
+
+  return extracted;
+}
+
+/**
+ * Append extracted global knowledge to the global daily log.
+ * Includes source attribution (owner/repo) for traceability.
+ */
+async function appendToGlobalDailyLog(
+  owner: string,
+  repo: string,
+  metadata: { workflowRunId: string; nodeId: string },
+  content: string
+): Promise<string> {
+  const globalKnowledgePath = getGlobalKnowledgePath();
+  const logsDir = join(globalKnowledgePath, 'logs');
   await mkdir(logsDir, { recursive: true });
 
   const today = new Date().toISOString().slice(0, 10);
   const logFile = join(logsDir, `${today}.md`);
   const timestamp = new Date().toISOString();
-  const entry = `\n---\n\n### Knowledge Extract: ${timestamp}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}\n\n${extracted}\n`;
+  const entry = `\n---\n\n### Knowledge Extract: ${timestamp}\n**Source**: ${owner}/${repo}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}\n\n${content}\n`;
 
   await appendFile(logFile, entry);
 
-  log.info(
-    { owner, repo, nodeId: metadata.nodeId, logFile, contentLength: extracted.length },
-    'knowledge.extract_completed'
-  );
-
-  // Schedule debounced flush after extraction
-  await scheduleFlush(owner, repo);
-
-  return extracted;
+  return logFile;
 }
 
 /**

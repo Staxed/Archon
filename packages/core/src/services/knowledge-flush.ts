@@ -158,6 +158,47 @@ You MUST respond with a JSON object (no markdown fences, no explanation, just JS
 
 `;
 
+/** Global-tier synthesis prompt — codebase-agnostic with source attribution and contradiction detection */
+const GLOBAL_SYNTHESIS_PROMPT = `You are a knowledge base compiler for a GLOBAL knowledge base that spans multiple projects.
+Articles must be codebase-agnostic — they should describe general engineering knowledge, patterns, and lessons that apply universally. Do NOT reference specific file paths, repository structures, or project-internal APIs.
+
+## Output Format
+
+You MUST respond with a JSON object (no markdown fences, no explanation, just JSON) with this exact structure:
+
+{
+  "articles": [
+    {
+      "domain": "architecture|decisions|patterns|lessons|connections|<new-domain>",
+      "concept": "kebab-case-concept-name",
+      "content": "Full markdown article content with [[wikilink]] backlinks to related concepts"
+    }
+  ],
+  "domainSummaries": {
+    "architecture": "One-line summary of architecture knowledge",
+    "decisions": "One-line summary of decisions"
+  },
+  "indexSummary": "Brief overview of all domains for the top-level index"
+}
+
+## Rules
+- Each article should be a focused concept (e.g., "retry-backoff-patterns", "structured-logging-conventions")
+- Articles MUST be codebase-agnostic — generalize project-specific knowledge into universal principles
+- Use [[wikilinks]] to cross-reference related articles (e.g., [[patterns/retry-backoff-patterns]])
+- Domain names are lowercase kebab-case
+- Concept filenames are lowercase kebab-case
+- Merge new knowledge with existing articles when the concept overlaps (prefer updating over creating duplicates)
+- You may create new domains beyond the starting set if the knowledge doesn't fit existing domains
+- Every article should start with a level-1 heading matching the concept name in title case
+- Include a "Related" section at the end of each article with [[wikilinks]]
+- **Sources**: End each article with a \`## Sources\` section listing the source projects that contributed the knowledge (e.g., "- Observed in owner/repo during workflow run xyz")
+- **Contradiction detection**: If new log entries contradict existing article content, add a \`## Contradictions\` section with a \`⚠ contradictory\` marker explaining both claims and which sources support each side. Do NOT silently overwrite — surface the conflict.
+- If no meaningful articles can be produced, return {"articles":[],"domainSummaries":{},"indexSummary":""}
+
+---
+
+`;
+
 /** Options for the shared flush core logic */
 interface FlushCoreOptions {
   /** Label for logging (e.g., "acme/widget" or "global") */
@@ -170,6 +211,8 @@ interface FlushCoreOptions {
   git?: { owner: string; repo: string };
   /** Init function to call before flushing (ensures KB directory exists) */
   init: () => Promise<void>;
+  /** Override synthesis prompt (defaults to project-tier SYNTHESIS_PROMPT) */
+  synthesisPrompt?: string;
 }
 
 /**
@@ -177,7 +220,14 @@ interface FlushCoreOptions {
  */
 async function flushKnowledgeCore(options: FlushCoreOptions): Promise<KnowledgeFlushReport> {
   const log = getLog();
-  const { label, knowledgePath, config: mergedConfig, git: gitInfo, init } = options;
+  const {
+    label,
+    knowledgePath,
+    config: mergedConfig,
+    git: gitInfo,
+    init,
+    synthesisPrompt,
+  } = options;
 
   if (!mergedConfig.knowledge.enabled) {
     log.debug({ label }, 'knowledge.flush_skipped_disabled');
@@ -243,7 +293,8 @@ async function flushKnowledgeCore(options: FlushCoreOptions): Promise<KnowledgeF
       logContents,
       existingArticles,
       mergedConfig.knowledge.compileModel,
-      mergedConfig.knowledge.compileProvider ?? 'claude'
+      mergedConfig.knowledge.compileProvider ?? 'claude',
+      synthesisPrompt
     );
 
     // Write to temp dir first, then atomic rename to final paths
@@ -332,6 +383,7 @@ export async function flushGlobalKnowledge(config?: MergedConfig): Promise<Knowl
     knowledgePath: getGlobalKnowledgePath(),
     config: mergedConfig,
     init: () => initGlobalKnowledgeDir(),
+    synthesisPrompt: GLOBAL_SYNTHESIS_PROMPT,
   });
 }
 
@@ -457,11 +509,12 @@ async function synthesizeLogs(
   logContents: string,
   existingArticles: string,
   compileModel: string,
-  compileProvider: string
+  compileProvider: string,
+  promptOverride?: string
 ): Promise<FlushSynthesis> {
   const client = getAssistantClient(compileProvider);
 
-  const contextParts = [SYNTHESIS_PROMPT];
+  const contextParts = [promptOverride ?? SYNTHESIS_PROMPT];
   if (existingArticles) {
     contextParts.push(existingArticles);
   }

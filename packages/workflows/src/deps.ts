@@ -313,7 +313,8 @@ export type KnowledgeExtractFn = (
   prompt: string,
   context: string,
   cwd: string,
-  metadata: { workflowRunId: string; nodeId: string }
+  metadata: { workflowRunId: string; nodeId: string },
+  scope?: 'project' | 'global' | 'both'
 ) => Promise<string>;
 
 /**

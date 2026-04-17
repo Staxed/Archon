@@ -154,7 +154,8 @@ export function createWorkflowDeps(): WorkflowDeps {
     store: createWorkflowStore(),
     getAssistantClient,
     loadConfig: loadMergedConfig,
-    extractKnowledge: extractKnowledgeFromContext,
+    extractKnowledge: (prompt, context, cwd, metadata, scope) =>
+      extractKnowledgeFromContext(prompt, context, cwd, metadata, scope),
     loadKnowledgeContext,
   };
 }

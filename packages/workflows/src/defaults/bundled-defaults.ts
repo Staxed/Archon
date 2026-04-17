@@ -35,7 +35,7 @@ import archonValidatePrE2eMainCmd from '../../../../.archon/commands/defaults/ar
 import archonValidatePrReportCmd from '../../../../.archon/commands/defaults/archon-validate-pr-report.md' with { type: 'text' };
 
 // =============================================================================
-// Default Workflows (13 total)
+// Default Workflows (14 total)
 // =============================================================================
 
 import archonAssistWf from '../../../../.archon/workflows/defaults/archon-assist.yaml' with { type: 'text' };
@@ -51,6 +51,7 @@ import archonInteractivePrdWf from '../../../../.archon/workflows/defaults/archo
 import archonPivLoopWf from '../../../../.archon/workflows/defaults/archon-piv-loop.yaml' with { type: 'text' };
 import archonAdversarialDevWf from '../../../../.archon/workflows/defaults/archon-adversarial-dev.yaml' with { type: 'text' };
 import archonWorkflowBuilderWf from '../../../../.archon/workflows/defaults/archon-workflow-builder.yaml' with { type: 'text' };
+import archonKnowledgeCorrectWf from '../../../../.archon/workflows/defaults/archon-knowledge-correct.yaml' with { type: 'text' };
 
 // =============================================================================
 // Exports
@@ -100,6 +101,7 @@ export const BUNDLED_WORKFLOWS: Record<string, string> = {
   'archon-piv-loop': archonPivLoopWf,
   'archon-adversarial-dev': archonAdversarialDevWf,
   'archon-workflow-builder': archonWorkflowBuilderWf,
+  'archon-knowledge-correct': archonKnowledgeCorrectWf,
 };
 
 /**

@@ -1,0 +1,132 @@
+name: archon-knowledge-correct
+description: |
+  Use when: User wants to correct, update, or delete a knowledge base article.
+  Triggers: "correct knowledge", "fix kb article", "update knowledge", "knowledge correct",
+            "delete knowledge article", "kb correction", "fix article".
+  NOT for: Browsing or reading knowledge (use the $KNOWLEDGE variable in prompts).
+
+  AI-mediated knowledge base correction workflow with approval gate:
+  1. Analyze the correction request and find affected articles
+  2. Propose edits (update, merge, or delete) with diff preview
+  3. Wait for user approval
+  4. Apply approved changes to the knowledge base
+
+provider: claude
+interactive: true
+
+nodes:
+  # ═══════════════════════════════════════════════════════════════
+  # PHASE 1: ANALYZE — Find and assess affected articles
+  # ══════���═════════════════════════════════���══════════════════════
+
+  - id: analyze
+    prompt: |
+      You are a knowledge base editor. The user wants to make a correction to the knowledge base.
+
+      **Correction request**: $ARGUMENTS
+
+      $KNOWLEDGE
+
+      Your task:
+      1. Search the knowledge base directories for articles that match the correction request.
+         - Project KB: Look under the project's `knowledge/domains/` directory
+         - Global KB: Look under `~/.archon/knowledge/domains/`
+      2. Read the affected article(s) fully.
+      3. Determine the type of correction needed:
+         - **UPDATE**: Modify content within an existing article
+         - **MERGE**: Combine two overlapping articles into one
+         - **DELETE**: Remove an article that is incorrect or obsolete
+         - **RECLASSIFY**: Move an article to a different domain
+
+      Present your findings:
+
+      **Affected Articles:**
+      - `{domain}/{concept}.md` — {brief description of current content}
+
+      **Proposed Changes:**
+      For each article, show a clear before/after or describe the change:
+      - What will change and why
+      - If deleting: why the article should be removed
+      - If merging: which articles combine and what the merged result looks like
+
+      **Impact Assessment:**
+      - Are there [[wikilinks]] from other articles pointing to affected articles?
+      - Will any cross-references break?
+
+      Keep the proposal concise and actionable.
+
+  # ═══════════════════════════════════════════════════════════���═══
+  # GATE: User approves the proposed changes
+  # ���══════════��═══════════════════════════════════════════════════
+
+  - id: approval-gate
+    approval:
+      message: "Review the proposed knowledge base changes above. Approve to apply them, or provide feedback to adjust the proposal."
+    depends_on: [analyze]
+
+  # ══��═════��══════════════════════════════════════════════════════
+  # PHASE 2: APPLY — Execute approved changes
+  # ��══════���═══════════════════════════════════════════════════════
+
+  - id: apply
+    prompt: |
+      You are a knowledge base editor applying approved corrections.
+
+      **Original request**: $ARGUMENTS
+      **Approved changes**: $approval-gate.output
+
+      Apply the approved changes now:
+
+      1. **Read** each affected article file before modifying it
+      2. **Edit** articles as approved — use precise edits, not full rewrites
+      3. **Update wikilinks** in other articles if any cross-references changed
+      4. **Update domain _index.md** files if articles were added, removed, or moved
+
+      For deletions:
+      - Delete the article file
+      - Remove its entry from the domain's _index.md
+      - Fix broken [[wikilinks]] in other articles that referenced it
+
+      For merges:
+      - Write the merged article to the target location
+      - Delete the source article
+      - Update all [[wikilinks]] that pointed to the source
+
+      After applying all changes, output a summary:
+
+      **Changes Applied:**
+      - {action}: `{domain}/{concept}.md` — {what changed}
+
+      **Wikilinks Updated:** {count} cross-references fixed (or "None needed")
+    depends_on: [approval-gate]
+
+  # ════════════════════════════════════════��══════════════════════
+  # PHASE 3: VERIFY — Confirm changes are consistent
+  # ════════��════════���═══════════════════════════════════���═════════
+
+  - id: verify
+    bash: |
+      echo "=== Knowledge Base Verification ==="
+      # Check for broken wikilinks in all domain articles
+      broken=0
+      for f in $(find knowledge/domains/ ~/.archon/knowledge/domains/ -name "*.md" 2>/dev/null); do
+        # Extract wikilinks and check if targets exist
+        links=$(grep -oP '\[\[([^\]|]+)' "$f" 2>/dev/null | sed 's/\[\[//' || true)
+        for link in $links; do
+          # Skip _index links
+          echo "$link" | grep -q "_index" && continue
+          # Normalize: strip domains/ prefix
+          normalized=$(echo "$link" | sed 's|^domains/||')
+          # Check if article exists in any KB
+          if ! find knowledge/domains/ ~/.archon/knowledge/domains/ -path "*/${normalized}.md" -print -quit 2>/dev/null | grep -q .; then
+            echo "BROKEN: $f -> [[${link}]]"
+            broken=$((broken + 1))
+          fi
+        done
+      done
+      if [ "$broken" -eq 0 ]; then
+        echo "All wikilinks valid."
+      else
+        echo "WARNING: ${broken} broken wikilink(s) found."
+      fi
+    depends_on: [apply]

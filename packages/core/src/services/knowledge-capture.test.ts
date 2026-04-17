@@ -74,6 +74,13 @@ mock.module('../config/config-loader', () => ({
 const mockInitKnowledgeDir = mock(async () => undefined);
 mock.module('./knowledge-init', () => ({
   initKnowledgeDir: mockInitKnowledgeDir,
+  initGlobalKnowledgeDir: mock(async () => undefined),
+}));
+
+// Mock knowledge-scheduler (imported by capture module for global flush)
+mock.module('./knowledge-scheduler', () => ({
+  scheduleFlush: mock(async () => undefined),
+  scheduleGlobalFlush: mock(async () => undefined),
 }));
 
 // Mock AI client
