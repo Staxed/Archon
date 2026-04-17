@@ -4,6 +4,8 @@ import * as desktopModule from './desktop';
 import {
   setupDesktopRoutes,
   runPreflightChecks,
+  isPathWithinRoot,
+  containsTraversal,
   validateSessionName,
   buildTmuxNewSessionArgs,
   buildTmuxAttachCommand,
@@ -146,7 +148,6 @@ describe('placeholder 501 routes', () => {
   });
 
   const placeholderRoutes: Array<{ method: string; path: string }> = [
-    { method: 'GET', path: '/api/desktop/fs/tree?host=test&root=/' },
     { method: 'GET', path: '/api/desktop/fs/file?host=test&path=/test' },
     { method: 'GET', path: '/api/desktop/tmux/list?host=test' },
     { method: 'GET', path: '/api/desktop/lsp' },
@@ -185,6 +186,140 @@ describe('placeholder 501 routes', () => {
 
     const body = (await response.json()) as { error: string };
     expect(body.error).toContain('Not implemented');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Path traversal helpers (pure functions)
+// ---------------------------------------------------------------------------
+
+describe('isPathWithinRoot', () => {
+  test('accepts path equal to root', () => {
+    expect(isPathWithinRoot('/home/user/project', '/home/user/project')).toBe(true);
+  });
+
+  test('accepts path inside root', () => {
+    expect(isPathWithinRoot('/home/user/project/src', '/home/user/project')).toBe(true);
+  });
+
+  test('rejects path outside root via ..', () => {
+    expect(isPathWithinRoot('/home/user/project/../other', '/home/user/project')).toBe(false);
+  });
+
+  test('rejects completely unrelated path', () => {
+    expect(isPathWithinRoot('/etc/passwd', '/home/user/project')).toBe(false);
+  });
+
+  test('rejects path that is a prefix but not a subdirectory', () => {
+    expect(isPathWithinRoot('/home/user/project-other', '/home/user/project')).toBe(false);
+  });
+});
+
+describe('containsTraversal', () => {
+  test('rejects paths with ..', () => {
+    expect(containsTraversal('/home/user/../etc')).toBe(true);
+    expect(containsTraversal('/home/user/project/../../etc')).toBe(true);
+  });
+
+  test('accepts clean absolute paths', () => {
+    expect(containsTraversal('/home/user/project')).toBe(false);
+    expect(containsTraversal('/home/user/project/src')).toBe(false);
+    expect(containsTraversal('/')).toBe(false);
+  });
+
+  test('accepts paths with dots in names', () => {
+    expect(containsTraversal('/home/user/.config')).toBe(false);
+    expect(containsTraversal('/home/user/file.txt')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: GET /api/desktop/fs/tree
+// ---------------------------------------------------------------------------
+
+describe('GET /api/desktop/fs/tree', () => {
+  let listDirSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+    listDirSpy = spyOn(desktopModule, 'listDirectory');
+  });
+
+  afterEach(() => {
+    getRemoteAddressSpy.mockRestore();
+    listDirSpy.mockRestore();
+  });
+
+  test('returns 200 with entries for a valid directory', async () => {
+    listDirSpy.mockResolvedValue([
+      { name: 'src', kind: 'dir', mtime: '2026-01-01T00:00:00.000Z' },
+      { name: 'package.json', kind: 'file', size: 1234, mtime: '2026-01-01T00:00:00.000Z' },
+    ]);
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/fs/tree?host=test&root=/home/user/project');
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      entries: Array<{ name: string; kind: string; size?: number; mtime: string }>;
+    };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries[0].name).toBe('src');
+    expect(body.entries[0].kind).toBe('dir');
+    expect(body.entries[1].name).toBe('package.json');
+    expect(body.entries[1].kind).toBe('file');
+    expect(body.entries[1].size).toBe(1234);
+  });
+
+  test('returns 404 when path does not exist', async () => {
+    const err = new Error('ENOENT') as NodeJS.ErrnoException;
+    err.code = 'ENOENT';
+    listDirSpy.mockRejectedValue(err);
+
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/fs/tree?host=test&root=/home/user/nonexistent'
+    );
+    expect(response.status).toBe(404);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('not found');
+  });
+
+  test('returns 403 when permission denied', async () => {
+    const err = new Error('EACCES') as NodeJS.ErrnoException;
+    err.code = 'EACCES';
+    listDirSpy.mockRejectedValue(err);
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/fs/tree?host=test&root=/home/user/restricted');
+    expect(response.status).toBe(403);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('Permission denied');
+  });
+
+  test('rejects path traversal with .. in root', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/fs/tree?host=test&root=/home/user/project/../../etc'
+    );
+    expect(response.status).toBe(403);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('traversal');
+  });
+
+  test('returns empty entries for an empty directory', async () => {
+    listDirSpy.mockResolvedValue([]);
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/fs/tree?host=test&root=/home/user/empty');
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as { entries: unknown[] };
+    expect(body.entries).toHaveLength(0);
   });
 });
 

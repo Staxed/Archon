@@ -6,7 +6,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { readdir, stat } from 'fs/promises';
+import { join, normalize, resolve } from 'path';
 import { execFile, spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { promisify } from 'util';
@@ -21,6 +22,7 @@ import {
   tmuxListQuerySchema,
   tmuxListResponseSchema,
   tmuxKillQuerySchema,
+  notFoundResponseSchema,
   notImplementedResponseSchema,
   loopbackForbiddenResponseSchema,
   preflightResponseSchema,
@@ -158,6 +160,63 @@ export async function runPreflightChecks(): Promise<PreflightCheck[]> {
 }
 
 // =========================================================================
+// File-system helpers
+// =========================================================================
+
+interface FsTreeEntry {
+  name: string;
+  kind: 'file' | 'dir';
+  size?: number;
+  mtime: string;
+}
+
+/**
+ * Validate that a resolved path is still within the allowed root.
+ * Rejects `..` traversal attempts that escape the root directory.
+ */
+export function isPathWithinRoot(requestedPath: string, root: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(normalize(requestedPath));
+  return resolvedPath === resolvedRoot || resolvedPath.startsWith(resolvedRoot + '/');
+}
+
+/**
+ * Check if a path contains `..` traversal components.
+ * Checks the raw path segments before normalization to catch traversal attempts.
+ */
+export function containsTraversal(filePath: string): boolean {
+  const segments = filePath.split('/');
+  return segments.includes('..');
+}
+
+/**
+ * List immediate children of a directory path.
+ * Returns entries sorted by name with kind, size (files only), and mtime.
+ */
+export async function listDirectory(dirPath: string): Promise<FsTreeEntry[]> {
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  const results: FsTreeEntry[] = [];
+
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry.name);
+    const kind = entry.isDirectory() ? 'dir' : 'file';
+    try {
+      const stats = await stat(fullPath);
+      results.push({
+        name: entry.name,
+        kind,
+        size: kind === 'file' ? stats.size : undefined,
+        mtime: stats.mtime.toISOString(),
+      });
+    } catch {
+      // Skip entries we can't stat (broken symlinks, permission issues on individual files)
+    }
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// =========================================================================
 // Route definitions (module-scope — pure config, no runtime dependencies)
 // =========================================================================
 
@@ -215,9 +274,12 @@ const fsTreeRoute = createRoute({
     },
     403: {
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
-      description: 'Forbidden',
+      description: 'Forbidden — non-loopback or path traversal',
     },
-    501: json501('Not implemented'),
+    404: {
+      content: { 'application/json': { schema: notFoundResponseSchema } },
+      description: 'Path does not exist',
+    },
   },
 });
 
@@ -402,10 +464,34 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
     return c.json({ checks });
   });
 
+  // GET /api/desktop/fs/tree — list immediate children of a directory
+  registerOpenApiRoute(fsTreeRoute, async c => {
+    const { root } = c.req.query();
+
+    // Reject paths containing '..' to prevent traversal attacks
+    if (containsTraversal(root)) {
+      return c.json({ error: 'Forbidden — path traversal detected' }, 403);
+    }
+
+    const resolvedRoot = resolve(normalize(root));
+
+    try {
+      const entries = await listDirectory(resolvedRoot);
+      return c.json({ entries });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code === 'ENOENT') {
+        return c.json({ error: `Path not found: ${root}` }, 404);
+      }
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        return c.json({ error: `Permission denied: ${root}` }, 403);
+      }
+      return c.json({ error: `Failed to list directory: ${error.message}` }, 500);
+    }
+  });
+
   // Placeholder 501 handlers
   const notImplemented = (c: Context): Response => c.json({ error: 'Not implemented' }, 501);
-
-  registerOpenApiRoute(fsTreeRoute, notImplemented);
   registerOpenApiRoute(fsFileReadRoute, notImplemented);
   registerOpenApiRoute(fsFileWriteRoute, notImplemented);
   registerOpenApiRoute(tmuxListRoute, notImplemented);

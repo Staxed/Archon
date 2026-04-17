@@ -87,6 +87,13 @@ export const tmuxKillQuerySchema = z.object({
   sessionName: z.string(),
 });
 
+/** 404 Not Found response. */
+export const notFoundResponseSchema = z
+  .object({
+    error: z.string(),
+  })
+  .openapi('DesktopNotFound');
+
 /** 501 Not Implemented response. */
 export const notImplementedResponseSchema = z
   .object({
