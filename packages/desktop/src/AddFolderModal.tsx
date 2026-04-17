@@ -9,8 +9,14 @@ export interface SavedHost {
   label: string;
 }
 
+export interface EditorColumnPersistedState {
+  collapsed: boolean;
+  width: number;
+}
+
 export interface WorkspaceData {
   roots: TreeRoot[];
+  editorColumn?: EditorColumnPersistedState;
 }
 
 // ── Workspace persistence helpers (exported for testing) ──────
@@ -29,6 +35,7 @@ export function loadWorkspace(): WorkspaceData {
     const parsed = JSON.parse(raw) as Partial<WorkspaceData>;
     return {
       roots: Array.isArray(parsed.roots) ? parsed.roots : [],
+      editorColumn: parsed.editorColumn,
     };
   } catch {
     return { roots: [] };

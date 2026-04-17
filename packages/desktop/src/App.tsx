@@ -1,5 +1,11 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
+import type {
+  PanelImperativeHandle,
+  GroupImperativeHandle,
+  Layout,
+  PanelSize,
+} from 'react-resizable-panels';
 import { PreflightBanner } from './PreflightBanner';
 import { GridEngine, useGridEngine } from './GridEngine';
 import type { GridPane } from './GridEngine';
@@ -11,6 +17,12 @@ import { HostSessionsPanel } from './HostSessionsPanel';
 import { ProfileEditor } from './ProfileEditor';
 import { launchProfile } from './ProfileLauncher';
 import { AgentPresetsEditor } from './AgentPresetsEditor';
+import {
+  EditorColumnContent,
+  snapWidth,
+  loadEditorColumnState,
+  saveEditorColumnState,
+} from './EditorColumn';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -21,15 +33,6 @@ function ResizeHandle(): React.JSX.Element {
     <Separator className="resize-handle" style={{ width: 4 }}>
       <div className="resize-handle-bar" />
     </Separator>
-  );
-}
-
-function EditorColumn(): React.JSX.Element {
-  return (
-    <div className="region">
-      <span className="region-label">Editor</span>
-      <span className="region-sublabel">Column</span>
-    </div>
   );
 }
 
@@ -94,12 +97,64 @@ function App(): React.JSX.Element {
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [agentPresetsOpen, setAgentPresetsOpen] = useState(false);
 
+  // Editor column state
+  const editorPanelRef = useRef<PanelImperativeHandle>(null);
+  const groupRef = useRef<GroupImperativeHandle>(null);
+  const [editorCollapsed, setEditorCollapsed] = useState(() => loadEditorColumnState().collapsed);
+  const savedEditorWidth = useRef(loadEditorColumnState().width);
+  // Track the last expanded width for restoring after collapse
+  const lastExpandedWidthRef = useRef(savedEditorWidth.current);
+
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
   }, []);
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
+  }, []);
+
+  // Editor column: toggle collapse/expand
+  const handleToggleEditorCollapse = useCallback((): void => {
+    const panel = editorPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) {
+      panel.expand();
+    } else {
+      panel.collapse();
+    }
+  }, []);
+
+  // Editor column: snap after resize ends (Group's onLayoutChanged fires on pointer release)
+  const handleLayoutChanged = useCallback((layout: Layout): void => {
+    const editorSize = layout.editor;
+    if (editorSize === undefined) return;
+    const panel = editorPanelRef.current;
+    if (!panel) return;
+
+    if (panel.isCollapsed()) {
+      setEditorCollapsed(true);
+      saveEditorColumnState({ collapsed: true, width: lastExpandedWidthRef.current });
+      return;
+    }
+
+    setEditorCollapsed(false);
+    const snapped = snapWidth(editorSize);
+    if (Math.abs(snapped - editorSize) > 0.5) {
+      panel.resize(`${snapped}%`);
+    }
+    lastExpandedWidthRef.current = snapped;
+    saveEditorColumnState({ collapsed: false, width: snapped });
+  }, []);
+
+  // Editor column: track resize for detecting collapse
+  const handleEditorResize = useCallback((panelSize: PanelSize): void => {
+    const panel = editorPanelRef.current;
+    if (!panel) return;
+    const collapsed = panel.isCollapsed();
+    setEditorCollapsed(collapsed);
+    if (!collapsed) {
+      lastExpandedWidthRef.current = panelSize.asPercentage;
+    }
   }, []);
 
   // Show toast with auto-dismiss
@@ -187,7 +242,12 @@ function App(): React.JSX.Element {
       <PreflightBanner serverUrl={DEFAULT_SERVER_URL} />
       <div className="app-main">
         <div className="app-content">
-          <Group orientation="horizontal" id="app-layout">
+          <Group
+            orientation="horizontal"
+            id="app-layout"
+            groupRef={groupRef}
+            onLayoutChanged={handleLayoutChanged}
+          >
             <Panel defaultSize={15} minSize={10} maxSize={30} id="sidebar">
               <FileTree
                 serverUrl={DEFAULT_SERVER_URL}
@@ -198,8 +258,21 @@ function App(): React.JSX.Element {
               />
             </Panel>
             <ResizeHandle />
-            <Panel defaultSize={30} minSize={10} maxSize={60} id="editor">
-              <EditorColumn />
+            <Panel
+              defaultSize={savedEditorWidth.current}
+              minSize={10}
+              maxSize={60}
+              collapsible
+              collapsedSize="30px"
+              id="editor"
+              panelRef={editorPanelRef}
+              onResize={handleEditorResize}
+            >
+              <EditorColumnContent
+                collapsed={editorCollapsed}
+                openFiles={[]}
+                onToggleCollapse={handleToggleEditorCollapse}
+              />
             </Panel>
             <ResizeHandle />
             <Panel defaultSize={55} minSize={20} id="grid">
