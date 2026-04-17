@@ -195,8 +195,8 @@
       "technicalNotes": "Per §10.5 + §11.3. Use `react-grid-layout` (MIT). Anatomy diagram in §11.3 is authoritative. Pane rename calls `POST /api/desktop/tmux/rename` (add to routes file) or repurpose `kill` endpoint into a session-admin endpoint.",
       "dependsOn": ["US-004", "US-009"],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 10. Files: packages/desktop/src/GridEngine.tsx, packages/desktop/src/GridEngine.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-011",

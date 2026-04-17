@@ -25,6 +25,11 @@
 - **Pattern**: Each Rust module is a separate file declared in `lib.rs` via `mod module_name;`. Tauri commands use `#[tauri::command]` and are registered in `lib.rs` via `tauri::generate_handler![...]`. Managed state via `.manage()` + `State<'_, T>` in command params. Async commands need tokio features in Cargo.toml.
 - **Note**: No Rust toolchain in CI/worktree env — Rust code cannot be `cargo check`ed, only visually verified
 
+### react-grid-layout v2 API
+- **Where**: `packages/desktop/src/GridEngine.tsx`
+- **Pattern**: v2 uses `gridConfig`, `dragConfig`, `resizeConfig` objects instead of flat props. Compaction via `compactor={noCompactor}` instead of `compactType={null}`. `Layout` is `readonly LayoutItem[]`. Import types from `'react-grid-layout'` directly. `@types/react-grid-layout` is a stub — the package provides its own types.
+- **Example**: `<GridLayout gridConfig={{ cols: 6, maxRows: 3, rowHeight, margin: [2,2] as const }} compactor={noCompactor} dragConfig={{ enabled: true, handle: '.header' }} />`
+
 ### react-resizable-panels v4 API
 - **Where**: `packages/desktop/src/App.tsx`
 - **Pattern**: v4 uses `Group` (not `PanelGroup`), `Panel`, `Separator` (not `PanelResizeHandle`). `orientation="horizontal"` instead of `direction`. Size props are plain numbers (percentages) or strings, not `{ value, unit }` objects.
@@ -296,5 +301,36 @@
 - OSC 133 data is just the letter (A/B/C/D) possibly followed by extra params — simple string parsing suffices
 - Block tracking as a state machine (currentBlock partial → finalized block on D) maps cleanly to the A→B→C→D sequence
 - Arrow function return type annotations needed for ESLint `explicit-function-return-type` rule — even on inline callbacks stored as class properties
+
+---
+
+## 2026-04-17 — US-010: Grid engine with resize, snap, drag-rearrange, and pane headers
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/GridEngine.tsx` — New component: GridEngine with react-grid-layout v2, gridReducer, PaneHeader with rename/context menu/maximize, findFreeSlot helper, useGridEngine hook
+- `packages/desktop/src/GridEngine.test.ts` — 25 tests covering all reducer actions (ADD/REMOVE/MOVE/RESIZE/RENAME/MAXIMIZE/LAYOUT_CHANGE), findFreeSlot edge cases, constants
+- `packages/desktop/src/App.tsx` — Integrated GridEngine replacing placeholder TerminalGrid
+- `packages/desktop/src/styles.css` — Grid engine CSS (pane headers, context menus, resize handles, empty state)
+- `packages/desktop/package.json` — Added react-grid-layout dependency, updated test script
+
+**Acceptance criteria verified**:
+- [x] Grid is 6 columns x 3 rows (max 18 slots)
+- [x] Built on react-grid-layout v2; panes snap to cell boundaries (noCompactor, gridConfig)
+- [x] Drag pane header to move; snap on drop; preventCollision via constraints
+- [x] Resize by dragging edge; minimum pane size 1x1 cells (minW: 1, minH: 1)
+- [x] Pane header shows: [name ▾] host · cwd [x] per §11.3
+- [x] Close button detaches tmux (onClose callback)
+- [x] Right-click shows Close and Kill (context menu with destructive item)
+- [x] Double-click header toggles maximize (TOGGLE_MAXIMIZE fills grid)
+- [x] Inline rename on name click; Enter to confirm (rename input with focus/commit)
+- [x] Unit tests cover grid state reducer (25 tests)
+
+**Learnings**:
+- react-grid-layout v2.2 has a completely different API from v1 — uses `gridConfig`/`dragConfig`/`resizeConfig` objects instead of flat props
+- Compaction is `compactor={noCompactor}` instead of `compactType={null}`
+- `Layout` type is `readonly LayoutItem[]` — callbacks receive Layout, not mutable arrays
+- `@types/react-grid-layout` v2.1 is a stub that just points back to the package's own types — no separate type package needed
+- Context menu close on outside click needs `window.addEventListener('click', handler)` with cleanup in useEffect
 
 ---
