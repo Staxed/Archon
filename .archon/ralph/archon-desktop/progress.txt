@@ -613,3 +613,30 @@
 - Launch button wired through ProfileEditor → App.tsx avoids coupling the launcher to the editor component
 
 ---
+
+## 2026-04-17 — US-022: Agent preset defaults with settings UI
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/AgentPresets.ts` — New module: Zod schema (agentPresetSchema), DEFAULT_PRESETS (8 presets per §10.8), seedDefaultPresets, migratePreset, CRUD helpers (listPresets, getPreset, savePreset, deletePreset), hasModelPlaceholder, duplicatePreset
+- `packages/desktop/src/AgentPresetsEditor.tsx` — New component: AgentPresetsEditor with PresetRow (edit/view modes), createBlankPreset, formatArgs/parseArgs, formatEnv/parseEnv helpers; {MODEL} tag chip rendering
+- `packages/desktop/src/AgentPresets.test.ts` — 22 tests covering DEFAULT_PRESETS (6), seed idempotency (3), CRUD (6), migration (4), helpers (3)
+- `packages/desktop/src/App.tsx` — Added "Agents" button to StatusBar, AgentPresetsEditor modal state + rendering
+- `packages/desktop/src/styles.css` — Agent presets editor CSS (modal, row, fields, model chip, edit mode)
+- `packages/desktop/package.json` — Added AgentPresets.test.ts to localStorage-mock test batch
+
+**Acceptance criteria verified**:
+- [x] First-launch seed writes the 8 default presets from §10.8 to agents.json in app-data dir (seedDefaultPresets + localStorage)
+- [x] Settings → Agents lists presets with: label, command, args, env, prompts (PresetRow summary view)
+- [x] Edit/Duplicate/Delete per preset; + Add Custom creates a blank row (AgentPresetsEditor actions)
+- [x] {MODEL} placeholders in args render a tag chip to signal runtime prompt (agent-preset-model-chip class)
+- [x] No OpenCode preset per §10.8 (verified in test: DEFAULT_PRESETS contains exactly 8 with no OpenCode)
+- [x] Unit tests cover seed idempotency + CRUD (22 tests)
+
+**Learnings**:
+- AgentPresets follows same localStorage persistence pattern as LaunchProfile — real Tauri app uses Tauri's fs API
+- Seed idempotency via a separate `seeded` flag key prevents re-seeding after user modifies presets
+- {MODEL} chip rendering uses inline span with accent background — simple CSS, no special component needed
+- Test file added to same batch as LaunchProfile/ProfileEditor (Object.defineProperty localStorage mock pattern)
+
+---
