@@ -505,3 +505,30 @@
 - Error classification for tmux: "session not found" and "can't find session" are both possible error messages depending on tmux version
 
 ---
+
+## 2026-04-17 — US-018: Host Sessions panel UI with Attach/Kill/Rename + drag-to-grid
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/HostSessionsPanel.tsx` — New component: HostSessionsPanel with auto-refresh, SessionRow with Attach/Kill/Rename, drag support, fetchSessions/killSession/renameSession helpers, buildAttachPane/buildAttachPaneAtSlot/formatAge pure functions
+- `packages/desktop/src/HostSessionsPanel.test.ts` — 25 tests: formatAge (6), buildAttachPane (4), buildAttachPaneAtSlot (2), fetchSessions (3), killSession (3), renameSession (3), drag data format (1), refresh logic (1), plus implicit coverage of URL encoding
+- `packages/desktop/src/App.tsx` — Replaced placeholder HostSessionsDrawer with real HostSessionsPanel, added handleAttachSession callback, imported GridPane type
+- `packages/desktop/src/styles.css` — Added session row, host group, action button, status badge, rename input, drawer header actions styles
+- `packages/desktop/package.json` — Added HostSessionsPanel.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] Drawer shows columns: Host, Session name, cwd, Age, Status, Actions (per §11.2) — session-row-main layout with host/name/cwd/age/status spans
+- [x] Refreshes every 15 seconds while open; immediate refresh after any action — useEffect with setInterval(15000), void refresh() after kill/rename
+- [x] Attach action opens a PTY WS attached to existing session in first free grid slot — buildAttachPane uses findFreeSlot, onAttach dispatches ADD_PANE
+- [x] Kill action prompts confirm and calls POST /api/desktop/tmux/kill — confirmKill state toggle, killSession fetch helper
+- [x] Rename action shows inline rename; calls POST /api/desktop/tmux/rename — renaming state, renameSession fetch helper
+- [x] Drag a session row onto a grid slot opens an attached pane in that slot — draggable rows, setData('application/x-archon-session', ...), buildAttachPaneAtSlot for drop targets
+- [x] Unit tests cover refresh logic, each action, and drag-drop target resolution — 25 tests
+
+**Learnings**:
+- HTML5 drag-and-drop requires custom MIME type (application/x-archon-session) to avoid conflicts with browser defaults
+- Session display name strips the `archon-desktop:` prefix for readability while keeping full name in sessionName for tmux attachment
+- Auto-refresh cleanup needs both interval clearing on close AND useEffect cleanup return to handle unmounts
+- Kill confirmation uses local component state (confirmKill) rather than a modal — cleaner for inline actions in a compact drawer
+
+---
