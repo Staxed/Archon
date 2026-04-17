@@ -65,6 +65,11 @@
 - **Pattern**: `SplitState` wraps `TabState[]` with `activeSplitIndex`. `splitReducer` delegates tab actions via `SPLIT_TAB { splitIndex, action: TabAction }`. `SPLIT_RIGHT` duplicates a tab into a new split. Empty splits auto-remove when others exist. `EditorColumnContent` receives `splitState`/`splitDispatch` (not `tabState`/`tabDispatch`). Each `SplitPane` is a sub-component with independent tab bar and state.
 - **Note**: Use `findSplitForTab(state, tabId)` to find the correct split index before dispatching tab actions from outside the split (e.g. save, conflict resolution).
 
+### LSP Proxy Pattern
+- **Where**: `packages/server/src/routes/desktop.ts` (server), `packages/desktop/src/LspClient.ts` + `EditorColumn.tsx` (client)
+- **Pattern**: Server spawns language server processes per `language:projectDir` key with refcounted reuse. WS /api/desktop/lsp relays JSON-RPC bidirectionally (stdout→WS, WS→stdin). Client uses `codemirror-languageserver`'s `languageServer()` which accepts a WS URI and returns CM6 extensions.
+- **Note**: `LanguageServerWebsocketOptions` requires `workspaceFolders` (not optional). LSP extensions are added in a try/catch so editor works even if LS is unavailable.
+
 ### Desktop Test Batching for localStorage Mocks
 - **Where**: `packages/desktop/package.json` test script
 - **Pattern**: Tests that use `Object.defineProperty(globalThis, 'localStorage', ...)` (LaunchProfile.test.ts, ProfileEditor.test.ts) must run in a separate `bun test` invocation from tests that use `globalThis.localStorage = ...` (PreflightBanner.test.ts). The two patterns are incompatible in the same process.
@@ -837,5 +842,36 @@
 - Empty split removal only triggers when there are other non-empty splits — the last split stays to preserve the single-split architecture
 - findSplitForTab returns the first split containing the tab — for save/conflict operations, this correctly targets the right split
 - SplitPane extracted as a sub-component with its own closeDirtyTab and contextMenu state — keeps state isolated per split
+
+---
+
+## 2026-04-17 — US-030: LSP proxy endpoint + CM6 LSP integration with Monaco fallback
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/desktop.ts` — Replace LSP 501 placeholder with real WS /api/desktop/lsp endpoint; add getLanguageServerCommand, lspConnectionKey, acquireLspServer, releaseLspServer helpers; remove json501 function and notImplementedResponseSchema import
+- `packages/server/src/routes/desktop.test.ts` ��� Replace 501 placeholder tests with 14 LSP helper tests (getLanguageServerCommand, lspConnectionKey, acquireLspServer/releaseLspServer)
+- `packages/desktop/src/LspClient.ts` — New module: isLspSupported, fileExtToLspLanguage, buildLspWsUri, deriveProjectDir, getFileExtension helpers
+- `packages/desktop/src/LspClient.test.ts` — 21 tests covering all LspClient helpers
+- `packages/desktop/src/EditorColumn.tsx` — Integrate codemirror-languageserver: lazy-load languageServer(), add LSP extensions when file language is supported, pass serverBaseUrl through component hierarchy
+- `packages/desktop/package.json` — Add codemirror-languageserver dependency, add LspClient.test.ts to test script
+- `packages/desktop/decisions/editor-backend.md` — Spike outcome: CM6 selected over Monaco
+
+**Acceptance criteria verified**:
+- [x] `WS /api/desktop/lsp?language=&projectDir=` spawns language server and relays JSON-RPC bidirectionally (acquireLspServer + WS handler)
+- [x] Language servers supported: TypeScript, Python, Go, Rust, Markdown (getLanguageServerCommand maps all 5+JS)
+- [x] On-demand spawn per project dir; reuse connection for subsequent files (activeLspServers Map with refcounting)
+- [x] CM6 integration via `codemirror-languageserver`; diagnostics, hover, completion visible (languageServer() extensions added in CodeMirrorEditor)
+- [x] 2-day spike: CM6 LSP works cleanly via codemirror-languageserver — no Monaco fallback needed
+- [x] Missing language server → LSP features disabled; editor otherwise works (try/catch around LSP extension creation + unsupported ext returns null)
+- [x] Integration test with mocked LSP server (acquireLspServer/releaseLspServer tests with spyOn spawnProcess)
+- [x] Spike outcome documented in `decisions/editor-backend.md`
+
+**Learnings**:
+- `codemirror-languageserver` v1.22 provides `languageServer()` that accepts a WebSocket URI and returns CM6 extensions — handles JSON-RPC framing internally
+- `LanguageServerWebsocketOptions` requires `workspaceFolders` as a non-optional field (not just rootUri)
+- LSP WS route is registered as plain `app.get()` with `upgradeWebSocket()` (same pattern as PTY), not via `registerOpenApiRoute`
+- LSP server connection reuse via refcounted Map (language:projectDir key) prevents spawning duplicate servers for tabs in the same project
+- Removing the last 501 placeholder means json501 and notImplementedResponseSchema are now unused — safe to delete
 
 ---

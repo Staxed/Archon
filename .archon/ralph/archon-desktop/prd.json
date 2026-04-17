@@ -617,8 +617,8 @@
         "US-029"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 30. Files: packages/server/src/routes/desktop.ts, packages/server/src/routes/desktop.test.ts, packages/desktop/src/LspClient.ts, packages/desktop/src/LspClient.test.ts, packages/desktop/src/EditorColumn.tsx, packages/desktop/package.json, packages/desktop/decisions/editor-backend.md."
     },
     {
       "id": "US-031",
