@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { TreeRoot, TreeEntry } from './FileTree';
 import { isLocalHost } from './FileTree';
+import { WORKSPACE_SPEC, readAppData, writeAppData } from './lib/appDataStorage';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -21,16 +22,17 @@ export interface WorkspaceData {
 
 // ── Workspace persistence helpers (exported for testing) ──────
 
-const WORKSPACE_STORAGE_KEY = 'archon-desktop:workspace';
-
 /**
- * Load workspace data from localStorage.
- * In a real Tauri app this would use Tauri's fs API to read from
- * the per-OS app-data directory. For now, localStorage is used.
+ * Load workspace data. Reads from the in-session cache (localStorage),
+ * which is hydrated from the per-OS app-data JSON file at startup by
+ * `hydrateAppData(ALL_APP_DATA_SPECS)` in `main.tsx`.
+ *
+ * The cache read is sync so React state initializers work; the canonical
+ * source is the AppData JSON file (PRD §10.6 / §13 Decision 9).
  */
 export function loadWorkspace(): WorkspaceData {
   try {
-    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    const raw = readAppData(WORKSPACE_SPEC);
     if (!raw) return { roots: [] };
     const parsed = JSON.parse(raw) as Partial<WorkspaceData>;
     return {
@@ -43,11 +45,12 @@ export function loadWorkspace(): WorkspaceData {
 }
 
 /**
- * Save workspace data to localStorage.
- * In a real Tauri app this would write to per-OS app-data JSON.
+ * Save workspace data. Writes through both the in-session cache and the
+ * AppData JSON file — the FS write is fire-and-forget so the UI stays
+ * responsive.
  */
 export function saveWorkspace(data: WorkspaceData): void {
-  localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(data));
+  writeAppData(WORKSPACE_SPEC, JSON.stringify(data));
 }
 
 /**

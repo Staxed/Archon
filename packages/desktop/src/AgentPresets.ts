@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AGENT_PRESETS_SPEC, readAppData, writeAppData } from './lib/appDataStorage';
 
 // ── Zod Schemas (source of truth) ────────────────────────────────
 
@@ -44,9 +45,15 @@ export const DEFAULT_PRESETS: AgentPreset[] = [
   },
 ];
 
-// ── Storage key ──────────────────────────────────────────────────
+// ── Storage keys ─────────────────────────────────────────────────
+//
+// Presets themselves go through the AppData storage abstraction (canonical
+// location: `%APPDATA%\ArchonDesktop\agents.json` on Windows,
+// `~/Library/Application Support/ArchonDesktop/agents.json` on macOS — see
+// PRD §10.8 / §13 Decision 9). `SEEDED_KEY` stays localStorage-only since
+// "has the seed ever run" is a per-WebView concern, not user data worth
+// persisting to disk.
 
-const PRESETS_STORAGE_KEY = 'archon-desktop:agent-presets';
 const SEEDED_KEY = 'archon-desktop:agent-presets-seeded';
 
 // ── Seed on first launch ─────────────────────────────────────────
@@ -59,10 +66,11 @@ export function seedDefaultPresets(): void {
   const seeded = localStorage.getItem(SEEDED_KEY);
   if (seeded === 'true') return;
 
-  // Only seed if no presets exist yet
-  const existing = localStorage.getItem(PRESETS_STORAGE_KEY);
+  // Only seed if no presets exist yet (hydrateAppData may have loaded
+  // user-edited presets from the AppData JSON before we got here)
+  const existing = readAppData(AGENT_PRESETS_SPEC);
   if (!existing) {
-    localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(DEFAULT_PRESETS));
+    writeAppData(AGENT_PRESETS_SPEC, JSON.stringify(DEFAULT_PRESETS));
   }
   localStorage.setItem(SEEDED_KEY, 'true');
 }
@@ -95,13 +103,14 @@ export function migratePreset(raw: unknown): AgentPreset | null {
 // ── CRUD helpers ─────────────────────────────────────────────────
 
 /**
- * Load all agent presets from localStorage.
- * Seeds defaults on first call if not yet seeded.
+ * Load all agent presets. Reads from the in-session cache which is
+ * hydrated at startup from `agents.json` in AppData. Seeds defaults on
+ * first call if not yet seeded.
  */
 export function listPresets(): AgentPreset[] {
   seedDefaultPresets();
   try {
-    const raw = localStorage.getItem(PRESETS_STORAGE_KEY);
+    const raw = readAppData(AGENT_PRESETS_SPEC);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -134,7 +143,7 @@ export function savePreset(preset: AgentPreset): void {
   } else {
     presets.push(preset);
   }
-  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+  writeAppData(AGENT_PRESETS_SPEC, JSON.stringify(presets));
 }
 
 /**
@@ -142,7 +151,7 @@ export function savePreset(preset: AgentPreset): void {
  */
 export function deletePreset(id: string): void {
   const presets = listPresets().filter(p => p.id !== id);
-  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets));
+  writeAppData(AGENT_PRESETS_SPEC, JSON.stringify(presets));
 }
 
 /**
