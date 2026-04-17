@@ -638,8 +638,8 @@
         "US-004"
       ],
       "priority": 31,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 31. Files: packages/desktop/src/SshReconnectBanner.ts, packages/desktop/src/SshReconnectBanner.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-032",

@@ -875,3 +875,29 @@
 - Removing the last 501 placeholder means json501 and notImplementedResponseSchema are now unused — safe to delete
 
 ---
+
+## 2026-04-17 — US-031: SSH reconnection banner with exponential backoff
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/SshReconnectBanner.ts` — New module: pure state machine for reconnection logic (ReconnectState, backoff intervals, phase transitions)
+- `packages/desktop/src/SshReconnectBanner.test.ts` — 30 tests covering backoff intervals, state transitions, full lifecycle, terminal states
+- `packages/desktop/src/App.tsx` — Integrated SshReconnectBannerUI component, tunnel-drop event listener, auto-retry with exponential backoff useEffect, fade-out timer, manual reconnect handler
+- `packages/desktop/src/styles.css` — SSH reconnect banner CSS (dark red theme, fade-in/fade-out animations)
+- `packages/desktop/package.json` — Added SshReconnectBanner.test.ts to first test batch
+
+**Acceptance criteria verified**:
+- [x] On tunnel drop event from US-003 sidecar, renderer shows banner `SSH connection lost — reconnecting…` (archon:tunnel-drop custom event → onTunnelDrop → SshReconnectBannerUI renders)
+- [x] Auto-retry at intervals: 1s, 2s, 4s, 8s, 16s (total ~31s); exponential backoff (BACKOFF_INTERVALS_MS + useEffect with getBackoffDelay)
+- [x] Manual Reconnect button always available and resets the retry counter (handleManualReconnect → onManualReconnect resets retryIndex to 0)
+- [x] After 30s of failure, banner updates to `Reconnection failed — click Reconnect to try again` with no further auto-retry (advanceRetry transitions to 'failed' phase after 5 attempts)
+- [x] Once reconnected, banner fades out after 2s (onReconnected → 'reconnected' phase → FADE_OUT_DELAY_MS timer → onFadeOutComplete → hidden)
+- [x] Unit test covers backoff intervals + terminal state (30 tests across all state transitions and full lifecycle)
+
+**Learnings**:
+- Pure state machine pattern (no React dependency) makes reconnection logic trivially testable
+- archon:tunnel-drop custom event bridges Tauri IPC to React — in production, Rust sidecar emits this via Tauri event system
+- Auto-retry health check uses fetch to /api/desktop/health with AbortSignal.timeout(5000) to avoid hanging requests
+- SshReconnectBanner.test.ts has no localStorage mocking — safe to add to the first test batch (no mock.module conflicts)
+
+---
