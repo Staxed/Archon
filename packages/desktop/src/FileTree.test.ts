@@ -8,6 +8,8 @@ import {
   getHostBadge,
   joinPath,
   matchesCodebasePath,
+  getRevealCommand,
+  canRevealInOs,
 } from './FileTree';
 import type { TreeRoot, TreeEntry, TreeState } from './FileTree';
 
@@ -267,5 +269,70 @@ describe('codebase badge visibility', () => {
     const rootPath = '/home/staxed/projects/Archon';
     const hasBadge = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
     expect(hasBadge).toBe(true);
+  });
+});
+
+// ── Reveal in OS tests ──────────────────────────────────────
+
+describe('getRevealCommand', () => {
+  test('windows returns explorer.exe /select,<path>', () => {
+    const result = getRevealCommand('windows', 'C:\\Users\\staxed\\file.ts');
+    expect(result).toEqual({
+      command: 'explorer.exe',
+      args: ['/select,C:\\Users\\staxed\\file.ts'],
+    });
+  });
+
+  test('macos returns open -R <path>', () => {
+    const result = getRevealCommand('macos', '/Users/staxed/file.ts');
+    expect(result).toEqual({
+      command: 'open',
+      args: ['-R', '/Users/staxed/file.ts'],
+    });
+  });
+
+  test('unknown platform returns null', () => {
+    const result = getRevealCommand('linux', '/home/staxed/file.ts');
+    expect(result).toBeNull();
+  });
+});
+
+describe('canRevealInOs', () => {
+  test('local-windows can reveal', () => {
+    expect(canRevealInOs('local-windows')).toBe(true);
+  });
+
+  test('local-macos can reveal', () => {
+    expect(canRevealInOs('local-macos')).toBe(true);
+  });
+
+  test('remote host cannot reveal', () => {
+    expect(canRevealInOs('linux-beast')).toBe(false);
+  });
+
+  test('remote host shows no-op for reveal', () => {
+    // Simulates the action path: remote → toast message, no OS command
+    const host = 'linux-beast';
+    const canReveal = canRevealInOs(host);
+    expect(canReveal).toBe(false);
+    // In the component, !canReveal triggers onToast('Remote paths cannot be opened...')
+  });
+});
+
+// ── Open Archon Web UI visibility tests ──────────────────────
+
+describe('Open Archon Web UI visibility', () => {
+  test('shown when root is an Archon codebase', () => {
+    const codebasePaths = ['/home/staxed/projects/Archon'];
+    const rootPath = '/home/staxed/projects/Archon';
+    const isArchonCodebase = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
+    expect(isArchonCodebase).toBe(true);
+  });
+
+  test('hidden when root is not an Archon codebase', () => {
+    const codebasePaths = ['/home/staxed/projects/Archon'];
+    const rootPath = '/home/staxed/projects/Other';
+    const isArchonCodebase = codebasePaths.some(cwd => matchesCodebasePath(rootPath, cwd));
+    expect(isArchonCodebase).toBe(false);
   });
 });

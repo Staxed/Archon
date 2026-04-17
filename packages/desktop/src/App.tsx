@@ -167,6 +167,7 @@ function App(): React.JSX.Element {
                 roots={workspaceRoots}
                 onRemoveRoot={handleRemoveRoot}
                 onAddRoot={handleOpenAddFolder}
+                onToast={showToast}
               />
             </Panel>
             <ResizeHandle />

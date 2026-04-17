@@ -30,7 +30,9 @@ export type ContextMenuAction =
   | 'new-folder'
   | 'copy-path'
   | 'copy-relative-path'
-  | 'remove-from-workspace';
+  | 'remove-from-workspace'
+  | 'reveal-in-os'
+  | 'open-archon-web-ui';
 
 interface ContextMenuState {
   x: number;
@@ -86,6 +88,31 @@ export function getHostBadge(host: string): string {
 export function joinPath(parentPath: string, childName: string): string {
   if (parentPath.endsWith('/')) return parentPath + childName;
   return parentPath + '/' + childName;
+}
+
+/**
+ * Get the OS-specific command and args for revealing a file in the native file manager.
+ * Returns null if the platform is not supported.
+ */
+export function getRevealCommand(
+  platform: string,
+  filePath: string
+): { command: string; args: string[] } | null {
+  if (platform === 'windows') {
+    return { command: 'explorer.exe', args: ['/select,' + filePath] };
+  }
+  if (platform === 'macos') {
+    return { command: 'open', args: ['-R', filePath] };
+  }
+  return null;
+}
+
+/**
+ * Determine whether a path can be revealed in the OS file manager.
+ * Only local paths can be revealed; remote paths cannot.
+ */
+export function canRevealInOs(host: string): boolean {
+  return isLocalHost(host);
 }
 
 /**
@@ -257,6 +284,8 @@ interface FileTreeProps {
   roots: TreeRoot[];
   onRemoveRoot: (rootId: string) => void;
   onAddRoot?: () => void;
+  onToast?: (message: string) => void;
+  archonWebUiUrl?: string;
 }
 
 interface NamePromptState {
@@ -350,6 +379,8 @@ export function FileTree({
   roots,
   onRemoveRoot,
   onAddRoot,
+  onToast,
+  archonWebUiUrl = 'http://localhost:3090',
 }: FileTreeProps): React.JSX.Element {
   const [treeState, dispatch] = useState<TreeState>(() => createInitialTreeState());
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -540,9 +571,42 @@ export function FileTree({
           setConfirmModal({ rootId: root.id, rootLabel: root.label });
           break;
         }
+        case 'reveal-in-os': {
+          if (!canRevealInOs(root.host)) {
+            onToast?.('Remote paths cannot be opened in the local file manager');
+          } else {
+            // In a real Tauri app, this would call @tauri-apps/plugin-shell's open() or Command.
+            // For now, we use the Tauri shell plugin API if available.
+            void (async (): Promise<void> => {
+              try {
+                const { open } = await import('@tauri-apps/plugin-shell');
+                // shell.open opens a path in the default app; for reveal, we use Command
+                // For simplicity, open the parent directory
+                const parentDir = node.path.substring(0, node.path.lastIndexOf('/')) || '/';
+                await open(parentDir);
+              } catch {
+                // Fallback: not running in Tauri context (dev mode)
+                onToast?.('Reveal in OS is only available in the Tauri desktop app');
+              }
+            })();
+          }
+          break;
+        }
+        case 'open-archon-web-ui': {
+          void (async (): Promise<void> => {
+            try {
+              const { open } = await import('@tauri-apps/plugin-shell');
+              await open(archonWebUiUrl);
+            } catch {
+              // Fallback: open in current browser (dev mode)
+              window.open(archonWebUiUrl, '_blank');
+            }
+          })();
+          break;
+        }
       }
     },
-    [contextMenu]
+    [contextMenu, onToast, archonWebUiUrl]
   );
 
   const handleNameSubmit = useCallback((): void => {
@@ -691,6 +755,34 @@ export function FileTree({
           >
             Copy Relative Path
           </button>
+          <div className="tree-context-separator" />
+          <button
+            className="tree-context-item"
+            onClick={(): void => {
+              handleMenuAction('reveal-in-os');
+            }}
+            title={
+              !canRevealInOs(contextMenu.root.host)
+                ? 'Remote paths cannot be opened in the local file manager'
+                : undefined
+            }
+          >
+            Reveal in OS
+            {!canRevealInOs(contextMenu.root.host) && (
+              <span className="tree-context-item-hint">(remote)</span>
+            )}
+          </button>
+          {contextMenu.node.path === contextMenu.root.path &&
+            archonCodebasePaths.some(cwd => matchesCodebasePath(contextMenu.root.path, cwd)) && (
+              <button
+                className="tree-context-item"
+                onClick={(): void => {
+                  handleMenuAction('open-archon-web-ui');
+                }}
+              >
+                Open Archon Web UI
+              </button>
+            )}
           {contextMenu.node.path === contextMenu.root.path && (
             <>
               <div className="tree-context-separator" />

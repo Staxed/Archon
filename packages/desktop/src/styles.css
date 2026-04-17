@@ -684,6 +684,12 @@ body,
   background-color: rgba(240, 128, 128, 0.1);
 }
 
+.tree-context-item-hint {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .tree-context-separator {
   height: 1px;
   background-color: var(--border-color);
