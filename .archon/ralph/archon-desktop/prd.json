@@ -474,8 +474,8 @@
         "US-010"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 23. Files: packages/desktop/src/AgentLauncher.ts, packages/desktop/src/AgentLauncherDropdown.tsx, packages/desktop/src/AgentLauncher.test.ts, packages/desktop/src/GridEngine.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-024",

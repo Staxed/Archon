@@ -640,3 +640,29 @@
 - Test file added to same batch as LaunchProfile/ProfileEditor (Object.defineProperty localStorage mock pattern)
 
 ---
+
+## 2026-04-17 — US-023: Agent launcher dropdown with {MODEL} combobox and YOLO warning
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/AgentLauncher.ts` — New module: buildDropdownOptions, isYoloPreset, isYoloSelection, needsModelPrompt, resolveStartupCommand, loadRecentModels/addRecentModel (LRU cache, max 10)
+- `packages/desktop/src/AgentLauncherDropdown.tsx` — New React component: AgentLauncherDropdown with preset selector, {MODEL} inline combobox with datalist, CustomAgentModal for one-shot custom agent definition
+- `packages/desktop/src/AgentLauncher.test.ts` — 22 tests covering recent models, dropdown options, YOLO detection, model prompt detection, and command resolution
+- `packages/desktop/src/GridEngine.tsx` — Added `yolo?: boolean` to GridPane interface; added `grid-pane-header-yolo` conditional class on pane header
+- `packages/desktop/src/styles.css` — Added `.grid-pane-header-yolo` (border: 2px solid #ef4444), agent launcher dropdown/model-prompt/custom-modal styles
+- `packages/desktop/package.json` — Added AgentLauncher.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] At pane creation, dropdown shows: None, all presets from agents.json, Custom… (buildDropdownOptions)
+- [x] Selecting a preset with `{MODEL}` in args opens an inline combobox with cached recent model choices (needsModelPrompt + datalist with loadRecentModels)
+- [x] Selecting a preset whose label contains `YOLO` applies a red border (border: 2px solid #ef4444) to the pane header (isYoloSelection + grid-pane-header-yolo CSS)
+- [x] Custom… opens a modal to define { command, args, env, cwd override } for this pane only (CustomAgentModal component)
+- [x] Unit tests cover dropdown selection, model prompt flow, YOLO border class, and Custom modal (22 tests)
+
+**Learnings**:
+- LauncherSelection discriminated union cleanly separates none/preset/custom paths
+- HTML datalist provides native combobox behavior without extra dependencies — works well for recent model suggestions
+- YOLO detection is case-insensitive label check — simple and matches all YOLO variants
+- resolveStartupCommand handles env var prepending for both preset and custom selections
+
+---
