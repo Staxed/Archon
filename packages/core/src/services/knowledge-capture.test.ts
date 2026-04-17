@@ -72,15 +72,18 @@ mock.module('../config/config-loader', () => ({
 
 // Mock knowledge-init
 const mockInitKnowledgeDir = mock(async () => undefined);
+const mockInitGlobalKnowledgeDir = mock(async () => undefined);
 mock.module('./knowledge-init', () => ({
   initKnowledgeDir: mockInitKnowledgeDir,
-  initGlobalKnowledgeDir: mock(async () => undefined),
+  initGlobalKnowledgeDir: mockInitGlobalKnowledgeDir,
 }));
 
 // Mock knowledge-scheduler (imported by capture module for global flush)
+const mockScheduleFlush = mock(async () => undefined);
+const mockScheduleGlobalFlush = mock(async () => undefined);
 mock.module('./knowledge-scheduler', () => ({
-  scheduleFlush: mock(async () => undefined),
-  scheduleGlobalFlush: mock(async () => undefined),
+  scheduleFlush: mockScheduleFlush,
+  scheduleGlobalFlush: mockScheduleGlobalFlush,
 }));
 
 // Mock AI client
@@ -109,6 +112,9 @@ describe('knowledge-capture', () => {
     mockListMessages.mockClear();
     mockLoadConfig.mockClear();
     mockInitKnowledgeDir.mockClear();
+    mockInitGlobalKnowledgeDir.mockClear();
+    mockScheduleFlush.mockClear();
+    mockScheduleGlobalFlush.mockClear();
     mockSendQuery.mockClear();
     mockGetAssistantClient.mockClear();
     Object.values(mockLogger).forEach(fn => fn.mockClear());
@@ -433,5 +439,110 @@ describe('knowledge-capture', () => {
     const result = await captureKnowledge('conv-123', 'acme', 'widget');
 
     expect(result.extractedContent).toBe('## Decisions\n- use X\n');
+  });
+
+  describe('scope routing', () => {
+    /** Seed a minimal conversation so capture proceeds to extraction. */
+    function seedConversation(): void {
+      mockListMessages.mockResolvedValueOnce([
+        {
+          id: 'msg-1',
+          conversation_id: 'conv-123',
+          role: 'user' as const,
+          content: 'test',
+          metadata: '{}',
+          created_at: '2026-04-11T10:00:00Z',
+        },
+      ]);
+    }
+
+    test('writes BOTH logs when extraction contains project and global blocks', async () => {
+      seedConversation();
+      mockSendQueryChunks = [
+        {
+          type: 'assistant',
+          content:
+            '## PROJECT\n### Decisions\n- Use Drizzle ORM\n\n## GLOBAL\n### Lessons\n- Bun mock.module is process-global\n',
+        },
+      ];
+
+      const result = await captureKnowledge('conv-123', 'acme', 'widget');
+
+      expect(result.skipped).toBe(false);
+
+      // Two writes: one to project log, one to global log
+      expect(appendFileCalls).toHaveLength(2);
+      const projectWrite = appendFileCalls.find(c => c.path.includes('/workspaces/acme/widget/'));
+      const globalWrite = appendFileCalls.find(c => c.path.includes('/.archon/knowledge/'));
+      expect(projectWrite).toBeDefined();
+      expect(globalWrite).toBeDefined();
+
+      // Project log contains only the PROJECT block content
+      expect(projectWrite!.content).toContain('Use Drizzle ORM');
+      expect(projectWrite!.content).not.toContain('Bun mock.module');
+
+      // Global log contains only the GLOBAL block content + source attribution
+      expect(globalWrite!.content).toContain('Bun mock.module');
+      expect(globalWrite!.content).not.toContain('Use Drizzle ORM');
+      expect(globalWrite!.content).toContain('**Source**: acme/widget');
+      expect(globalWrite!.content).toContain('**Conversation**: conv-123');
+
+      // Global flush must be scheduled
+      expect(mockScheduleGlobalFlush).toHaveBeenCalledTimes(1);
+      expect(mockInitGlobalKnowledgeDir).toHaveBeenCalledTimes(1);
+    });
+
+    test('writes ONLY project log when extraction is project-only', async () => {
+      seedConversation();
+      mockSendQueryChunks = [
+        {
+          type: 'assistant',
+          content: '## PROJECT\n### Decisions\n- Store conversations in DB\n',
+        },
+      ];
+
+      const result = await captureKnowledge('conv-123', 'acme', 'widget');
+
+      expect(result.skipped).toBe(false);
+      expect(appendFileCalls).toHaveLength(1);
+      expect(appendFileCalls[0]!.path).toContain('/workspaces/acme/widget/');
+      expect(mockScheduleGlobalFlush).not.toHaveBeenCalled();
+      expect(mockInitGlobalKnowledgeDir).not.toHaveBeenCalled();
+    });
+
+    test('writes ONLY global log when extraction is global-only', async () => {
+      seedConversation();
+      mockSendQueryChunks = [
+        {
+          type: 'assistant',
+          content: '## GLOBAL\n### Lessons\n- Prefer structured logging\n',
+        },
+      ];
+
+      const result = await captureKnowledge('conv-123', 'acme', 'widget');
+
+      expect(result.skipped).toBe(false);
+      expect(appendFileCalls).toHaveLength(1);
+      expect(appendFileCalls[0]!.path).toContain('/.archon/knowledge/');
+      expect(mockInitKnowledgeDir).not.toHaveBeenCalled();
+      expect(mockScheduleGlobalFlush).toHaveBeenCalledTimes(1);
+      expect(mockInitGlobalKnowledgeDir).toHaveBeenCalledTimes(1);
+    });
+
+    test('falls back to project log when extraction lacks scope tags (malformed)', async () => {
+      seedConversation();
+      mockSendQueryChunks = [
+        { type: 'assistant', content: '## Decisions\n- Legacy unscoped output\n' },
+      ];
+
+      const result = await captureKnowledge('conv-123', 'acme', 'widget');
+
+      expect(result.skipped).toBe(false);
+      // Fallback routes the whole content to project
+      expect(appendFileCalls).toHaveLength(1);
+      expect(appendFileCalls[0]!.path).toContain('/workspaces/acme/widget/');
+      expect(appendFileCalls[0]!.content).toContain('Legacy unscoped output');
+      expect(mockScheduleGlobalFlush).not.toHaveBeenCalled();
+    });
   });
 });

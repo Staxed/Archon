@@ -23,26 +23,57 @@ function getLog(): ReturnType<typeof createLogger> {
 }
 
 /** Extraction prompt sent to the capture model to extract structured knowledge from a transcript */
-const EXTRACTION_PROMPT = `You are a knowledge extraction agent. Analyze the following conversation transcript and extract any valuable knowledge into these categories:
+const EXTRACTION_PROMPT = `You are a knowledge extraction agent. Analyze the following conversation transcript and extract any valuable knowledge.
 
-## Decisions
-Architectural or design decisions made, with rationale.
+Organize output into two scope blocks; within each block, group items by category.
 
-## Patterns
-Recurring code patterns, conventions, or best practices discovered or applied.
+## Scope Classification
 
-## Lessons
-Mistakes encountered, debugging insights, gotchas, or constraints learned.
+- **PROJECT**: Knowledge specific to this repository — file paths, internal APIs, project-specific conventions, repo-specific decisions.
+- **GLOBAL**: Knowledge applicable across any codebase — general engineering patterns, language idioms, tool/SDK gotchas, debugging techniques, universal best practices, meta-lessons about working with AI agents.
 
-## Connections
-Cross-component dependencies, system relationships, or integration points discovered.
+Test: "If I opened a brand-new repo tomorrow in a different language, would this still be true?" If yes → GLOBAL. If no → PROJECT.
 
-Rules:
-- Only include items that would be valuable for a future session on this project
+When in doubt, classify as PROJECT (conservative default — leaking a global-worthy item into project is cheap; polluting global with project noise ruins its cross-project value).
+
+## Output Format
+
+## PROJECT
+
+### Decisions
+{architectural or design decisions specific to this codebase, with rationale}
+
+### Patterns
+{code patterns or conventions specific to this codebase}
+
+### Lessons
+{mistakes, gotchas, or constraints specific to this codebase}
+
+### Connections
+{cross-component dependencies or system relationships specific to this codebase}
+
+## GLOBAL
+
+### Decisions
+{codebase-agnostic engineering decisions}
+
+### Patterns
+{universal patterns, idioms, or best practices}
+
+### Lessons
+{cross-project tooling/ecosystem gotchas, AI-agent meta-lessons, language quirks}
+
+### Connections
+{general architectural patterns that apply across codebases}
+
+## Rules
+
+- Only include items that would be valuable for a future session
 - Skip trivial or obvious items
 - Use bullet points with concise descriptions
 - Include the "why" for decisions and lessons
-- If no items exist for a category, omit that category entirely
+- If a category has no items within a scope, omit that category entirely
+- If a scope has no items at all, omit the entire scope block
 - If the transcript contains no extractable knowledge, respond with "No knowledge to extract."
 
 ---
@@ -126,19 +157,45 @@ export async function captureKnowledge(
       };
     }
 
-    // Ensure KB directory exists
-    await initKnowledgeDir(owner, repo);
+    // Parse scoped output — project entries go to project KB, global entries go to global KB
+    const scoped = parseScopedOutput(extractedContent, 'both');
 
-    // Append to daily log
-    const logFile = await appendToDailyLog(owner, repo, conversationId, extractedContent);
+    let projectLogFile = '';
 
-    log.info(
-      { conversationId, logFile, contentLength: extractedContent.length },
-      'knowledge.capture_completed'
-    );
+    // Write project-scoped entries to project daily log
+    if (scoped.project) {
+      await initKnowledgeDir(owner, repo);
+      projectLogFile = await appendToDailyLog(owner, repo, conversationId, scoped.project);
+      log.info(
+        { conversationId, logFile: projectLogFile, contentLength: scoped.project.length },
+        'knowledge.capture_project_completed'
+      );
+    }
+
+    // Write global-scoped entries to global daily log and schedule global flush
+    if (scoped.global) {
+      await initGlobalKnowledgeDir();
+      const globalHeader = `### Capture: ${new Date().toISOString()}\n**Source**: ${owner}/${repo}\n**Conversation**: ${conversationId}`;
+      await writeGlobalLogEntry(globalHeader, scoped.global);
+      await scheduleGlobalFlush();
+      log.info(
+        { conversationId, contentLength: scoped.global.length },
+        'knowledge.capture_global_completed'
+      );
+    }
+
+    if (!scoped.project && !scoped.global) {
+      log.info({ conversationId }, 'knowledge.capture_completed_nothing');
+      return {
+        logFile: '',
+        extractedContent: '',
+        skipped: true,
+        skipReason: 'Parsed output contained no entries in either scope',
+      };
+    }
 
     return {
-      logFile,
+      logFile: projectLogFile,
       extractedContent,
       skipped: false,
     };
@@ -366,7 +423,8 @@ export async function extractKnowledgeFromContext(
   // Write global-scoped entries to global daily log
   if (scoped.global) {
     await initGlobalKnowledgeDir();
-    await appendToGlobalDailyLog(owner, repo, metadata, scoped.global);
+    const globalHeader = `### Knowledge Extract: ${new Date().toISOString()}\n**Source**: ${owner}/${repo}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}`;
+    await writeGlobalLogEntry(globalHeader, scoped.global);
 
     log.info(
       { nodeId: metadata.nodeId, contentLength: scoped.global.length },
@@ -381,23 +439,18 @@ export async function extractKnowledgeFromContext(
 }
 
 /**
- * Append extracted global knowledge to the global daily log.
- * Includes source attribution (owner/repo) for traceability.
+ * Append a pre-formatted entry to the global daily log (~/.archon/knowledge/logs/YYYY-MM-DD.md).
+ * The caller provides the header (source/metadata lines) so this helper is reusable across
+ * conversation-captured and workflow-extracted knowledge.
  */
-async function appendToGlobalDailyLog(
-  owner: string,
-  repo: string,
-  metadata: { workflowRunId: string; nodeId: string },
-  content: string
-): Promise<string> {
+async function writeGlobalLogEntry(sourceHeader: string, content: string): Promise<string> {
   const globalKnowledgePath = getGlobalKnowledgePath();
   const logsDir = join(globalKnowledgePath, 'logs');
   await mkdir(logsDir, { recursive: true });
 
   const today = new Date().toISOString().slice(0, 10);
   const logFile = join(logsDir, `${today}.md`);
-  const timestamp = new Date().toISOString();
-  const entry = `\n---\n\n### Knowledge Extract: ${timestamp}\n**Source**: ${owner}/${repo}\n**Workflow Run**: ${metadata.workflowRunId}\n**Node**: ${metadata.nodeId}\n\n${content}\n`;
+  const entry = `\n---\n\n${sourceHeader}\n\n${content}\n`;
 
   await appendFile(logFile, entry);
 
