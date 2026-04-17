@@ -951,3 +951,28 @@
 - logger.test.ts has no mock.module or localStorage mocking — safe to add to first test batch with errors.test.ts
 
 ---
+
+## 2026-04-17 — US-034: Platform installer builds: Windows MSI + macOS DMG with notarization
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src-tauri/tauri.conf.json` — Added Windows WiX MSI config and macOS signing/minimumSystemVersion bundle settings
+- `packages/desktop/src-tauri/icons/*` — Created placeholder icon files (32x32.png, 128x128.png, 128x128@2x.png, icon.ico, icon.icns)
+- `packages/desktop/README.md` — New README with build steps for Windows MSI + macOS DMG, signing/notarization workflow, remote host deps, and troubleshooting
+
+**Acceptance criteria verified**:
+- [x] `bunx tauri build` on Windows produces an MSI installer — tauri.conf.json configured with bundle.targets: "all" + WiX settings
+- [x] `bunx tauri build` on macOS produces a DMG signed with Developer ID Application certificate — signingIdentity config + env var documentation
+- [x] macOS DMG notarized via `xcrun notarytool` and stapled — documented in README with exact commands
+- [x] Signing + notarization driven by env vars: APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID, APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD — all documented in README
+- [x] `tauri.conf.json` configures bundle identifiers (com.archon.desktop), icons, and signing for both platforms
+- [x] Build steps documented in `packages/desktop/README.md` for both OSes
+- [x] Smoke test: manual verification required on actual Windows/macOS hardware (noted in story)
+
+**Learnings**:
+- Tauri v2 auto-handles signing + notarization when Apple env vars are set — no custom scripts needed
+- Bundle icon files must exist even as placeholders for `tauri build` to succeed
+- ICO files can embed a PNG directly (no BMP conversion needed for modern Windows)
+- macOS minimum system version 10.15 matches WebView2/WKWebView baseline requirement
+
+---

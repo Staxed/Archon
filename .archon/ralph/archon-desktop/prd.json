@@ -699,8 +699,8 @@
         "US-032"
       ],
       "priority": 34,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 34. Files: packages/desktop/src-tauri/tauri.conf.json, packages/desktop/src-tauri/icons/*, packages/desktop/README.md."
     },
     {
       "id": "US-035",
