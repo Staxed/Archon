@@ -5,7 +5,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { streamSSE } from 'hono/streaming';
 import { cors } from 'hono/cors';
-import { setupDesktopRoutes } from './desktop';
 import type { WebAdapter } from '../adapters/web';
 import { rm, readFile, writeFile, unlink, mkdir } from 'fs/promises';
 import { readFileSync } from 'fs';
@@ -842,9 +841,6 @@ export function registerApiRoutes(
   // CORS for Web UI — allow-all is fine for a single-developer tool.
   // Override with WEB_UI_ORIGIN env var to restrict if exposing publicly.
   app.use('/api/*', cors({ origin: process.env.WEB_UI_ORIGIN || '*' }));
-
-  // Desktop routes — loopback-only endpoints for the Archon Desktop app
-  setupDesktopRoutes(app);
 
   // Shared lock/dispatch/error handling for message and workflow endpoints
   /** Maximum allowed upload size per file (10 MB) */
