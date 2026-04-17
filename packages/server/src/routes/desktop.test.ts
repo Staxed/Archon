@@ -1,7 +1,14 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import * as desktopModule from './desktop';
-import { setupDesktopRoutes, runPreflightChecks } from './desktop';
+import {
+  setupDesktopRoutes,
+  runPreflightChecks,
+  validateSessionName,
+  buildTmuxNewSessionArgs,
+  buildTmuxAttachCommand,
+  buildTmuxResizeArgs,
+} from './desktop';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -142,7 +149,6 @@ describe('placeholder 501 routes', () => {
     { method: 'GET', path: '/api/desktop/fs/tree?host=test&root=/' },
     { method: 'GET', path: '/api/desktop/fs/file?host=test&path=/test' },
     { method: 'GET', path: '/api/desktop/tmux/list?host=test' },
-    { method: 'GET', path: '/api/desktop/pty' },
     { method: 'GET', path: '/api/desktop/lsp' },
   ];
 
@@ -341,5 +347,181 @@ describe('runPreflightChecks', () => {
         expect(check.installCommand).toBeDefined();
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: PTY WebSocket helpers — session name validation
+// ---------------------------------------------------------------------------
+
+describe('validateSessionName', () => {
+  test('accepts valid session names', () => {
+    expect(validateSessionName('archon-desktop:my-session')).toBe(true);
+    expect(validateSessionName('archon-desktop:adhoc:abc123')).toBe(true);
+    expect(validateSessionName('archon-desktop:profile-one:pane-2')).toBe(true);
+    expect(validateSessionName('archon-desktop:a')).toBe(true);
+    expect(validateSessionName('archon-desktop:123')).toBe(true);
+  });
+
+  test('rejects names without archon-desktop: prefix', () => {
+    expect(validateSessionName('my-session')).toBe(false);
+    expect(validateSessionName('other:session')).toBe(false);
+    expect(validateSessionName('')).toBe(false);
+  });
+
+  test('rejects names with uppercase letters', () => {
+    expect(validateSessionName('archon-desktop:MySession')).toBe(false);
+  });
+
+  test('rejects names with spaces or special characters', () => {
+    expect(validateSessionName('archon-desktop:my session')).toBe(false);
+    expect(validateSessionName('archon-desktop:my;session')).toBe(false);
+    expect(validateSessionName('archon-desktop:$(cmd)')).toBe(false);
+    expect(validateSessionName('archon-desktop:a&b')).toBe(false);
+    expect(validateSessionName('archon-desktop:a|b')).toBe(false);
+  });
+
+  test('rejects names with only prefix (no content after colon)', () => {
+    expect(validateSessionName('archon-desktop:')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: PTY WebSocket helpers — tmux argument construction
+// ---------------------------------------------------------------------------
+
+describe('buildTmuxNewSessionArgs', () => {
+  test('builds basic new-session args', () => {
+    const args = buildTmuxNewSessionArgs('archon-desktop:test');
+    expect(args).toEqual(['new-session', '-A', '-d', '-s', 'archon-desktop:test']);
+  });
+
+  test('includes -c cwd when provided', () => {
+    const args = buildTmuxNewSessionArgs('archon-desktop:test', '/home/user/project');
+    expect(args).toEqual([
+      'new-session',
+      '-A',
+      '-d',
+      '-s',
+      'archon-desktop:test',
+      '-c',
+      '/home/user/project',
+    ]);
+  });
+
+  test('includes command when provided', () => {
+    const args = buildTmuxNewSessionArgs('archon-desktop:test', '/home/user', 'claude --yolo');
+    expect(args).toEqual([
+      'new-session',
+      '-A',
+      '-d',
+      '-s',
+      'archon-desktop:test',
+      '-c',
+      '/home/user',
+      'claude --yolo',
+    ]);
+  });
+
+  test('includes command without cwd', () => {
+    const args = buildTmuxNewSessionArgs('archon-desktop:test', undefined, 'bash');
+    expect(args).toEqual(['new-session', '-A', '-d', '-s', 'archon-desktop:test', 'bash']);
+  });
+});
+
+describe('buildTmuxAttachCommand', () => {
+  test('builds attach command string', () => {
+    const cmd = buildTmuxAttachCommand('archon-desktop:my-session');
+    expect(cmd).toBe('tmux attach-session -t archon-desktop:my-session');
+  });
+});
+
+describe('buildTmuxResizeArgs', () => {
+  test('builds resize-window args', () => {
+    const args = buildTmuxResizeArgs('archon-desktop:test', 120, 40);
+    expect(args).toEqual(['resize-window', '-t', 'archon-desktop:test', '-x', '120', '-y', '40']);
+  });
+
+  test('handles small dimensions', () => {
+    const args = buildTmuxResizeArgs('archon-desktop:test', 1, 1);
+    expect(args).toEqual(['resize-window', '-t', 'archon-desktop:test', '-x', '1', '-y', '1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: PTY WebSocket — spawnProcess verification
+// ---------------------------------------------------------------------------
+
+describe('PTY WS spawnProcess integration', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    spawnSpy = spyOn(desktopModule, 'spawnProcess');
+  });
+
+  afterEach(() => {
+    spawnSpy.mockRestore();
+  });
+
+  test('spawnProcess is called with correct tmux new-session args', () => {
+    // Mock spawnProcess to return a fake ChildProcess
+    const fakeProc = {
+      on: () => fakeProc,
+      stdout: null,
+      stderr: null,
+      stdin: null,
+      kill: () => true,
+    };
+    spawnSpy.mockReturnValue(fakeProc);
+
+    desktopModule.spawnProcess(
+      'tmux',
+      buildTmuxNewSessionArgs('archon-desktop:test', '/home/user', 'claude'),
+      { stdio: 'ignore' }
+    );
+
+    expect(spawnSpy).toHaveBeenCalledWith(
+      'tmux',
+      ['new-session', '-A', '-d', '-s', 'archon-desktop:test', '-c', '/home/user', 'claude'],
+      { stdio: 'ignore' }
+    );
+  });
+
+  test('spawnProcess is called with correct script attach args', () => {
+    const fakeProc = {
+      on: () => fakeProc,
+      stdout: { on: () => undefined },
+      stderr: { on: () => undefined },
+      stdin: { write: () => true },
+      kill: () => true,
+    };
+    spawnSpy.mockReturnValue(fakeProc);
+
+    desktopModule.spawnProcess(
+      'script',
+      ['-qfc', buildTmuxAttachCommand('archon-desktop:test'), '/dev/null'],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+
+    expect(spawnSpy).toHaveBeenCalledWith(
+      'script',
+      ['-qfc', 'tmux attach-session -t archon-desktop:test', '/dev/null'],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+  });
+
+  test('spawnProcess is called with correct resize args', () => {
+    const fakeProc = { on: () => fakeProc, kill: () => true };
+    spawnSpy.mockReturnValue(fakeProc);
+
+    desktopModule.spawnProcess('tmux', buildTmuxResizeArgs('archon-desktop:test', 80, 24), {
+      stdio: 'ignore',
+    });
+
+    expect(spawnSpy).toHaveBeenCalledWith(
+      'tmux',
+      ['resize-window', '-t', 'archon-desktop:test', '-x', '80', '-y', '24'],
+      { stdio: 'ignore' }
+    );
   });
 });

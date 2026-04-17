@@ -7,8 +7,10 @@ import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import { upgradeWebSocket } from '../ws';
 import {
   desktopHealthResponseSchema,
   fsTreeQuerySchema,
@@ -264,20 +266,6 @@ const fsFileWriteRoute = createRoute({
   },
 });
 
-const ptyRoute = createRoute({
-  method: 'get',
-  path: '/api/desktop/pty',
-  tags: ['Desktop'],
-  summary: 'WebSocket PTY endpoint (placeholder)',
-  responses: {
-    403: {
-      content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
-      description: 'Forbidden',
-    },
-    501: json501('Not implemented — future WebSocket endpoint'),
-  },
-});
-
 const tmuxListRoute = createRoute({
   method: 'get',
   path: '/api/desktop/tmux/list',
@@ -333,6 +321,51 @@ const lspRoute = createRoute({
 });
 
 // =========================================================================
+// PTY WebSocket helpers
+// =========================================================================
+
+/** Session name regex — prevents shell injection in tmux commands. */
+const SESSION_NAME_REGEX = /^archon-desktop:[a-z0-9:-]+$/;
+
+/** Validate a tmux session name against the allowed pattern. */
+export function validateSessionName(name: string): boolean {
+  return SESSION_NAME_REGEX.test(name);
+}
+
+/** Build args for `tmux new-session -A -d -s <name> [-c <cwd>] [<command>]`. */
+export function buildTmuxNewSessionArgs(
+  sessionName: string,
+  cwd?: string,
+  command?: string
+): string[] {
+  const args = ['new-session', '-A', '-d', '-s', sessionName];
+  if (cwd) args.push('-c', cwd);
+  if (command) args.push(command);
+  return args;
+}
+
+/** Build the shell command string for `script -qfc` to attach to a tmux session. */
+export function buildTmuxAttachCommand(sessionName: string): string {
+  return `tmux attach-session -t ${sessionName}`;
+}
+
+/** Build args for `tmux resize-window -t <name> -x <cols> -y <rows>`. */
+export function buildTmuxResizeArgs(sessionName: string, cols: number, rows: number): string[] {
+  return ['resize-window', '-t', sessionName, '-x', String(cols), '-y', String(rows)];
+}
+
+/**
+ * Spawn a child process. Exported for testability (allows spyOn in tests).
+ */
+export function spawnProcess(
+  command: string,
+  args: string[],
+  options: { stdio: 'ignore' | ('pipe' | 'ignore')[] }
+): ChildProcess {
+  return spawn(command, args, options);
+}
+
+// =========================================================================
 // Route registration
 // =========================================================================
 
@@ -375,8 +408,122 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
   registerOpenApiRoute(fsTreeRoute, notImplemented);
   registerOpenApiRoute(fsFileReadRoute, notImplemented);
   registerOpenApiRoute(fsFileWriteRoute, notImplemented);
-  registerOpenApiRoute(ptyRoute, notImplemented);
   registerOpenApiRoute(tmuxListRoute, notImplemented);
   registerOpenApiRoute(tmuxKillRoute, notImplemented);
   registerOpenApiRoute(lspRoute, notImplemented);
+
+  // -----------------------------------------------------------------------
+  // WS /api/desktop/pty — WebSocket PTY endpoint (tmux-backed remote shells)
+  // -----------------------------------------------------------------------
+  // Registered as a plain Hono route (not OpenAPI — WS upgrade is not spec'd).
+  // Loopback guard middleware at /api/desktop/* still applies.
+  app.get(
+    '/api/desktop/pty',
+    upgradeWebSocket(c => {
+      const url = new URL(c.req.url);
+      const sessionName = url.searchParams.get('sessionName') ?? '';
+      const cwd = url.searchParams.get('cwd') ?? undefined;
+      const command = url.searchParams.get('command') ?? undefined;
+
+      let attachProcess: ChildProcess | null = null;
+
+      return {
+        onOpen(_event, ws): void {
+          // Validate session name to prevent shell injection
+          if (!validateSessionName(sessionName)) {
+            ws.close(1008, 'Invalid session name — must match archon-desktop:[a-z0-9:-]+');
+            return;
+          }
+
+          // Step 1: Ensure tmux session exists (create-or-attach, detached)
+          const newSessionArgs = buildTmuxNewSessionArgs(sessionName, cwd, command);
+          const createProc = spawnProcess('tmux', newSessionArgs, { stdio: 'ignore' });
+
+          createProc.on('close', () => {
+            // Step 2: Attach to the session via a PTY wrapper (script provides PTY)
+            // Using Linux `script -qfc` to allocate a pseudo-terminal for tmux attach
+            const attachCmd = buildTmuxAttachCommand(sessionName);
+            attachProcess = spawnProcess('script', ['-qfc', attachCmd, '/dev/null'], {
+              stdio: ['pipe', 'pipe', 'pipe'],
+            });
+
+            // Bridge stdout → WS (binary-safe byte relay)
+            attachProcess.stdout?.on('data', (data: Buffer) => {
+              try {
+                // Copy to a fresh ArrayBuffer to satisfy WS send type constraints
+                const bytes = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+                ws.send(bytes as ArrayBuffer);
+              } catch {
+                // WS already closed
+              }
+            });
+
+            // Bridge stderr → WS (for tmux diagnostic output)
+            attachProcess.stderr?.on('data', (data: Buffer) => {
+              try {
+                const bytes = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+                ws.send(bytes as ArrayBuffer);
+              } catch {
+                // WS already closed
+              }
+            });
+
+            // If the attach process exits, close the WS
+            attachProcess.on('close', () => {
+              attachProcess = null;
+              try {
+                ws.close(1000, 'Process exited');
+              } catch {
+                // WS already closed
+              }
+            });
+          });
+        },
+
+        onMessage(event): void {
+          if (!attachProcess?.stdin) return;
+
+          const data = event.data;
+
+          // Try to parse as JSON resize message: { type: 'resize', cols, rows }
+          if (typeof data === 'string') {
+            try {
+              const msg = JSON.parse(data) as { type?: string; cols?: number; rows?: number };
+              if (
+                msg.type === 'resize' &&
+                typeof msg.cols === 'number' &&
+                typeof msg.rows === 'number'
+              ) {
+                // Resize the tmux window (fire-and-forget)
+                spawnProcess('tmux', buildTmuxResizeArgs(sessionName, msg.cols, msg.rows), {
+                  stdio: 'ignore',
+                });
+                return;
+              }
+            } catch {
+              // Not JSON — treat as terminal input
+            }
+            attachProcess.stdin.write(data);
+          } else if (data instanceof ArrayBuffer) {
+            attachProcess.stdin.write(Buffer.from(data));
+          }
+        },
+
+        onClose(): void {
+          // Kill the attach process — this detaches from tmux, session keeps running
+          if (attachProcess) {
+            attachProcess.kill();
+            attachProcess = null;
+          }
+        },
+
+        onError(): void {
+          if (attachProcess) {
+            attachProcess.kill();
+            attachProcess = null;
+          }
+        },
+      };
+    })
+  );
 }

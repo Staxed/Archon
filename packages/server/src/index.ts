@@ -562,9 +562,13 @@ async function main(): Promise<void> {
     app.get('*', serveStatic({ root: webDistPath, path: 'index.html' }));
   }
 
+  // Import WebSocket handler for Bun.serve (required by desktop PTY endpoint)
+  const { websocket } = await import('./ws');
+
   const hostname = process.env.HOST || '0.0.0.0';
   const server = Bun.serve({
     fetch: app.fetch,
+    websocket,
     hostname,
     port,
     idleTimeout: 255, // Max value (seconds) - prevents SSE connections from being killed
