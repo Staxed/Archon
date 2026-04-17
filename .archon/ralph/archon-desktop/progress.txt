@@ -358,3 +358,27 @@
 - Toast auto-dismiss via setTimeout in a useCallback is clean — no need for a toast library
 
 ---
+
+## 2026-04-17 — US-012: GET /api/desktop/fs/tree endpoint
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/desktop.ts` — Replace 501 placeholder with real fs/tree handler; add listDirectory, containsTraversal, isPathWithinRoot helpers
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — Add notFoundResponseSchema
+- `packages/server/src/routes/desktop.test.ts` — Add 13 tests: isPathWithinRoot (5), containsTraversal (3), fs/tree endpoint (5 — happy path, 404, 403, traversal rejection, empty dir)
+
+**Acceptance criteria verified**:
+- [x] `GET /api/desktop/fs/tree?host=&root=` returns `{ entries: { name, kind, size?, mtime }[] }`
+- [x] Path normalization rejects `..` traversal outside root (containsTraversal check)
+- [x] Returns 404 if path doesn't exist (ENOENT); 403 if not readable (EACCES/EPERM)
+- [x] Loopback guard enforced (middleware from US-002 covers all /api/desktop/* routes)
+- [x] Zod schemas in `desktop.schemas.ts` (fsTreeQuerySchema, fsTreeResponseSchema, notFoundResponseSchema)
+- [x] Unit tests cover happy path, traversal rejection, and permission error (13 new tests)
+
+**Learnings**:
+- `path.normalize()` resolves `..` segments in absolute paths, so post-normalize check for `..` fails — must check raw path segments before normalization
+- `readdir({ withFileTypes: true })` returns Dirent objects with `isDirectory()` method — clean way to determine file vs dir without separate stat calls for kind
+- `isPathWithinRoot` is a general-purpose utility for subpath validation (will be useful for US-027 file read/write)
+- Entries that can't be `stat()`ed (broken symlinks, permission on individual files) are silently skipped rather than failing the whole listing
+
+---

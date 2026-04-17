@@ -230,8 +230,8 @@
       "technicalNotes": "Per §10.1. Use `fs/promises` `readdir` with `withFileTypes: true`. Path normalization via `path.normalize` + startsWith check on resolved root.",
       "dependsOn": ["US-002"],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 12. Files: packages/server/src/routes/desktop.ts, packages/server/src/routes/schemas/desktop.schemas.ts, packages/server/src/routes/desktop.test.ts."
     },
     {
       "id": "US-013",
