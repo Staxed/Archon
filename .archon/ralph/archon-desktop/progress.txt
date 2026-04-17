@@ -55,6 +55,11 @@
 - **Pattern**: Use `Panel` with `collapsible`, `collapsedSize="30px"`, `panelRef` for collapse/expand. Use `Group`'s `onLayoutChanged` (fires on pointer release) to snap to nearest grid-column-width. `PanelImperativeHandle` has `collapse()`, `expand()`, `resize()`, `isCollapsed()`, `getSize()`.
 - **Note**: Access layout object with dot notation (`layout.editor`) not bracket notation. Guard against infinite snap loops by checking `Math.abs(snapped - size) > 0.5`.
 
+### CodeMirror 6 Lazy Loading
+- **Where**: `packages/desktop/src/EditorColumn.tsx`
+- **Pattern**: CM6 modules lazy-loaded via `Promise.all([import('@codemirror/view'), ...])` to avoid large initial bundle. Cached in module-level promise singleton. Language extensions resolved via `extensionToLanguage(ext)` helper in `EditorTabs.ts`.
+- **Note**: `react-hooks/exhaustive-deps` rule does NOT exist in this ESLint config — never use it in eslint-disable comments
+
 ### Desktop Test Batching for localStorage Mocks
 - **Where**: `packages/desktop/package.json` test script
 - **Pattern**: Tests that use `Object.defineProperty(globalThis, 'localStorage', ...)` (LaunchProfile.test.ts, ProfileEditor.test.ts) must run in a separate `bun test` invocation from tests that use `globalThis.localStorage = ...` (PreflightBanner.test.ts). The two patterns are incompatible in the same process.
@@ -720,5 +725,35 @@
 - Panel size accessed via `Layout` object keyed by Panel `id` prop — use dot notation (`layout.editor`) not bracket (`layout['editor']`) for ESLint
 - WorkspaceData.editorColumn field needed to be explicitly included in loadWorkspace's return value — the previous implementation only extracted `roots`
 - PanelImperativeHandle, GroupImperativeHandle, Layout, PanelSize are importable types from react-resizable-panels
+
+---
+
+## 2026-04-17 — US-026: CodeMirror 6 editor with tabs, preview/pinned, and dirty indicator
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/EditorTabs.ts` — New pure tab state machine: EditorTab type, TabState, tabReducer (OPEN_PREVIEW/OPEN_PINNED/PIN_TAB/SET_DIRTY/CLOSE_TAB/ACTIVATE_TAB), extensionToLanguage helper
+- `packages/desktop/src/EditorTabs.test.ts` — 20 tests covering tab state machine (preview↔pinned, dirty flag, close flow, full lifecycle)
+- `packages/desktop/src/EditorColumn.tsx` — Rebuilt with TabBar, CodeMirror 6 editor (lazy-loaded via dynamic import), CloseDirtyModal, tab context menu (Open in New Split)
+- `packages/desktop/src/FileTree.tsx` — Added onFileClick/onFileDoubleClick props, passed through TreeNode hierarchy
+- `packages/desktop/src/App.tsx` — Wired tab state (useReducer), file content fetching, file click handlers, passes tabState/tabDispatch to EditorColumnContent
+- `packages/desktop/src/styles.css` — Tab bar, tab states (active/preview/dirty), context menu, close-dirty modal, CodeMirror container styles
+- `packages/desktop/package.json` — Added codemirror, @codemirror/state, @codemirror/view, lang-javascript, lang-python, lang-markdown, lang-json, lang-css, lang-html deps; updated test script
+
+**Acceptance criteria verified**:
+- [x] Tab bar across top of editor column; each tab shows filename + dirty dot (TabBar with .editor-tab-dirty ● indicator)
+- [x] Single-click in tree → preview tab (italic); replaces previous preview (onFileClick → OPEN_PREVIEW, .editor-tab-preview with font-style: italic)
+- [x] Double-click in tree or edit → tab becomes pinned (non-italic) (onFileDoubleClick → OPEN_PINNED, editing triggers PIN_TAB)
+- [x] Close tab with unsaved changes → modal: Save / Discard / Cancel (CloseDirtyModal component with three actions)
+- [x] Right-click tab → Open in New Split (context menu with onSplitRight prop, to be wired in US-029)
+- [x] CodeMirror 6 loaded with @codemirror/lang-javascript, @codemirror/lang-python, @codemirror/lang-markdown, language auto-selected by extension (extensionToLanguage maps ext → lang, lazy-loaded CM6 modules)
+- [x] Unit tests cover tab state machine (preview↔pinned, dirty flag, close flow) (20 tests)
+
+**Learnings**:
+- CodeMirror 6 modules should be lazy-loaded to avoid large initial bundle — `Promise.all` on dynamic imports works cleanly
+- Tab state machine is pure (no React dependency) — makes testing straightforward without DOM mocking
+- `react-hooks/exhaustive-deps` rule doesn't exist in this ESLint config — don't use it in eslint-disable comments
+- FileTree props cascade through TreeNode hierarchy — rootHost param needed at every level for file click handlers
+- EditorView.theme() with `{ dark: true }` creates a proper dark mode CM6 theme
 
 ---

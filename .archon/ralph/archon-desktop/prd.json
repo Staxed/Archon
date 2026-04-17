@@ -535,8 +535,8 @@
         "US-001"
       ],
       "priority": 26,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 26. Files: packages/desktop/src/EditorTabs.ts, packages/desktop/src/EditorTabs.test.ts, packages/desktop/src/EditorColumn.tsx, packages/desktop/src/FileTree.tsx, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-027",
