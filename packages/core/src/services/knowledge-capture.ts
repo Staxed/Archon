@@ -259,13 +259,14 @@ export function parseScopedOutput(
 
   // 'both' scope: parse ## PROJECT and ## GLOBAL blocks
   const projectMatch = /## PROJECT\s*\n([\s\S]*?)(?=## GLOBAL|$)/i.exec(content);
-  const globalMatch = /## GLOBAL\s*\n([\s\S]*?)$/i.exec(content);
+  const globalMatch = /## GLOBAL\s*\n([\s\S]*?)(?=## PROJECT|$)/i.exec(content);
 
   const projectContent = projectMatch?.[1]?.trim() ?? '';
   const globalContent = globalMatch?.[1]?.trim() ?? '';
 
   // If neither block was found, fall back to project (conservative default)
   if (!projectContent && !globalContent) {
+    getLog().info('knowledge.parse_scope_fallback_project');
     return { project: content.trim(), global: '' };
   }
 

@@ -314,6 +314,95 @@ describe('knowledge-extract node', () => {
     expect(store.completeWorkflowRun).toHaveBeenCalled();
   });
 
+  test('knowledge-extract node forwards default scope "both" to extractKnowledge', async () => {
+    const nodes: DagNode[] = [
+      {
+        id: 'extract',
+        knowledge_extract: 'Extract patterns',
+      } as KnowledgeExtractNode,
+    ];
+
+    const deps: WorkflowDeps = {
+      store,
+      getAssistantClient: () => ({
+        sendQuery: async function* () {
+          /* noop */
+        },
+        getType: () => 'claude',
+      }),
+      loadConfig: async () => config,
+      extractKnowledge: mockExtractKnowledge,
+    };
+
+    const workflowRun = createWorkflowRun();
+    (store.getWorkflowRunStatus as Mock<() => Promise<string | null>>).mockResolvedValue('running');
+
+    await executeDagWorkflow(
+      deps,
+      platform,
+      'conv-123',
+      '/tmp/test',
+      { name: 'test', nodes },
+      workflowRun,
+      'claude',
+      'sonnet',
+      '/tmp/artifacts',
+      '/tmp/logs',
+      'main',
+      'docs/',
+      config
+    );
+
+    expect(mockExtractKnowledge).toHaveBeenCalledTimes(1);
+    const call = mockExtractKnowledge.mock.calls[0];
+    expect(call[4]).toBe('both'); // scope defaults to 'both'
+  });
+
+  test('knowledge-extract node forwards explicit scope "project" to extractKnowledge', async () => {
+    const nodes: DagNode[] = [
+      {
+        id: 'extract',
+        knowledge_extract: 'Extract patterns',
+        scope: 'project',
+      } as KnowledgeExtractNode,
+    ];
+
+    const deps: WorkflowDeps = {
+      store,
+      getAssistantClient: () => ({
+        sendQuery: async function* () {
+          /* noop */
+        },
+        getType: () => 'claude',
+      }),
+      loadConfig: async () => config,
+      extractKnowledge: mockExtractKnowledge,
+    };
+
+    const workflowRun = createWorkflowRun();
+    (store.getWorkflowRunStatus as Mock<() => Promise<string | null>>).mockResolvedValue('running');
+
+    await executeDagWorkflow(
+      deps,
+      platform,
+      'conv-123',
+      '/tmp/test',
+      { name: 'test', nodes },
+      workflowRun,
+      'claude',
+      'sonnet',
+      '/tmp/artifacts',
+      '/tmp/logs',
+      'main',
+      'docs/',
+      config
+    );
+
+    expect(mockExtractKnowledge).toHaveBeenCalledTimes(1);
+    const call = mockExtractKnowledge.mock.calls[0];
+    expect(call[4]).toBe('project'); // explicit scope forwarded
+  });
+
   test('existing workflows without knowledge-extract nodes work unchanged', async () => {
     const nodes: DagNode[] = [{ id: 'build', bash: 'echo "built"' } as DagNode];
 
