@@ -481,3 +481,27 @@
 - canRevealInOs is just isLocalHost — kept as a separate named function for semantic clarity in the context menu code
 
 ---
+
+## 2026-04-17 — US-017: tmux list + kill endpoints
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/desktop.ts` — Replace 501 placeholders for tmux/list and tmux/kill with real handlers; add tmux/rename endpoint; add parseTmuxListSessions, buildTmuxListSessionsArgs, buildTmuxKillSessionArgs, buildTmuxRenameSessionArgs helpers
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — Add tmuxRenameQuerySchema
+- `packages/server/src/routes/desktop.test.ts` — Add 20+ tests for parse logic, argv construction, and endpoint behavior; remove tmux/list and tmux/kill from 501 placeholder test list
+
+**Acceptance criteria verified**:
+- [x] `GET /api/desktop/tmux/list?host=` wraps `tmux list-sessions -F` and parses into JSON `{ sessions: { name, createdAt, cwd, status }[] }`
+- [x] `POST /api/desktop/tmux/kill?host=&sessionName=` wraps `tmux kill-session -t <sessionName>`
+- [x] `POST /api/desktop/tmux/rename?host=&from=&to=` wraps `tmux rename-session`
+- [x] Session name validated for injection-safety (validateSessionName regex from US-007)
+- [x] Returns 404 if session not found (for kill/rename)
+- [x] Unit tests for parse logic + argv construction (20+ tests)
+
+**Learnings**:
+- tmux list-sessions `#{session_created}` returns a Unix epoch (seconds) — parse as integer and convert to ISO date
+- tmux returns "no server running" on stderr when no sessions exist — handle gracefully by returning empty sessions array
+- execFileAsync with array args (no shell interpolation) is already available via promisify(execFile) in desktop.ts
+- Error classification for tmux: "session not found" and "can't find session" are both possible error messages depending on tmux version
+
+---
