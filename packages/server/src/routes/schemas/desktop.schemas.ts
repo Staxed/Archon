@@ -132,3 +132,12 @@ export const preflightResponseSchema = z
     checks: z.array(preflightCheckSchema),
   })
   .openapi('PreflightResponse');
+
+/** POST /api/desktop/aichat/ensure-config response. */
+export const aichatEnsureConfigResponseSchema = z
+  .object({
+    created: z.boolean(),
+    validated: z.boolean(),
+    message: z.string(),
+  })
+  .openapi('AichatEnsureConfigResponse');
