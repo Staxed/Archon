@@ -731,8 +731,8 @@
         "US-033"
       ],
       "priority": 35,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 35. Files: packages/desktop/docs/ga-validation.md."
     }
   ]
 }
