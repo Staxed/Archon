@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { FitAddon } from '@xterm/addon-fit';
+import { Osc133Addon } from './Osc133Addon';
 import '@xterm/xterm/css/xterm.css';
 
 /** Backend abstraction for PTY communication. */
@@ -106,13 +107,18 @@ export function createRemoteBackend(wsUrl: string): TerminalBackend {
 export interface TerminalPaneProps {
   /** The PTY backend to use for this pane. */
   backend: TerminalBackend;
+  /** Enable OSC 133 command-block parsing addon. Default: true. */
+  enableOsc133?: boolean;
 }
 
 /**
  * TerminalPane wraps an xterm.js Terminal instance with WebGL rendering
  * and auto-fit sizing. Supports local and remote PTY backends.
  */
-export function TerminalPane({ backend }: TerminalPaneProps): React.JSX.Element {
+export function TerminalPane({
+  backend,
+  enableOsc133 = true,
+}: TerminalPaneProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -159,6 +165,13 @@ export function TerminalPane({ backend }: TerminalPaneProps): React.JSX.Element 
       // WebGL not available — canvas renderer is the automatic fallback
     }
 
+    // Load OSC 133 command-block parser addon
+    let osc133Addon: Osc133Addon | null = null;
+    if (enableOsc133) {
+      osc133Addon = new Osc133Addon();
+      terminal.loadAddon(osc133Addon);
+    }
+
     fitAddon.fit();
 
     terminalRef.current = terminal;
@@ -187,11 +200,12 @@ export function TerminalPane({ backend }: TerminalPaneProps): React.JSX.Element 
       resizeObserver.disconnect();
       disposeOnInput.dispose();
       disposeOnData();
+      if (osc133Addon) osc133Addon.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [backend, handleResize]);
+  }, [backend, handleResize, enableOsc133]);
 
   return (
     <div
