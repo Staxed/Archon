@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicovrc/tauri/dev/crates/tauri-config-schema/schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Archon Desktop",
   "version": "0.1.0",
   "identifier": "com.archon.desktop",
@@ -10,7 +10,6 @@
     "beforeBuildCommand": "cd .. && bun run build"
   },
   "app": {
-    "title": "Archon Desktop",
     "windows": [
       {
         "title": "Archon Desktop",
