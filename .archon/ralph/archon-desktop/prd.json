@@ -173,8 +173,8 @@
       "technicalNotes": "Per §10.4. OSC 133 spec: A=PromptStart, B=CommandStart, C=CommandExecuted, D=CommandFinished. Reference BridgeSpace (§2) for 'OSC 133 command blocks'.",
       "dependsOn": ["US-008"],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 9. Files: packages/desktop/src/Osc133Addon.ts, packages/desktop/src/Osc133Addon.test.ts, packages/desktop/src/TerminalPane.tsx, packages/desktop/package.json."
     },
     {
       "id": "US-010",

@@ -273,3 +273,28 @@
 - Test files in desktop package are excluded from tsconfig (as established in US-005) — tests can be pure backend logic tests without DOM
 
 ---
+
+## 2026-04-17 — US-009: OSC 133 command-block parser addon
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/Osc133Addon.ts` — New xterm.js addon: parseOsc133(), Osc133Addon class with block tracking, gutter toggles, context menu (Copy Command/Copy Output)
+- `packages/desktop/src/Osc133Addon.test.ts` — 20 tests covering parser, block state machine, sequential blocks, orphan handling, toggle, and no-op behavior
+- `packages/desktop/src/TerminalPane.tsx` — Added enableOsc133 prop (default true), loads Osc133Addon in useEffect, disposes on unmount
+- `packages/desktop/package.json` — Added Osc133Addon.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] Custom xterm.js addon parses `OSC 133;A/B/C/D` sequences (registerOscHandler(133, ...))
+- [x] Blocks render with a collapse/expand toggle in the gutter (addGutterToggle with ▶/▼)
+- [x] Right-click on a block offers `Copy Command` and `Copy Output` actions (context menu via handleContextMenu)
+- [x] Non-OSC-133 output renders normally (addon is a no-op when sequences absent)
+- [x] Unit test covers a synthetic stream with nested blocks (20 tests)
+- [x] Integrated into `TerminalPane` via an opt-in prop (default on) (enableOsc133 prop)
+
+**Learnings**:
+- xterm.js parser API: `terminal.parser.registerOscHandler(oscId, callback)` receives the data portion after the OSC identifier
+- OSC 133 data is just the letter (A/B/C/D) possibly followed by extra params — simple string parsing suffices
+- Block tracking as a state machine (currentBlock partial → finalized block on D) maps cleanly to the A→B→C→D sequence
+- Arrow function return type annotations needed for ESLint `explicit-function-return-type` rule — even on inline callbacks stored as class properties
+
+---
