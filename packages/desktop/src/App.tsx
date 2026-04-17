@@ -22,9 +22,14 @@ import {
   snapWidth,
   loadEditorColumnState,
   saveEditorColumnState,
+  getEditorContent,
+  replaceEditorContent,
 } from './EditorColumn';
+import type { ConflictState } from './EditorColumn';
 import { tabReducer, createInitialTabState, tabId } from './EditorTabs';
 import type { TabAction } from './EditorTabs';
+import { saveFile, isSaveShortcut, hasDirtyTabs } from './SaveFlow';
+import type { FileMtimeMap } from './SaveFlow';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -111,6 +116,11 @@ function App(): React.JSX.Element {
   const [tabState, tabDispatch] = useReducer(tabReducer, undefined, createInitialTabState);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
 
+  // Save flow state
+  const fileMtimes = useRef<FileMtimeMap>({});
+  const [conflict, setConflict] = useState<ConflictState | null>(null);
+  const [windowCloseDirtyFiles, setWindowCloseDirtyFiles] = useState<string[] | null>(null);
+
   // Fetch file content when a new tab is opened
   const fetchFileContent = useCallback(
     (host: string, path: string): void => {
@@ -121,10 +131,11 @@ function App(): React.JSX.Element {
       )
         .then(res => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json() as Promise<{ content: string }>;
+          return res.json() as Promise<{ content: string; mtime: string }>;
         })
         .then(data => {
           setFileContents(prev => ({ ...prev, [id]: data.content }));
+          fileMtimes.current[id] = data.mtime;
         })
         .catch(() => {
           // File read not yet implemented (501) or error — set empty content
@@ -158,6 +169,121 @@ function App(): React.JSX.Element {
     },
     [fetchFileContent]
   );
+
+  // Show toast with auto-dismiss
+  const showToast = useCallback((message: string): void => {
+    setToast(message);
+    setTimeout(() => {
+      setToast(null);
+    }, 3000);
+  }, []);
+
+  // Save a tab's content to the remote server
+  const handleSaveTab = useCallback(
+    (id: string): void => {
+      const tab = tabState.tabs.find(t => t.id === id);
+      if (!tab) return;
+
+      const content = getEditorContent(id);
+      if (content === null) return;
+
+      const expectedMtime = fileMtimes.current[id];
+      void saveFile(DEFAULT_SERVER_URL, tab.host, tab.path, content, expectedMtime).then(
+        outcome => {
+          if (outcome.kind === 'success') {
+            fileMtimes.current[id] = outcome.mtime;
+            tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+            setConflict(null);
+          } else if (outcome.kind === 'conflict') {
+            setConflict({
+              tabId: id,
+              fileName: tab.name,
+              currentContent: outcome.currentContent,
+              currentMtime: outcome.currentMtime,
+            });
+          } else {
+            showToast(`Save failed: ${outcome.message}`);
+          }
+        }
+      );
+    },
+    [tabState.tabs, showToast]
+  );
+
+  // Conflict: reload file from server (discard edits)
+  const handleConflictReload = useCallback((): void => {
+    if (!conflict) return;
+    const { tabId: id, currentContent, currentMtime } = conflict;
+    replaceEditorContent(id, currentContent);
+    fileMtimes.current[id] = currentMtime;
+    tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+    setConflict(null);
+  }, [conflict]);
+
+  // Conflict: overwrite anyway (retry without mtime)
+  const handleConflictOverwrite = useCallback((): void => {
+    if (!conflict) return;
+    const { tabId: id } = conflict;
+    const tab = tabState.tabs.find(t => t.id === id);
+    if (!tab) return;
+
+    const content = getEditorContent(id);
+    if (content === null) return;
+
+    void saveFile(DEFAULT_SERVER_URL, tab.host, tab.path, content).then(outcome => {
+      if (outcome.kind === 'success') {
+        fileMtimes.current[id] = outcome.mtime;
+        tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+        setConflict(null);
+      } else if (outcome.kind === 'error') {
+        showToast(`Save failed: ${outcome.message}`);
+      }
+    });
+  }, [conflict, tabState.tabs, showToast]);
+
+  // Window close dirty guard
+  const handleWindowCloseCancel = useCallback((): void => {
+    setWindowCloseDirtyFiles(null);
+  }, []);
+
+  const handleWindowCloseConfirm = useCallback((): void => {
+    setWindowCloseDirtyFiles(null);
+    // In Tauri, this would close the window. For now, clear all dirty state.
+    for (const tab of tabState.tabs) {
+      if (tab.dirty) {
+        tabDispatch({ type: 'SET_DIRTY', id: tab.id, dirty: false });
+      }
+    }
+  }, [tabState.tabs]);
+
+  // Ctrl+S / Cmd+S shortcut
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (isSaveShortcut(e)) {
+        e.preventDefault();
+        if (tabState.activeTabId) {
+          handleSaveTab(tabState.activeTabId);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return (): void => {
+      window.removeEventListener('keydown', handler);
+    };
+  }, [tabState.activeTabId, handleSaveTab]);
+
+  // beforeunload guard for dirty tabs
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent): void => {
+      if (hasDirtyTabs(tabState.tabs)) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return (): void => {
+      window.removeEventListener('beforeunload', handler);
+    };
+  }, [tabState.tabs]);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -209,14 +335,6 @@ function App(): React.JSX.Element {
     if (!collapsed) {
       lastExpandedWidthRef.current = panelSize.asPercentage;
     }
-  }, []);
-
-  // Show toast with auto-dismiss
-  const showToast = useCallback((message: string): void => {
-    setToast(message);
-    setTimeout(() => {
-      setToast(null);
-    }, 3000);
   }, []);
 
   // Open an ad-hoc terminal in the first free grid slot
@@ -331,6 +449,13 @@ function App(): React.JSX.Element {
                 tabState={tabState}
                 tabDispatch={tabDispatch as (action: TabAction) => void}
                 fileContents={fileContents}
+                onSaveTab={handleSaveTab}
+                conflict={conflict}
+                onConflictReload={handleConflictReload}
+                onConflictOverwrite={handleConflictOverwrite}
+                windowCloseDirtyFiles={windowCloseDirtyFiles}
+                onWindowCloseConfirm={handleWindowCloseConfirm}
+                onWindowCloseCancel={handleWindowCloseCancel}
               />
             </Panel>
             <ResizeHandle />

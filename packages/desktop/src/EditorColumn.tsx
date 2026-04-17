@@ -141,6 +141,25 @@ function getLanguageExtension(lang: string | null, cm: CMModules): Extension | n
 
 // ── CodeMirror Editor Component ─────────────────────────────────
 
+/** Map of tab id → EditorView for reading current content from parent. */
+const editorViewMap = new Map<string, EditorView>();
+
+/** Get the current document content for a tab from its CodeMirror EditorView. */
+export function getEditorContent(tabId: string): string | null {
+  const view = editorViewMap.get(tabId);
+  if (!view) return null;
+  return view.state.doc.toString();
+}
+
+/** Replace the document content in a tab's CodeMirror EditorView. */
+export function replaceEditorContent(tabId: string, newContent: string): void {
+  const view = editorViewMap.get(tabId);
+  if (!view) return;
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: newContent },
+  });
+}
+
 interface CodeMirrorEditorProps {
   tab: EditorTab;
   content: string;
@@ -194,9 +213,11 @@ function CodeMirrorEditor({
         parent: el,
       });
       viewRef.current = view;
+      editorViewMap.set(tab.id, view);
     });
 
     return (): void => {
+      editorViewMap.delete(tab.id);
       if (view) {
         view.destroy();
         view = null;
@@ -303,6 +324,73 @@ function CloseDirtyModal({
   );
 }
 
+// ── Conflict banner ────────────────────────────────────────────
+
+interface ConflictBannerProps {
+  fileName: string;
+  onReload: () => void;
+  onOverwrite: () => void;
+}
+
+function ConflictBanner({
+  fileName,
+  onReload,
+  onOverwrite,
+}: ConflictBannerProps): React.JSX.Element {
+  return (
+    <div className="editor-conflict-banner">
+      <span>
+        <strong>{fileName}</strong> was changed on disk. Your edits may conflict.
+      </span>
+      <div className="editor-conflict-actions">
+        <button className="modal-btn" onClick={onReload}>
+          Reload
+        </button>
+        <button className="modal-btn modal-btn-danger" onClick={onOverwrite}>
+          Overwrite anyway
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Window close dirty modal ───────────────────────────────────
+
+interface WindowCloseDirtyModalProps {
+  dirtyFiles: string[];
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function WindowCloseDirtyModal({
+  dirtyFiles,
+  onConfirm,
+  onCancel,
+}: WindowCloseDirtyModalProps): React.JSX.Element {
+  return (
+    <div className="modal-overlay">
+      <div className="modal editor-close-dirty-modal">
+        <h3>Unsaved Changes</h3>
+        <p>The following files have unsaved changes:</p>
+        <ul className="editor-dirty-file-list">
+          {dirtyFiles.map(f => (
+            <li key={f}>{f}</li>
+          ))}
+        </ul>
+        <p>Close anyway and discard all changes?</p>
+        <div className="modal-actions">
+          <button className="modal-btn modal-btn-danger" onClick={onConfirm}>
+            Discard All &amp; Close
+          </button>
+          <button className="modal-btn" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab context menu ────────────────────────────────────────────
 
 interface TabContextMenuState {
@@ -319,6 +407,13 @@ export interface OpenFile {
   name: string;
 }
 
+export interface ConflictState {
+  tabId: string;
+  fileName: string;
+  currentContent: string;
+  currentMtime: string;
+}
+
 interface EditorColumnContentProps {
   collapsed: boolean;
   openFiles: OpenFile[];
@@ -327,6 +422,13 @@ interface EditorColumnContentProps {
   tabDispatch: (action: TabAction) => void;
   fileContents: Record<string, string>;
   onSplitRight?: (tabId: string) => void;
+  onSaveTab?: (tabId: string) => void;
+  conflict?: ConflictState | null;
+  onConflictReload?: () => void;
+  onConflictOverwrite?: () => void;
+  windowCloseDirtyFiles?: string[] | null;
+  onWindowCloseConfirm?: () => void;
+  onWindowCloseCancel?: () => void;
 }
 
 /**
@@ -342,6 +444,13 @@ export function EditorColumnContent({
   tabDispatch,
   fileContents,
   onSplitRight,
+  onSaveTab,
+  conflict,
+  onConflictReload,
+  onConflictOverwrite,
+  windowCloseDirtyFiles,
+  onWindowCloseConfirm,
+  onWindowCloseCancel,
 }: EditorColumnContentProps): React.JSX.Element {
   const [closeDirtyTab, setCloseDirtyTab] = useState<EditorTab | null>(null);
   const [contextMenu, setContextMenu] = useState<TabContextMenuState | null>(null);
@@ -461,11 +570,21 @@ export function EditorColumnContent({
         )}
       </div>
 
+      {conflict && onConflictReload && onConflictOverwrite && (
+        <ConflictBanner
+          fileName={conflict.fileName}
+          onReload={onConflictReload}
+          onOverwrite={onConflictOverwrite}
+        />
+      )}
+
       {closeDirtyTab && (
         <CloseDirtyModal
           fileName={closeDirtyTab.name}
           onSave={(): void => {
-            // Save will be wired in US-028 — for now just close
+            if (onSaveTab) {
+              onSaveTab(closeDirtyTab.id);
+            }
             tabDispatch({ type: 'CLOSE_TAB', id: closeDirtyTab.id });
             setCloseDirtyTab(null);
           }}
@@ -478,6 +597,17 @@ export function EditorColumnContent({
           }}
         />
       )}
+
+      {windowCloseDirtyFiles &&
+        windowCloseDirtyFiles.length > 0 &&
+        onWindowCloseConfirm &&
+        onWindowCloseCancel && (
+          <WindowCloseDirtyModal
+            dirtyFiles={windowCloseDirtyFiles}
+            onConfirm={onWindowCloseConfirm}
+            onCancel={onWindowCloseCancel}
+          />
+        )}
 
       {contextMenu && (
         <div

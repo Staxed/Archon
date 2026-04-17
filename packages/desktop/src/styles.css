@@ -624,6 +624,37 @@ body,
   opacity: 0.9;
 }
 
+/* Conflict banner */
+.editor-conflict-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background-color: #4a3000;
+  border-bottom: 1px solid #7a5500;
+  color: #ffc107;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.editor-conflict-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Window close dirty file list */
+.editor-dirty-file-list {
+  list-style: disc;
+  margin: 8px 0 12px 20px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.editor-dirty-file-list li {
+  margin: 4px 0;
+}
+
 /* CodeMirror container */
 .cm-editor-container {
   flex: 1;
