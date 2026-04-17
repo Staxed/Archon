@@ -595,8 +595,8 @@
         "US-028"
       ],
       "priority": 29,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 29. Files: packages/desktop/src/EditorTabs.ts, packages/desktop/src/EditorTabs.test.ts, packages/desktop/src/EditorColumn.tsx, packages/desktop/src/App.tsx, packages/desktop/src/styles.css."
     },
     {
       "id": "US-030",

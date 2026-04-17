@@ -60,6 +60,11 @@
 - **Pattern**: CM6 modules lazy-loaded via `Promise.all([import('@codemirror/view'), ...])` to avoid large initial bundle. Cached in module-level promise singleton. Language extensions resolved via `extensionToLanguage(ext)` helper in `EditorTabs.ts`.
 - **Note**: `react-hooks/exhaustive-deps` rule does NOT exist in this ESLint config — never use it in eslint-disable comments
 
+### Editor Split Architecture
+- **Where**: `packages/desktop/src/EditorTabs.ts`, `packages/desktop/src/EditorColumn.tsx`
+- **Pattern**: `SplitState` wraps `TabState[]` with `activeSplitIndex`. `splitReducer` delegates tab actions via `SPLIT_TAB { splitIndex, action: TabAction }`. `SPLIT_RIGHT` duplicates a tab into a new split. Empty splits auto-remove when others exist. `EditorColumnContent` receives `splitState`/`splitDispatch` (not `tabState`/`tabDispatch`). Each `SplitPane` is a sub-component with independent tab bar and state.
+- **Note**: Use `findSplitForTab(state, tabId)` to find the correct split index before dispatching tab actions from outside the split (e.g. save, conflict resolution).
+
 ### Desktop Test Batching for localStorage Mocks
 - **Where**: `packages/desktop/package.json` test script
 - **Pattern**: Tests that use `Object.defineProperty(globalThis, 'localStorage', ...)` (LaunchProfile.test.ts, ProfileEditor.test.ts) must run in a separate `bun test` invocation from tests that use `globalThis.localStorage = ...` (PreflightBanner.test.ts). The two patterns are incompatible in the same process.
@@ -806,5 +811,31 @@
 - replaceEditorContent() uses view.dispatch({ changes: { from: 0, to: doc.length, insert: newContent } }) to atomically replace the document
 - showToast must be declared before handlers that reference it — React hooks ordering matters for variable hoisting in function components
 - FileMtimeMap tracked via useRef (not state) to avoid re-renders on every mtime update — only the save flow reads it
+
+---
+
+## 2026-04-17 — US-029: Split-right editor action within column
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/EditorTabs.ts` — Added SplitState, SplitAction, splitReducer, createInitialSplitState, isSplitEmpty, getAllSplitTabs, getActiveSplit, findSplitForTab
+- `packages/desktop/src/EditorTabs.test.ts` — Added 16 tests: splitReducer (11 tests for SPLIT_RIGHT, SPLIT_TAB, ACTIVATE_SPLIT, empty-split removal, independent focus), split helpers (5 tests for isSplitEmpty, getAllSplitTabs, getActiveSplit, findSplitForTab, collapse-on-empty)
+- `packages/desktop/src/EditorColumn.tsx` — Refactored EditorColumnContent to accept SplitState/SplitAction instead of TabState/TabAction; extracted SplitPane component with independent tab bar, context menu, and dirty-close modal; renders splits side-by-side in flex row
+- `packages/desktop/src/App.tsx` — Replaced useReducer(tabReducer) with useReducer(splitReducer); updated all tab/save/conflict handlers to work with split-aware dispatch (findSplitForTab for targeting)
+- `packages/desktop/src/styles.css` — Added editor-column-splits, editor-split-pane, editor-split-pane-active, editor-split-body, editor-split-empty styles
+
+**Acceptance criteria verified**:
+- [x] Right-click tab → Open in New Split creates a side-by-side editor pane (SPLIT_RIGHT action + SplitPane context menu)
+- [x] Each split pane has its own tab bar + focused tab (SplitPane renders independent TabBar with split-scoped activeTabId)
+- [x] Closing the last tab in a split collapses that split (splitReducer removes empty splits when multiple exist)
+- [x] Closing the last editor tab entirely collapses the column to its rail (isSplitEmpty/getAllSplitTabs drives collapsed state)
+- [x] Unit tests cover split creation, tab focus, and collapse-on-empty (16 new tests)
+
+**Learnings**:
+- SplitState wraps multiple TabState objects; SPLIT_TAB action delegates to tabReducer for individual splits
+- SPLIT_RIGHT duplicates the tab into a new split (original remains in source split) and pins it
+- Empty split removal only triggers when there are other non-empty splits — the last split stays to preserve the single-split architecture
+- findSplitForTab returns the first split containing the tab — for save/conflict operations, this correctly targets the right split
+- SplitPane extracted as a sub-component with its own closeDirtyTab and contextMenu state — keeps state isolated per split
 
 ---
