@@ -434,3 +434,25 @@
 - `format:check` and `format` scripts aren't in root package.json — use `bun x prettier` directly from project root
 
 ---
+
+## 2026-04-17 — US-015: Archon codebase badge on tree roots
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/FileTree.tsx` — Added matchesCodebasePath helper, fetchCodebases function, archonCodebasePaths state, loadCodebases callback, Archon badge rendering, reload button
+- `packages/desktop/src/FileTree.test.ts` — Added 8 tests: matchesCodebasePath (5 tests), badge visibility logic (3 tests)
+- `packages/desktop/src/styles.css` — Added .tree-root-archon-badge, .file-tree-header-actions, .file-tree-reload-btn styles
+
+**Acceptance criteria verified**:
+- [x] On tree mount, fetch `GET /api/codebases` (via fetchCodebases in useEffect on mount)
+- [x] Root path compared against `codebase.default_cwd` for each codebase (via matchesCodebasePath with trailing slash normalization)
+- [x] If match, render Archon badge next to host badge (styled "A" badge with accent color)
+- [x] Badge cached in memory (archonCodebasePaths state); refreshed on manual tree reload action (reload button calls loadCodebases)
+- [x] Unit tests verify badge visibility for matched vs unmatched paths (8 tests)
+
+**Learnings**:
+- Codebases use `default_cwd` field (not `root_path`) for the project directory path
+- Simple trailing-slash normalization is sufficient for path matching — no need for path.resolve()
+- fetchCodebases returns empty array on error (fail-safe, no badge shown on network error)
+
+---

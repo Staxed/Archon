@@ -283,8 +283,8 @@
       "technicalNotes": "Per §10.6. `/api/codebases` already exists in `packages/server/src/routes/api.ts` — no new server work needed.",
       "dependsOn": ["US-013"],
       "priority": 15,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 15. Files: packages/desktop/src/FileTree.tsx, packages/desktop/src/FileTree.test.ts, packages/desktop/src/styles.css."
     },
     {
       "id": "US-016",
