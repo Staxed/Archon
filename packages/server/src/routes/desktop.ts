@@ -22,6 +22,7 @@ import {
   tmuxListQuerySchema,
   tmuxListResponseSchema,
   tmuxKillQuerySchema,
+  tmuxRenameQuerySchema,
   notFoundResponseSchema,
   notImplementedResponseSchema,
   loopbackForbiddenResponseSchema,
@@ -343,7 +344,6 @@ const tmuxListRoute = createRoute({
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
       description: 'Forbidden',
     },
-    501: json501('Not implemented'),
   },
 });
 
@@ -364,7 +364,36 @@ const tmuxKillRoute = createRoute({
       content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
       description: 'Forbidden',
     },
-    501: json501('Not implemented'),
+    404: {
+      content: { 'application/json': { schema: notFoundResponseSchema } },
+      description: 'Session not found',
+    },
+  },
+});
+
+const tmuxRenameRoute = createRoute({
+  method: 'post',
+  path: '/api/desktop/tmux/rename',
+  tags: ['Desktop'],
+  summary: 'Rename a tmux session on a remote host',
+  request: { query: tmuxRenameQuerySchema },
+  responses: {
+    200: {
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.boolean() }).openapi('TmuxRenameResponse'),
+        },
+      },
+      description: 'Session renamed',
+    },
+    403: {
+      content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
+      description: 'Forbidden',
+    },
+    404: {
+      content: { 'application/json': { schema: notFoundResponseSchema } },
+      description: 'Session not found',
+    },
   },
 });
 
@@ -414,6 +443,52 @@ export function buildTmuxAttachCommand(sessionName: string): string {
 /** Build args for `tmux resize-window -t <name> -x <cols> -y <rows>`. */
 export function buildTmuxResizeArgs(sessionName: string, cols: number, rows: number): string[] {
   return ['resize-window', '-t', sessionName, '-x', String(cols), '-y', String(rows)];
+}
+
+/** Build args for `tmux list-sessions -F <format>`. */
+export function buildTmuxListSessionsArgs(): string[] {
+  return [
+    'list-sessions',
+    '-F',
+    '#{session_name}|#{session_created}|#{session_path}|#{?session_attached,attached,detached}',
+  ];
+}
+
+/** Build args for `tmux kill-session -t <name>`. */
+export function buildTmuxKillSessionArgs(sessionName: string): string[] {
+  return ['kill-session', '-t', sessionName];
+}
+
+/** Build args for `tmux rename-session -t <from> <to>`. */
+export function buildTmuxRenameSessionArgs(from: string, to: string): string[] {
+  return ['rename-session', '-t', from, to];
+}
+
+/** A parsed tmux session entry. */
+interface TmuxSessionEntry {
+  name: string;
+  createdAt: string;
+  cwd: string;
+  status: string;
+}
+
+/**
+ * Parse tmux list-sessions output (pipe-delimited format).
+ * Each line: `name|created_epoch|path|attached/detached`
+ */
+export function parseTmuxListSessions(output: string): TmuxSessionEntry[] {
+  const lines = output.trim().split('\n').filter(Boolean);
+  return lines.map(line => {
+    const [name, createdEpoch, cwd, status] = line.split('|');
+    const epoch = parseInt(createdEpoch, 10);
+    const createdAt = isNaN(epoch) ? createdEpoch : new Date(epoch * 1000).toISOString();
+    return {
+      name: name ?? '',
+      createdAt,
+      cwd: cwd ?? '',
+      status: status ?? 'unknown',
+    };
+  });
 }
 
 /**
@@ -494,9 +569,86 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
   const notImplemented = (c: Context): Response => c.json({ error: 'Not implemented' }, 501);
   registerOpenApiRoute(fsFileReadRoute, notImplemented);
   registerOpenApiRoute(fsFileWriteRoute, notImplemented);
-  registerOpenApiRoute(tmuxListRoute, notImplemented);
-  registerOpenApiRoute(tmuxKillRoute, notImplemented);
   registerOpenApiRoute(lspRoute, notImplemented);
+
+  // -----------------------------------------------------------------------
+  // GET /api/desktop/tmux/list — list tmux sessions on the server host
+  // -----------------------------------------------------------------------
+  registerOpenApiRoute(tmuxListRoute, async c => {
+    try {
+      const { stdout } = await execFileAsync('tmux', buildTmuxListSessionsArgs(), {
+        timeout: 10_000,
+      });
+      const sessions = parseTmuxListSessions(stdout);
+      return c.json({ sessions });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException & { stderr?: string };
+      // tmux returns exit code 1 with "no server running" or "no sessions" when there are none
+      if (error.stderr?.includes('no server running') || error.stderr?.includes('no sessions')) {
+        return c.json({ sessions: [] });
+      }
+      return c.json({ sessions: [] });
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /api/desktop/tmux/kill — kill a tmux session by name
+  // -----------------------------------------------------------------------
+  registerOpenApiRoute(tmuxKillRoute, async c => {
+    const { sessionName } = c.req.query();
+
+    if (!validateSessionName(sessionName)) {
+      return c.json({ error: 'Invalid session name — must match archon-desktop:[a-z0-9:-]+' }, 403);
+    }
+
+    try {
+      await execFileAsync('tmux', buildTmuxKillSessionArgs(sessionName), { timeout: 10_000 });
+      return c.json({ ok: true });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException & { stderr?: string };
+      if (
+        error.stderr?.includes('session not found') ||
+        error.stderr?.includes("can't find session")
+      ) {
+        return c.json({ error: `Session not found: ${sessionName}` }, 404);
+      }
+      return c.json({ error: `Failed to kill session: ${error.message}` }, 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /api/desktop/tmux/rename — rename a tmux session
+  // -----------------------------------------------------------------------
+  registerOpenApiRoute(tmuxRenameRoute, async c => {
+    const { from, to } = c.req.query();
+
+    if (!validateSessionName(from)) {
+      return c.json(
+        { error: 'Invalid source session name — must match archon-desktop:[a-z0-9:-]+' },
+        403
+      );
+    }
+    if (!validateSessionName(to)) {
+      return c.json(
+        { error: 'Invalid target session name — must match archon-desktop:[a-z0-9:-]+' },
+        403
+      );
+    }
+
+    try {
+      await execFileAsync('tmux', buildTmuxRenameSessionArgs(from, to), { timeout: 10_000 });
+      return c.json({ ok: true });
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException & { stderr?: string };
+      if (
+        error.stderr?.includes('session not found') ||
+        error.stderr?.includes("can't find session")
+      ) {
+        return c.json({ error: `Session not found: ${from}` }, 404);
+      }
+      return c.json({ error: `Failed to rename session: ${error.message}` }, 500);
+    }
+  });
 
   // -----------------------------------------------------------------------
   // WS /api/desktop/pty — WebSocket PTY endpoint (tmux-backed remote shells)

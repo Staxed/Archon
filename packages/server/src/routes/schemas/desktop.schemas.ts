@@ -87,6 +87,13 @@ export const tmuxKillQuerySchema = z.object({
   sessionName: z.string(),
 });
 
+/** POST /api/desktop/tmux/rename query params. */
+export const tmuxRenameQuerySchema = z.object({
+  host: z.string(),
+  from: z.string(),
+  to: z.string(),
+});
+
 /** 404 Not Found response. */
 export const notFoundResponseSchema = z
   .object({

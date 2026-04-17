@@ -10,6 +10,10 @@ import {
   buildTmuxNewSessionArgs,
   buildTmuxAttachCommand,
   buildTmuxResizeArgs,
+  buildTmuxListSessionsArgs,
+  buildTmuxKillSessionArgs,
+  buildTmuxRenameSessionArgs,
+  parseTmuxListSessions,
 } from './desktop';
 
 // ---------------------------------------------------------------------------
@@ -149,7 +153,6 @@ describe('placeholder 501 routes', () => {
 
   const placeholderRoutes: Array<{ method: string; path: string }> = [
     { method: 'GET', path: '/api/desktop/fs/file?host=test&path=/test' },
-    { method: 'GET', path: '/api/desktop/tmux/list?host=test' },
     { method: 'GET', path: '/api/desktop/lsp' },
   ];
 
@@ -170,17 +173,6 @@ describe('placeholder 501 routes', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: 'test' }),
-    });
-    expect(response.status).toBe(501);
-
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toContain('Not implemented');
-  });
-
-  test('POST /api/desktop/tmux/kill returns 501', async () => {
-    const app = makeApp();
-    const response = await app.request('/api/desktop/tmux/kill?host=test&sessionName=test', {
-      method: 'POST',
     });
     expect(response.status).toBe(501);
 
@@ -658,5 +650,191 @@ describe('PTY WS spawnProcess integration', () => {
       ['resize-window', '-t', 'archon-desktop:test', '-x', '80', '-y', '24'],
       { stdio: 'ignore' }
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: tmux list/kill/rename — argv construction helpers
+// ---------------------------------------------------------------------------
+
+describe('buildTmuxListSessionsArgs', () => {
+  test('builds list-sessions args with format string', () => {
+    const args = buildTmuxListSessionsArgs();
+    expect(args[0]).toBe('list-sessions');
+    expect(args[1]).toBe('-F');
+    expect(args[2]).toContain('#{session_name}');
+    expect(args[2]).toContain('#{session_created}');
+    expect(args[2]).toContain('#{session_path}');
+    expect(args[2]).toContain('attached');
+  });
+});
+
+describe('buildTmuxKillSessionArgs', () => {
+  test('builds kill-session args', () => {
+    const args = buildTmuxKillSessionArgs('archon-desktop:test');
+    expect(args).toEqual(['kill-session', '-t', 'archon-desktop:test']);
+  });
+});
+
+describe('buildTmuxRenameSessionArgs', () => {
+  test('builds rename-session args', () => {
+    const args = buildTmuxRenameSessionArgs('archon-desktop:old', 'archon-desktop:new');
+    expect(args).toEqual(['rename-session', '-t', 'archon-desktop:old', 'archon-desktop:new']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: parseTmuxListSessions (pure function)
+// ---------------------------------------------------------------------------
+
+describe('parseTmuxListSessions', () => {
+  test('parses single session line', () => {
+    const output = 'archon-desktop:test|1700000000|/home/user|detached\n';
+    const sessions = parseTmuxListSessions(output);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].name).toBe('archon-desktop:test');
+    expect(sessions[0].createdAt).toBe(new Date(1700000000 * 1000).toISOString());
+    expect(sessions[0].cwd).toBe('/home/user');
+    expect(sessions[0].status).toBe('detached');
+  });
+
+  test('parses multiple session lines', () => {
+    const output = [
+      'archon-desktop:a|1700000000|/home/user/a|attached',
+      'archon-desktop:b|1700001000|/home/user/b|detached',
+      'archon-desktop:c|1700002000|/home/user/c|detached',
+    ].join('\n');
+    const sessions = parseTmuxListSessions(output);
+    expect(sessions).toHaveLength(3);
+    expect(sessions[0].name).toBe('archon-desktop:a');
+    expect(sessions[0].status).toBe('attached');
+    expect(sessions[1].name).toBe('archon-desktop:b');
+    expect(sessions[2].name).toBe('archon-desktop:c');
+  });
+
+  test('returns empty array for empty output', () => {
+    expect(parseTmuxListSessions('')).toEqual([]);
+    expect(parseTmuxListSessions('\n')).toEqual([]);
+  });
+
+  test('handles non-numeric epoch gracefully', () => {
+    const output = 'archon-desktop:test|not-a-number|/home|detached\n';
+    const sessions = parseTmuxListSessions(output);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].createdAt).toBe('not-a-number');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: GET /api/desktop/tmux/list endpoint
+// ---------------------------------------------------------------------------
+
+describe('GET /api/desktop/tmux/list', () => {
+  let checkCommandSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+    checkCommandSpy = spyOn(desktopModule, 'checkCommand');
+  });
+
+  afterEach(() => {
+    getRemoteAddressSpy.mockRestore();
+    checkCommandSpy.mockRestore();
+  });
+
+  test('returns sessions from tmux list-sessions', async () => {
+    // The endpoint uses execFileAsync internally — we can test via the Hono app
+    // since we can't easily mock execFileAsync without mock.module.
+    // Instead we test the parse logic above and test the endpoint shape here.
+    const app = makeApp();
+    const response = await app.request('/api/desktop/tmux/list?host=test');
+    // Will either return sessions (if tmux is available) or empty array (if not)
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { sessions: unknown[] };
+    expect(Array.isArray(body.sessions)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: POST /api/desktop/tmux/kill endpoint
+// ---------------------------------------------------------------------------
+
+describe('POST /api/desktop/tmux/kill', () => {
+  beforeEach(() => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+  });
+
+  afterEach(() => {
+    getRemoteAddressSpy.mockRestore();
+  });
+
+  test('rejects invalid session name with 403', async () => {
+    const app = makeApp();
+    const response = await app.request('/api/desktop/tmux/kill?host=test&sessionName=bad;rm -rf', {
+      method: 'POST',
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('Invalid session name');
+  });
+
+  test('returns 404 for non-existent session', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/tmux/kill?host=test&sessionName=archon-desktop:nonexistent-session-xyz',
+      { method: 'POST' }
+    );
+    // tmux will either return 404 (session not found) or 500 (tmux not running)
+    // Either way, status should not be 200
+    expect([404, 500].includes(response.status)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: POST /api/desktop/tmux/rename endpoint
+// ---------------------------------------------------------------------------
+
+describe('POST /api/desktop/tmux/rename', () => {
+  beforeEach(() => {
+    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
+    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+  });
+
+  afterEach(() => {
+    getRemoteAddressSpy.mockRestore();
+  });
+
+  test('rejects invalid source session name with 403', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/tmux/rename?host=test&from=bad-name&to=archon-desktop:new',
+      { method: 'POST' }
+    );
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('Invalid source session name');
+  });
+
+  test('rejects invalid target session name with 403', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/tmux/rename?host=test&from=archon-desktop:old&to=bad-name',
+      { method: 'POST' }
+    );
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('Invalid target session name');
+  });
+
+  test('returns 404 for non-existent session', async () => {
+    const app = makeApp();
+    const response = await app.request(
+      '/api/desktop/tmux/rename?host=test&from=archon-desktop:nonexistent-xyz&to=archon-desktop:new',
+      { method: 'POST' }
+    );
+    // tmux will return error for non-existent session
+    expect([404, 500].includes(response.status)).toBe(true);
   });
 });
