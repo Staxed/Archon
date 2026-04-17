@@ -212,8 +212,8 @@
       "technicalNotes": "Per §10.3 'Ad-hoc panes' + §10.6 'Open Terminal Here'. UUID via `crypto.randomUUID()`.",
       "dependsOn": ["US-010"],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 11. Files: packages/desktop/src/AdHocTerminal.ts, packages/desktop/src/AdHocTerminal.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
     },
     {
       "id": "US-012",

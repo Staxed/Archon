@@ -334,3 +334,27 @@
 - Context menu close on outside click needs `window.addEventListener('click', handler)` with cleanup in useEffect
 
 ---
+
+## 2026-04-17 — US-011: Ad-hoc Open Terminal Here right-click menu stub
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/AdHocTerminal.ts` — New helper: openAdHocTerminal() with slot allocation and toast result
+- `packages/desktop/src/AdHocTerminal.test.ts` — 7 tests covering slot allocation, full-grid toast, session naming, uniqueness
+- `packages/desktop/src/App.tsx` — Integrated keyboard shortcut (Ctrl+Shift+`), toast state, openAdHocTerminal wiring
+- `packages/desktop/src/styles.css` — Toast CSS with fade-in animation
+- `packages/desktop/package.json` — Added AdHocTerminal.test.ts to test script
+
+**Acceptance criteria verified**:
+- [x] Helper `openAdHocTerminal({ host, cwd })` creates a new pane with tmux session name `archon-desktop:adhoc:<uuid>`
+- [x] Pane is placed in the first free grid slot (uses findFreeSlot)
+- [x] If no free slot, returns toast: `Grid full — close a pane to open another`
+- [x] Keyboard shortcut (Ctrl+Shift+`) triggers ad-hoc terminal in `cwd = $HOME` of primary host
+- [x] Unit tests cover slot allocation and full-grid toast (7 tests)
+
+**Learnings**:
+- `openAdHocTerminal` is a pure function returning a discriminated union (pane | toast) — keeps grid dispatch logic in the caller
+- crypto.randomUUID() works in both Tauri WebView and Bun test environments
+- Toast auto-dismiss via setTimeout in a useCallback is clean — no need for a toast library
+
+---
