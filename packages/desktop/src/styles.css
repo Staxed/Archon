@@ -745,6 +745,140 @@ body,
   background-color: #d05050;
 }
 
+/* Add Folder Modal */
+.add-folder-modal {
+  min-width: 420px;
+  max-width: 520px;
+}
+
+.add-folder-field {
+  margin-bottom: 12px;
+}
+
+.add-folder-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.add-folder-select {
+  width: 100%;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.add-folder-select:focus {
+  border-color: var(--border-accent);
+}
+
+.add-folder-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.breadcrumb-separator {
+  color: var(--text-muted);
+  margin: 0 1px;
+}
+
+.breadcrumb-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.breadcrumb-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
+.add-folder-browser {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  max-height: 240px;
+  min-height: 120px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.add-folder-dir-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.add-folder-dir-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.add-folder-dir-icon {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.add-folder-dir-name {
+  color: var(--text-primary);
+}
+
+.add-folder-loading,
+.add-folder-error,
+.add-folder-empty,
+.add-folder-local-hint {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.add-folder-error {
+  color: #c04040;
+}
+
+.add-folder-current-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.add-folder-path-label {
+  color: var(--text-muted);
+}
+
+.add-folder-path-value {
+  color: var(--text-primary);
+  font-family: monospace;
+  word-break: break-all;
+}
+
 /* Toast */
 .toast {
   position: fixed;

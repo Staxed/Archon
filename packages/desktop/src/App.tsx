@@ -5,6 +5,7 @@ import { GridEngine, useGridEngine } from './GridEngine';
 import { openAdHocTerminal } from './AdHocTerminal';
 import { FileTree } from './FileTree';
 import type { TreeRoot } from './FileTree';
+import { AddFolderModal, loadWorkspace, removeRootFromWorkspace } from './AddFolderModal';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -90,7 +91,8 @@ function App(): React.JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const { state: gridState, dispatch: gridDispatch } = useGridEngine();
-  const [workspaceRoots, setWorkspaceRoots] = useState<TreeRoot[]>([]);
+  const [workspaceRoots, setWorkspaceRoots] = useState<TreeRoot[]>(() => loadWorkspace().roots);
+  const [addFolderOpen, setAddFolderOpen] = useState(false);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -122,7 +124,21 @@ function App(): React.JSX.Element {
   );
 
   const handleRemoveRoot = useCallback((rootId: string): void => {
+    removeRootFromWorkspace(rootId);
     setWorkspaceRoots(prev => prev.filter(r => r.id !== rootId));
+  }, []);
+
+  const handleAddRoot = useCallback((root: TreeRoot): void => {
+    setWorkspaceRoots(prev => [...prev, root]);
+    setAddFolderOpen(false);
+  }, []);
+
+  const handleOpenAddFolder = useCallback((): void => {
+    setAddFolderOpen(true);
+  }, []);
+
+  const handleCloseAddFolder = useCallback((): void => {
+    setAddFolderOpen(false);
   }, []);
 
   // Keyboard shortcut: Ctrl+Shift+` opens ad-hoc terminal
@@ -150,6 +166,7 @@ function App(): React.JSX.Element {
                 serverUrl={DEFAULT_SERVER_URL}
                 roots={workspaceRoots}
                 onRemoveRoot={handleRemoveRoot}
+                onAddRoot={handleOpenAddFolder}
               />
             </Panel>
             <ResizeHandle />
@@ -165,6 +182,14 @@ function App(): React.JSX.Element {
         <HostSessionsDrawer open={drawerOpen} onClose={closeDrawer} />
       </div>
       <StatusBar drawerOpen={drawerOpen} onToggleDrawer={toggleDrawer} />
+      {addFolderOpen && (
+        <AddFolderModal
+          serverUrl={DEFAULT_SERVER_URL}
+          savedHosts={[{ alias: 'linux-beast', label: 'Linux Beast' }]}
+          onAdd={handleAddRoot}
+          onCancel={handleCloseAddFolder}
+        />
+      )}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
