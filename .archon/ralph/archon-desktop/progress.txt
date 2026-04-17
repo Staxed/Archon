@@ -925,3 +925,29 @@
 - detectPortCollision accepts both numeric ports and error strings with embedded port numbers
 
 ---
+
+## 2026-04-17 — US-033: Local log rotation (10 MB cap, per-OS path)
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/lib/logger.ts` — New module: DesktopLogger class with structured JSON lines, 10 MB rotation (.1 through .5), secret masking (maskSecrets/maskValue/isSecretKey), per-OS path resolution (getLogDir/getLogPath), LogFileSystem interface for DI
+- `packages/desktop/src/lib/logger.test.ts` — 28 tests covering getLogDir (4), getLogPath (2), getRotatedPath (1), computeRotationPlan (2), maskValue (2), isSecretKey (2), maskSecrets (3), formatLogLine (3), DesktopLogger (9: writes, level filtering, rotation trigger, directory init, path exposure, masking, all levels)
+- `packages/desktop/src-tauri/src/log_path.rs` — New Rust module: get_log_path Tauri command returning {path, dir} for per-OS log location
+- `packages/desktop/src-tauri/src/lib.rs` — Register log_path module and get_log_path command
+- `packages/desktop/package.json` — Added logger.test.ts to first test batch
+
+**Acceptance criteria verified**:
+- [x] Logs written to `%APPDATA%\ArchonDesktop\logs\archon-desktop.log` (Windows) or `~/Library/Logs/ArchonDesktop/archon-desktop.log` (macOS) — getLogDir/getLogPath resolve per-OS paths
+- [x] On 10 MB size, rotate: current → `.1`, `.1` → `.2`, up to `.5`, older deleted — computeRotationPlan + DesktopLogger.rotateIfNeeded
+- [x] Structured JSON lines with `{ ts, level, event, ...fields }` — formatLogLine matches Pino convention with numeric levels
+- [x] No secrets logged (API keys, tokens masked); no message content logged — maskSecrets deep-masks keys matching secret patterns
+- [x] Unit test covers rotation trigger and file naming — 28 tests with 100% coverage
+- [x] Log path exposed via a Tauri command for Settings → About → Open Logs — get_log_path Rust command
+
+**Learnings**:
+- LogFileSystem interface allows DI for testing without filesystem mocking — inject mock fs into DesktopLogger
+- No new dependencies needed — logger is self-contained, no Pino, no external libs
+- Secret masking uses regex pattern array (api_key, token, password, secret, credential, authorization)
+- logger.test.ts has no mock.module or localStorage mocking — safe to add to first test batch with errors.test.ts
+
+---
