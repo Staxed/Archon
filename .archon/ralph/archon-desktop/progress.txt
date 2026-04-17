@@ -901,3 +901,27 @@
 - SshReconnectBanner.test.ts has no localStorage mocking — safe to add to the first test batch (no mock.module conflicts)
 
 ---
+
+## 2026-04-17 — US-032: Fail-fast error classifiers for SSH/tmux/LSP/file/port
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/lib/errors.ts` — New module: classifyDesktopError(error, category), checkTmuxVersion, validateSessionName, detectPortCollision; pattern-based matching across 5 categories
+- `packages/desktop/src/lib/errors.test.ts` — 54 tests covering all error branches: SSH (11), tmux (5), LSP (5), file (7), port (5), tmux version (6), session validation (6), port collision (9)
+- `packages/desktop/package.json` — Added lib/errors.test.ts to first test batch
+
+**Acceptance criteria verified**:
+- [x] New `packages/desktop/src/lib/errors.ts` with `classifyDesktopError(error, category)` mapping
+- [x] Categories: `ssh`, `tmux`, `lsp`, `file`, `port`
+- [x] SSH: maps Host key verification failed, Permission denied (publickey), Connection refused, No such host, timeout to human messages with fix hints
+- [x] Tmux: version < 3.0 (checkTmuxVersion), binary missing (command not found), session name invalid (validateSessionName)
+- [x] Port: detect collision with worktree range (3190-4089) and desktop range (4200-5099), show specific messages
+- [x] Unit tests cover each error branch (54 tests, 100% coverage)
+
+**Learnings**:
+- Pattern mirrors classifyIsolationError from @archon/isolation — pattern array with lower-case matching
+- ESLint requires `RegExp#exec()` instead of `String#match()` — use `/regex/.exec(str)` not `str.match(/regex/)`
+- lib/errors.test.ts has no mock.module or localStorage mocking — safe to add to first test batch
+- detectPortCollision accepts both numeric ports and error strings with embedded port numbers
+
+---

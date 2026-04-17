@@ -658,8 +658,8 @@
         "US-031"
       ],
       "priority": 32,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 32. Files: packages/desktop/src/lib/errors.ts, packages/desktop/src/lib/errors.test.ts, packages/desktop/package.json."
     },
     {
       "id": "US-033",
