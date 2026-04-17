@@ -666,3 +666,26 @@
 - resolveStartupCommand handles env var prepending for both preset and custom selections
 
 ---
+
+## 2026-04-17 — US-024: aichat config auto-generation on Linux host
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/desktop.ts` — Add POST /api/desktop/aichat/ensure-config endpoint; add helpers: getAichatConfigPath, fileExists, buildAichatConfig, ensureAichatConfig
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — Add aichatEnsureConfigResponseSchema
+- `packages/server/src/routes/desktop.test.ts` — Add 17 tests: getAichatConfigPath (2), fileExists (2), buildAichatConfig (5), ensureAichatConfig (3), endpoint (5)
+
+**Acceptance criteria verified**:
+- [x] On first launch of an aichat-based preset, server runs `test -f ~/.config/aichat/config.yaml` on remote (fileExists checks via fs/promises access)
+- [x] If absent, writes a config pointing at OpenRouter (reads API key from OPENROUTER_API_KEY env) and Llama.cpp (http://localhost:8093/v1) (buildAichatConfig + writeFile)
+- [x] Config validated against `aichat --list-models` on the remote (checkCommand('aichat', ['--list-models']))
+- [x] Never overwrites an existing config (idempotent) (early return when fileExists returns true, tested)
+- [x] Unit test with mocked SSH exec covers absent + present branches (ensureAichatConfig tests + endpoint tests)
+
+**Learnings**:
+- OpenRouter API key follows same env var pattern as @archon/core openrouter client (OPENROUTER_API_KEY)
+- spyOn(desktopModule, 'ensureAichatConfig') cleanly intercepts the async function for endpoint tests
+- spyOn(desktopModule, 'fileExists') allows testing idempotency without touching the filesystem
+- aichat config format uses openai-compatible client type for both OpenRouter and Llama.cpp
+
+---

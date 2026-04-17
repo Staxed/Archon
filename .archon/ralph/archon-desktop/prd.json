@@ -494,8 +494,8 @@
         "US-003"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 24. Files: packages/server/src/routes/desktop.ts, packages/server/src/routes/schemas/desktop.schemas.ts, packages/server/src/routes/desktop.test.ts."
     },
     {
       "id": "US-025",
