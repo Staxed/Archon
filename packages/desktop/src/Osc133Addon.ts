@@ -34,6 +34,27 @@ export function parseOsc133(data: string): string | null {
 let blockIdCounter = 0;
 
 /**
+ * Determine the absolute output line range for a block, or null if the
+ * block has no `C` marker yet. When `D` is missing we fall back to the
+ * `C` line so an in-progress block can still be collapsed.
+ *
+ * Exported as a pure helper so the collapse logic is testable without a
+ * real xterm Terminal.
+ */
+export function computeOutputRange(block: CommandBlock): { start: number; end: number } | null {
+  if (block.commandExecutedLine < 0) return null;
+  const end =
+    block.commandFinishedLine >= 0 ? block.commandFinishedLine : block.commandExecutedLine;
+  if (end < block.commandExecutedLine) return null;
+  return { start: block.commandExecutedLine, end };
+}
+
+/** Collapsed-region label shown inside the overlay. */
+export function collapseLabel(lineCount: number): string {
+  return `⋯ ${lineCount} line${lineCount === 1 ? '' : 's'} collapsed — click to expand`;
+}
+
+/**
  * Custom xterm.js addon that parses OSC 133 (shell integration) sequences
  * to group terminal output into collapsible command blocks.
  *
@@ -49,6 +70,12 @@ export class Osc133Addon implements ITerminalAddon {
   private blocks: CommandBlock[] = [];
   private currentBlock: Partial<CommandBlock> | null = null;
   private gutterElements: Map<string, HTMLElement> = new Map();
+  /**
+   * Overlay divs that cover the output region of collapsed blocks.
+   * Positioned absolutely inside `terminal.element` — works with both the
+   * DOM and WebGL renderers (can't rely on hiding xterm-row divs under WebGL).
+   */
+  private overlayElements: Map<string, HTMLElement> = new Map();
   private contextMenuElement: HTMLElement | null = null;
   private contextMenuDisposer: (() => void) | null = null;
 
@@ -116,6 +143,20 @@ export class Osc133Addon implements ITerminalAddon {
 
     this.disposables.push(oscHandler);
 
+    // Reposition overlays on scroll/resize so collapsed regions stay covered
+    // as the buffer scrolls. Overlays are positioned absolutely within the
+    // terminal element; we recompute top/height on each event.
+    this.disposables.push(
+      terminal.onScroll(() => {
+        this.repositionAllOverlays();
+      })
+    );
+    this.disposables.push(
+      terminal.onResize(() => {
+        this.repositionAllOverlays();
+      })
+    );
+
     // Add right-click context menu listener on the terminal element
     const el = terminal.element;
     if (el) {
@@ -143,6 +184,10 @@ export class Osc133Addon implements ITerminalAddon {
       el.remove();
     }
     this.gutterElements.clear();
+    for (const el of this.overlayElements.values()) {
+      el.remove();
+    }
+    this.overlayElements.clear();
     this.blocks = [];
     this.currentBlock = null;
     this.terminal = null;
@@ -154,6 +199,111 @@ export class Osc133Addon implements ITerminalAddon {
     if (!block) return;
     block.collapsed = !block.collapsed;
     this.updateGutterToggle(block);
+    if (block.collapsed) {
+      this.showOverlay(block);
+    } else {
+      this.removeOverlay(block);
+    }
+  }
+
+  // ── Overlay management ──────────────────────────────────────────
+
+  /**
+   * Create (or reposition) an overlay div that covers the block's output
+   * rows. Works with both the DOM and WebGL renderers — the overlay is a
+   * sibling of xterm's own render layers inside `terminal.element`.
+   */
+  private showOverlay(block: CommandBlock): void {
+    if (!this.terminal?.element) return;
+    const output = computeOutputRange(block);
+    if (!output) return;
+
+    let overlay = this.overlayElements.get(block.id);
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'osc133-collapse-overlay';
+      overlay.dataset.blockId = block.id;
+      // Click overlay to expand — redundant with gutter toggle but improves UX
+      // when the user has scrolled the gutter out of view.
+      overlay.addEventListener('click', () => {
+        this.toggleBlock(block.id);
+      });
+      this.terminal.element.appendChild(overlay);
+      this.overlayElements.set(block.id, overlay);
+    }
+    this.positionOverlay(overlay, block, output);
+  }
+
+  private removeOverlay(block: CommandBlock): void {
+    const overlay = this.overlayElements.get(block.id);
+    if (!overlay) return;
+    overlay.remove();
+    this.overlayElements.delete(block.id);
+  }
+
+  private repositionAllOverlays(): void {
+    for (const block of this.blocks) {
+      if (!block.collapsed) continue;
+      const overlay = this.overlayElements.get(block.id);
+      if (!overlay) continue;
+      const output = computeOutputRange(block);
+      if (!output) {
+        overlay.style.display = 'none';
+        continue;
+      }
+      this.positionOverlay(overlay, block, output);
+    }
+  }
+
+  /**
+   * Absolutely position the overlay over the output region of `block`.
+   * Hides the overlay if the region is entirely outside the viewport.
+   */
+  private positionOverlay(
+    overlay: HTMLElement,
+    _block: CommandBlock,
+    output: { start: number; end: number }
+  ): void {
+    if (!this.terminal?.element) return;
+    const baseY = this.terminal.buffer.active.baseY;
+    const rows = this.terminal.rows;
+    const viewportTop = output.start - baseY;
+    const viewportBottom = output.end - baseY;
+
+    // Entirely above or below the viewport — hide but keep the element so
+    // scroll-back reveals it without re-allocating DOM.
+    if (viewportBottom < 0 || viewportTop >= rows) {
+      overlay.style.display = 'none';
+      return;
+    }
+
+    const rowsEl = this.terminal.element.querySelector<HTMLElement>('.xterm-rows');
+    if (!rowsEl) return;
+    const rowHeight = rowsEl.clientHeight / rows;
+    if (!(rowHeight > 0)) return;
+
+    const clampedTop = Math.max(0, viewportTop);
+    const clampedBottom = Math.min(rows - 1, viewportBottom);
+    const lineCount = output.end - output.start + 1;
+
+    overlay.style.display = 'flex';
+    overlay.style.position = 'absolute';
+    overlay.style.left = '20px'; // clear the gutter toggle
+    overlay.style.right = '0';
+    overlay.style.top = `${clampedTop * rowHeight}px`;
+    overlay.style.height = `${(clampedBottom - clampedTop + 1) * rowHeight}px`;
+    overlay.style.background = '#1a1a1a';
+    overlay.style.color = '#888';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.fontSize = '11px';
+    overlay.style.fontFamily = 'monospace';
+    overlay.style.cursor = 'pointer';
+    overlay.style.userSelect = 'none';
+    overlay.style.zIndex = '9'; // under the gutter toggle (z=10), over xterm rows
+    overlay.style.borderTop = '1px dashed #444';
+    overlay.style.borderBottom = '1px dashed #444';
+    overlay.textContent = collapseLabel(lineCount);
   }
 
   /** Get text content for a range of lines from the terminal buffer. */

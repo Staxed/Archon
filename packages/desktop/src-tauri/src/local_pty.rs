@@ -137,7 +137,14 @@ pub fn pty_spawn(
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app_clone.emit(&event_name, encoded);
                 }
-                Err(_) => break,
+                Err(e) => {
+                    crate::logger::log_event(
+                        "error",
+                        "local_pty",
+                        &format!("reader err: {}", e),
+                    );
+                    break;
+                }
             }
         }
     });

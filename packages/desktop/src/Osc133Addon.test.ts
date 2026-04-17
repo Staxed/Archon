@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { parseOsc133, Osc133Addon } from './Osc133Addon';
+import { parseOsc133, Osc133Addon, computeOutputRange, collapseLabel } from './Osc133Addon';
 import type { CommandBlock } from './Osc133Addon';
 
 describe('parseOsc133', () => {
@@ -249,5 +249,61 @@ describe('Osc133Addon non-OSC-133 behavior', () => {
     // Without activation, blocks array stays empty
     expect(addon.getBlocks()).toHaveLength(0);
     expect(addon.getCurrentBlock()).toBeNull();
+  });
+});
+
+describe('computeOutputRange (collapse support)', () => {
+  function block(overrides: Partial<CommandBlock>): CommandBlock {
+    return {
+      id: 'b',
+      promptStartLine: 0,
+      commandStartLine: 1,
+      commandExecutedLine: 2,
+      commandFinishedLine: 6,
+      collapsed: false,
+      ...overrides,
+    };
+  }
+
+  test('returns C..D range for a completed block', () => {
+    expect(computeOutputRange(block({}))).toEqual({ start: 2, end: 6 });
+  });
+
+  test('returns null when C marker is missing', () => {
+    expect(computeOutputRange(block({ commandExecutedLine: -1 }))).toBeNull();
+  });
+
+  test('falls back to C line when D has not fired yet (in-progress block)', () => {
+    expect(computeOutputRange(block({ commandFinishedLine: -1 }))).toEqual({
+      start: 2,
+      end: 2,
+    });
+  });
+
+  test('returns null if D precedes C (malformed input)', () => {
+    expect(
+      computeOutputRange(block({ commandExecutedLine: 6, commandFinishedLine: 4 }))
+    ).toBeNull();
+  });
+
+  test('single-line output produces a one-line range', () => {
+    expect(computeOutputRange(block({ commandExecutedLine: 3, commandFinishedLine: 3 }))).toEqual({
+      start: 3,
+      end: 3,
+    });
+  });
+});
+
+describe('collapseLabel', () => {
+  test('singular form for exactly one line', () => {
+    expect(collapseLabel(1)).toBe('⋯ 1 line collapsed — click to expand');
+  });
+
+  test('plural form for zero', () => {
+    expect(collapseLabel(0)).toBe('⋯ 0 lines collapsed — click to expand');
+  });
+
+  test('plural form for many lines', () => {
+    expect(collapseLabel(42)).toBe('⋯ 42 lines collapsed — click to expand');
   });
 });

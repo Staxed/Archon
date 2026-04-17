@@ -1,8 +1,14 @@
 mod local_pty;
 mod log_path;
+mod logger;
 mod ssh_tunnel;
 
 pub fn run() {
+    // Must be the first thing: installs the panic hook, so any panic during
+    // Tauri init itself still leaves a trace in the rotated log.
+    logger::init();
+    logger::log_event("info", "lifecycle", "archon-desktop sidecar starting");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(ssh_tunnel::TunnelManager::new())

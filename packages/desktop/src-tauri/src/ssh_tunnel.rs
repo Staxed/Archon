@@ -145,15 +145,27 @@ pub async fn ssh_connect(
 
         if let Some(stderr) = stderr_output {
             if !stderr.is_empty() {
-                return Err(classify_ssh_error(&stderr));
+                let classified = classify_ssh_error(&stderr);
+                crate::logger::log_event(
+                    "error",
+                    "ssh_tunnel",
+                    &format!("host={} port={} err={}", host_alias, local_port, classified),
+                );
+                return Err(classified);
             }
         }
 
-        return Err(format!(
+        let msg = format!(
             "SSH tunnel timed out after {}s waiting for local port {} to accept connections.",
             CONNECT_TIMEOUT.as_secs(),
             local_port
-        ));
+        );
+        crate::logger::log_event(
+            "error",
+            "ssh_tunnel",
+            &format!("host={} port={} err=timeout", host_alias, local_port),
+        );
+        return Err(msg);
     }
 
     // Store the tunnel state
