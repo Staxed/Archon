@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useReducer } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type {
   PanelImperativeHandle,
@@ -23,6 +23,8 @@ import {
   loadEditorColumnState,
   saveEditorColumnState,
 } from './EditorColumn';
+import { tabReducer, createInitialTabState, tabId } from './EditorTabs';
+import type { TabAction } from './EditorTabs';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -104,6 +106,58 @@ function App(): React.JSX.Element {
   const savedEditorWidth = useRef(loadEditorColumnState().width);
   // Track the last expanded width for restoring after collapse
   const lastExpandedWidthRef = useRef(savedEditorWidth.current);
+
+  // Editor tabs state
+  const [tabState, tabDispatch] = useReducer(tabReducer, undefined, createInitialTabState);
+  const [fileContents, setFileContents] = useState<Record<string, string>>({});
+
+  // Fetch file content when a new tab is opened
+  const fetchFileContent = useCallback(
+    (host: string, path: string): void => {
+      const id = tabId(host, path);
+      if (fileContents[id] !== undefined) return;
+      fetch(
+        `${DEFAULT_SERVER_URL}/api/desktop/fs/file?host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`
+      )
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<{ content: string }>;
+        })
+        .then(data => {
+          setFileContents(prev => ({ ...prev, [id]: data.content }));
+        })
+        .catch(() => {
+          // File read not yet implemented (501) or error — set empty content
+          setFileContents(prev => ({ ...prev, [id]: '' }));
+        });
+    },
+    [fileContents]
+  );
+
+  // File click handlers for the tree
+  const handleFileClick = useCallback(
+    (host: string, path: string, name: string): void => {
+      tabDispatch({ type: 'OPEN_PREVIEW', host, path, name });
+      fetchFileContent(host, path);
+      // Expand editor if collapsed
+      if (editorPanelRef.current?.isCollapsed()) {
+        editorPanelRef.current.expand();
+      }
+    },
+    [fetchFileContent]
+  );
+
+  const handleFileDoubleClick = useCallback(
+    (host: string, path: string, name: string): void => {
+      tabDispatch({ type: 'OPEN_PINNED', host, path, name });
+      fetchFileContent(host, path);
+      // Expand editor if collapsed
+      if (editorPanelRef.current?.isCollapsed()) {
+        editorPanelRef.current.expand();
+      }
+    },
+    [fetchFileContent]
+  );
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -255,6 +309,8 @@ function App(): React.JSX.Element {
                 onRemoveRoot={handleRemoveRoot}
                 onAddRoot={handleOpenAddFolder}
                 onToast={showToast}
+                onFileClick={handleFileClick}
+                onFileDoubleClick={handleFileDoubleClick}
               />
             </Panel>
             <ResizeHandle />
@@ -270,8 +326,11 @@ function App(): React.JSX.Element {
             >
               <EditorColumnContent
                 collapsed={editorCollapsed}
-                openFiles={[]}
+                openFiles={tabState.tabs.map(t => ({ path: t.path, host: t.host, name: t.name }))}
                 onToggleCollapse={handleToggleEditorCollapse}
+                tabState={tabState}
+                tabDispatch={tabDispatch as (action: TabAction) => void}
+                fileContents={fileContents}
               />
             </Panel>
             <ResizeHandle />

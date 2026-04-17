@@ -286,6 +286,10 @@ interface FileTreeProps {
   onAddRoot?: () => void;
   onToast?: (message: string) => void;
   archonWebUiUrl?: string;
+  /** Single-click on a file (opens preview tab) */
+  onFileClick?: (host: string, path: string, name: string) => void;
+  /** Double-click on a file (opens pinned tab) */
+  onFileDoubleClick?: (host: string, path: string, name: string) => void;
 }
 
 interface NamePromptState {
@@ -303,18 +307,24 @@ function TreeNode({
   entry,
   depth,
   rootId,
+  rootHost,
   parentPath,
   treeState,
   onToggle,
   onContextMenu,
+  onFileClick,
+  onFileDoubleClick,
 }: {
   entry: TreeEntry;
   depth: number;
   rootId: string;
+  rootHost: string;
   parentPath: string;
   treeState: TreeState;
   onToggle: (rootId: string, path: string) => void;
   onContextMenu: (e: React.MouseEvent, node: TreeNodeData) => void;
+  onFileClick?: (host: string, path: string, name: string) => void;
+  onFileDoubleClick?: (host: string, path: string, name: string) => void;
 }): React.JSX.Element {
   const fullPath = joinPath(parentPath, entry.name);
   const key = nodeKey(rootId, fullPath);
@@ -326,8 +336,16 @@ function TreeNode({
   const handleClick = useCallback((): void => {
     if (isDir) {
       onToggle(rootId, fullPath);
+    } else if (onFileClick) {
+      onFileClick(rootHost, fullPath, entry.name);
     }
-  }, [isDir, rootId, fullPath, onToggle]);
+  }, [isDir, rootId, rootHost, fullPath, entry.name, onToggle, onFileClick]);
+
+  const handleDoubleClick = useCallback((): void => {
+    if (!isDir && onFileDoubleClick) {
+      onFileDoubleClick(rootHost, fullPath, entry.name);
+    }
+  }, [isDir, rootHost, fullPath, entry.name, onFileDoubleClick]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent): void => {
@@ -344,6 +362,7 @@ function TreeNode({
         className="tree-node"
         style={{ paddingLeft: depth * 16 + 4 }}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
         role="treeitem"
         aria-expanded={isDir ? isExpanded : undefined}
@@ -362,10 +381,13 @@ function TreeNode({
               entry={child}
               depth={depth + 1}
               rootId={rootId}
+              rootHost={rootHost}
               parentPath={fullPath}
               treeState={treeState}
               onToggle={onToggle}
               onContextMenu={onContextMenu}
+              onFileClick={onFileClick}
+              onFileDoubleClick={onFileDoubleClick}
             />
           ))}
         </div>
@@ -381,6 +403,8 @@ export function FileTree({
   onAddRoot,
   onToast,
   archonWebUiUrl = 'http://localhost:3090',
+  onFileClick,
+  onFileDoubleClick,
 }: FileTreeProps): React.JSX.Element {
   const [treeState, dispatch] = useState<TreeState>(() => createInitialTreeState());
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -699,10 +723,13 @@ export function FileTree({
                       entry={entry}
                       depth={1}
                       rootId={root.id}
+                      rootHost={root.host}
                       parentPath={root.path}
                       treeState={treeState}
                       onToggle={handleToggle}
                       onContextMenu={handleContextMenu}
+                      onFileClick={onFileClick}
+                      onFileDoubleClick={onFileDoubleClick}
                     />
                   ))}
                 </div>

@@ -481,6 +481,159 @@ body,
   background-color: var(--bg-hover);
 }
 
+/* Editor tab bar */
+.editor-tab-bar {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+  background-color: var(--bg-primary);
+}
+
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background-color: var(--bg-tertiary);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 2px solid transparent;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.editor-tab:hover {
+  background-color: var(--bg-hover);
+}
+
+.editor-tab-active {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-top-color: var(--border-accent);
+}
+
+.editor-tab-preview .editor-tab-name {
+  font-style: italic;
+}
+
+.editor-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-tab-dirty {
+  color: var(--border-accent);
+  font-size: 10px;
+}
+
+.editor-tab-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.editor-tab:hover .editor-tab-close,
+.editor-tab-active .editor-tab-close {
+  opacity: 1;
+}
+
+.editor-tab-close:hover {
+  color: var(--text-primary);
+}
+
+/* Editor tab context menu */
+.editor-tab-context-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px 0;
+  z-index: 1000;
+  min-width: 160px;
+}
+
+.editor-tab-context-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.editor-tab-context-item:hover {
+  background-color: var(--bg-hover);
+}
+
+/* Close dirty modal */
+.editor-close-dirty-modal p {
+  margin: 8px 0 16px;
+  color: var(--text-secondary);
+}
+
+.editor-close-dirty-modal .modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.modal-btn:hover {
+  background-color: var(--bg-hover);
+}
+
+.modal-btn-primary {
+  background-color: var(--border-accent);
+  border-color: var(--border-accent);
+  color: #fff;
+}
+
+.modal-btn-primary:hover {
+  opacity: 0.9;
+}
+
+.modal-btn-danger {
+  background-color: #a33;
+  border-color: #a33;
+  color: #fff;
+}
+
+.modal-btn-danger:hover {
+  opacity: 0.9;
+}
+
+/* CodeMirror container */
+.cm-editor-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.cm-editor-container .cm-editor {
+  height: 100%;
+}
+
 /* Grid engine */
 .grid-engine-container {
   width: 100%;
