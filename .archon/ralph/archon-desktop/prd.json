@@ -17,7 +17,7 @@
         "Type-check passes: `bun run type-check`",
         "Lint passes: `bun run lint`"
       ],
-      "technicalNotes": "Mirror structure shown in prd.md §10.1. Use `bun init` or Tauri's create-tauri-app then trim. Existing workspace packages in `packages/` (e.g. `packages/web/package.json`, `packages/cli/package.json`) show the naming + tsconfig convention to follow. Do NOT import `@archon/web` at runtime per §10.1.",
+      "technicalNotes": "Mirror structure shown in prd.md \u00a710.1. Use `bun init` or Tauri's create-tauri-app then trim. Existing workspace packages in `packages/` (e.g. `packages/web/package.json`, `packages/cli/package.json`) show the naming + tsconfig convention to follow. Do NOT import `@archon/web` at runtime per \u00a710.1.",
       "dependsOn": [],
       "priority": 1,
       "passes": true,
@@ -37,7 +37,7 @@
         "Unit test verifies loopback guard rejects a non-loopback request (mock `c.env.incoming.socket.remoteAddress`)",
         "Tests pass, type-check passes, lint passes"
       ],
-      "technicalNotes": "Follow §10.1 route list. Use existing route schemas in `packages/server/src/routes/schemas/*.schemas.ts` as a template. `api.ts:999+` shows `registerOpenApiRoute` pattern. Add `import` of the new route setup near other `setupXxxRoutes()` calls in `api.ts`.",
+      "technicalNotes": "Follow \u00a710.1 route list. Use existing route schemas in `packages/server/src/routes/schemas/*.schemas.ts` as a template. `api.ts:999+` shows `registerOpenApiRoute` pattern. Add `import` of the new route setup near other `setupXxxRoutes()` calls in `api.ts`.",
       "dependsOn": [],
       "priority": 2,
       "passes": true,
@@ -57,8 +57,10 @@
         "Child process cleaned up on `ssh_disconnect()` and on app exit",
         "Rust tests cover port-hash determinism + error classification"
       ],
-      "technicalNotes": "Shell out to system `ssh` (not `russh`) per §10.2 decision. Port range 4200-5099 is non-overlapping with worktree range 3190-4089 (see CLAUDE.md `Running the App in Worktrees`). Reference: `@archon/isolation`'s `classifyIsolationError` pattern for error mapping style.",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Shell out to system `ssh` (not `russh`) per \u00a710.2 decision. Port range 4200-5099 is non-overlapping with worktree range 3190-4089 (see CLAUDE.md `Running the App in Worktrees`). Reference: `@archon/isolation`'s `classifyIsolationError` pattern for error mapping style.",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 3,
       "passes": true,
       "notes": "Implemented in iteration 3. Files: packages/desktop/src-tauri/src/ssh_tunnel.rs, packages/desktop/src-tauri/src/lib.rs, packages/desktop/src-tauri/Cargo.toml."
@@ -76,8 +78,10 @@
         "Renders without errors on both Windows and macOS Tauri dev builds (manual verification note in story)",
         "Type-check + lint pass"
       ],
-      "technicalNotes": "Per §5 Must-have 'dark theme only' + §10.7 column layout. Use Tailwind (if added) or plain CSS modules — `@archon/web` uses Tailwind v4 + shadcn/ui but Desktop is its own React app (no `@archon/web` import). Keep dependencies minimal; add `react-resizable-panels` or similar for the resizable layout.",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Per \u00a75 Must-have 'dark theme only' + \u00a710.7 column layout. Use Tailwind (if added) or plain CSS modules \u2014 `@archon/web` uses Tailwind v4 + shadcn/ui but Desktop is its own React app (no `@archon/web` import). Keep dependencies minimal; add `react-resizable-panels` or similar for the resizable layout.",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 4,
       "passes": true,
       "notes": "Implemented in iteration 4. Files: packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
@@ -91,12 +95,16 @@
         "Response shape: `{ checks: { name, present, version?, installCommand? }[] }`",
         "Renderer displays a banner when any check fails, with per-dependency copy-command button",
         "Banner dismissible; dismissal persisted in app-data JSON so it only shows again if a new dependency is missing",
-        "tmux < 3.0 triggers a warning (need `-A` flag support per §10.3)",
+        "tmux < 3.0 triggers a warning (need `-A` flag support per \u00a710.3)",
         "Unit test covers preflight JSON shape + renderer banner state logic",
         "Type-check + tests + lint pass"
       ],
-      "technicalNotes": "§10.9 lists dependencies. Version comparison is simple semver — do NOT add a semver library; string compare is fine for `3.0`. Install commands: `sudo apt install tmux`, `cargo install aichat`, `npm i -g typescript-language-server typescript`.",
-      "dependsOn": ["US-002", "US-003", "US-004"],
+      "technicalNotes": "\u00a710.9 lists dependencies. Version comparison is simple semver \u2014 do NOT add a semver library; string compare is fine for `3.0`. Install commands: `sudo apt install tmux`, `cargo install aichat`, `npm i -g typescript-language-server typescript`.",
+      "dependsOn": [
+        "US-002",
+        "US-003",
+        "US-004"
+      ],
       "priority": 5,
       "passes": true,
       "notes": "Implemented in iteration 5. Files: packages/server/src/routes/desktop.ts, packages/server/src/routes/schemas/desktop.schemas.ts, packages/server/src/routes/desktop.test.ts, packages/desktop/src/PreflightBanner.tsx, packages/desktop/src/PreflightBanner.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css."
@@ -114,8 +122,10 @@
         "Rust test for shell-selection branching",
         "Lint + type-check pass"
       ],
-      "technicalNotes": "Per §10.4 'Local PTYs on the Tauri host side: spawn via Rust's `portable-pty` crate. Communication with the renderer via Tauri IPC events'. Add `portable-pty = \"0.8\"` to `src-tauri/Cargo.toml`.",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Per \u00a710.4 'Local PTYs on the Tauri host side: spawn via Rust's `portable-pty` crate. Communication with the renderer via Tauri IPC events'. Add `portable-pty = \"0.8\"` to `src-tauri/Cargo.toml`.",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 6,
       "passes": true,
       "notes": "Implemented in iteration 6. Files: packages/desktop/src-tauri/src/local_pty.rs, packages/desktop/src-tauri/src/lib.rs, packages/desktop/src-tauri/Cargo.toml."
@@ -133,8 +143,10 @@
         "Unit test mocks tmux spawn and verifies argv construction",
         "Integration test with real tmux (skippable if tmux absent in CI)"
       ],
-      "technicalNotes": "Per §10.3 'tmux bridge' + §10.1 WS endpoint spec. Hono supports WS via `app.get('/path', upgradeWebSocket(...))`. Use `child_process.spawn` (Bun) to spawn tmux — do NOT use shell interpolation; pass args as array.",
-      "dependsOn": ["US-002"],
+      "technicalNotes": "Per \u00a710.3 'tmux bridge' + \u00a710.1 WS endpoint spec. Hono supports WS via `app.get('/path', upgradeWebSocket(...))`. Use `child_process.spawn` (Bun) to spawn tmux \u2014 do NOT use shell interpolation; pass args as array.",
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 7,
       "passes": true,
       "notes": "Implemented in iteration 7. Files: packages/server/src/routes/desktop.ts, packages/server/src/ws.ts, packages/server/src/index.ts, packages/server/src/routes/desktop.test.ts."
@@ -152,8 +164,11 @@
         "Component disposes xterm + addons on unmount",
         "Unit test with a mocked backend verifies input/output flow"
       ],
-      "technicalNotes": "Per §10.4. Add deps: `@xterm/xterm`, `@xterm/addon-webgl`, `@xterm/addon-fit`. Base `xterm.js` config on BridgeSpace reference (evidence §2).",
-      "dependsOn": ["US-006", "US-007"],
+      "technicalNotes": "Per \u00a710.4. Add deps: `@xterm/xterm`, `@xterm/addon-webgl`, `@xterm/addon-fit`. Base `xterm.js` config on BridgeSpace reference (evidence \u00a72).",
+      "dependsOn": [
+        "US-006",
+        "US-007"
+      ],
       "priority": 8,
       "passes": true,
       "notes": "Implemented in iteration 8. Files: packages/desktop/src/TerminalPane.tsx, packages/desktop/src/TerminalPane.test.ts, packages/desktop/package.json."
@@ -170,8 +185,10 @@
         "Unit test covers a synthetic stream with nested blocks",
         "Integrated into `TerminalPane` via an opt-in prop (default on)"
       ],
-      "technicalNotes": "Per §10.4. OSC 133 spec: A=PromptStart, B=CommandStart, C=CommandExecuted, D=CommandFinished. Reference BridgeSpace (§2) for 'OSC 133 command blocks'.",
-      "dependsOn": ["US-008"],
+      "technicalNotes": "Per \u00a710.4. OSC 133 spec: A=PromptStart, B=CommandStart, C=CommandExecuted, D=CommandFinished. Reference BridgeSpace (\u00a72) for 'OSC 133 command blocks'.",
+      "dependsOn": [
+        "US-008"
+      ],
       "priority": 9,
       "passes": true,
       "notes": "Implemented in iteration 9. Files: packages/desktop/src/Osc133Addon.ts, packages/desktop/src/Osc133Addon.test.ts, packages/desktop/src/TerminalPane.tsx, packages/desktop/package.json."
@@ -179,21 +196,24 @@
     {
       "id": "US-010",
       "title": "Grid engine with resize, snap, drag-rearrange, and pane headers",
-      "description": "As the operator, I want a 3×6 snap-to-grid layout with draggable and resizable panes and a pane header showing name, host, cwd, and close button so I can compose and reorganize my terminal layout.",
+      "description": "As the operator, I want a 3\u00d76 snap-to-grid layout with draggable and resizable panes and a pane header showing name, host, cwd, and close button so I can compose and reorganize my terminal layout.",
       "acceptanceCriteria": [
-        "Grid is 6 columns × 3 rows (max 18 slots)",
+        "Grid is 6 columns \u00d7 3 rows (max 18 slots)",
         "Built on `react-grid-layout` or equivalent; panes snap to cell boundaries",
         "Drag a pane header to move; snap on drop; other panes reflow to avoid overlap",
-        "Resize by dragging edge; minimum pane size 1×1 cells",
-        "Pane header shows: `[name ▾] host · cwd [x]` per §11.3",
+        "Resize by dragging edge; minimum pane size 1\u00d71 cells",
+        "Pane header shows: `[name \u25be] host \u00b7 cwd [x]` per \u00a711.3",
         "Close button (`[x]`) detaches tmux (process keeps running, surfaces in Host Sessions)",
         "Right-click on header shows `Close and Kill` (explicit destructive action)",
         "Double-click header toggles maximize (fills grid, click again restores)",
-        "Inline rename on `[name ▾]` click; Enter to confirm; tmux session renamed to match",
+        "Inline rename on `[name \u25be]` click; Enter to confirm; tmux session renamed to match",
         "Unit tests cover grid state reducer (add/move/resize/close)"
       ],
-      "technicalNotes": "Per §10.5 + §11.3. Use `react-grid-layout` (MIT). Anatomy diagram in §11.3 is authoritative. Pane rename calls `POST /api/desktop/tmux/rename` (add to routes file) or repurpose `kill` endpoint into a session-admin endpoint.",
-      "dependsOn": ["US-004", "US-009"],
+      "technicalNotes": "Per \u00a710.5 + \u00a711.3. Use `react-grid-layout` (MIT). Anatomy diagram in \u00a711.3 is authoritative. Pane rename calls `POST /api/desktop/tmux/rename` (add to routes file) or repurpose `kill` endpoint into a session-admin endpoint.",
+      "dependsOn": [
+        "US-004",
+        "US-009"
+      ],
       "priority": 10,
       "passes": true,
       "notes": "Implemented in iteration 10. Files: packages/desktop/src/GridEngine.tsx, packages/desktop/src/GridEngine.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
@@ -205,12 +225,14 @@
       "acceptanceCriteria": [
         "Helper `openAdHocTerminal({ host, cwd })` creates a new pane with tmux session name `archon-desktop:adhoc:<uuid>`",
         "Pane is placed in the first free grid slot",
-        "If no free slot, toast: `Grid full — close a pane to open another`",
+        "If no free slot, toast: `Grid full \u2014 close a pane to open another`",
         "Keyboard shortcut (Ctrl+Shift+`) triggers ad-hoc terminal in `cwd = $HOME` of primary host",
         "Unit test covers slot allocation and full-grid toast"
       ],
-      "technicalNotes": "Per §10.3 'Ad-hoc panes' + §10.6 'Open Terminal Here'. UUID via `crypto.randomUUID()`.",
-      "dependsOn": ["US-010"],
+      "technicalNotes": "Per \u00a710.3 'Ad-hoc panes' + \u00a710.6 'Open Terminal Here'. UUID via `crypto.randomUUID()`.",
+      "dependsOn": [
+        "US-010"
+      ],
       "priority": 11,
       "passes": true,
       "notes": "Implemented in iteration 11. Files: packages/desktop/src/AdHocTerminal.ts, packages/desktop/src/AdHocTerminal.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
@@ -227,8 +249,10 @@
         "Zod schemas in `desktop.schemas.ts`",
         "Unit test covers happy path, traversal rejection, and permission error"
       ],
-      "technicalNotes": "Per §10.1. Use `fs/promises` `readdir` with `withFileTypes: true`. Path normalization via `path.normalize` + startsWith check on resolved root.",
-      "dependsOn": ["US-002"],
+      "technicalNotes": "Per \u00a710.1. Use `fs/promises` `readdir` with `withFileTypes: true`. Path normalization via `path.normalize` + startsWith check on resolved root.",
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 12,
       "passes": true,
       "notes": "Implemented in iteration 12. Files: packages/server/src/routes/desktop.ts, packages/server/src/routes/schemas/desktop.schemas.ts, packages/server/src/routes/desktop.test.ts."
@@ -238,15 +262,17 @@
       "title": "Multi-root FileTree component with core context menu",
       "description": "As the operator, I want a unified file tree showing both local and remote roots with a host badge and a context menu offering New File, New Folder, Copy Path, Copy Relative Path, and Remove from Workspace.",
       "acceptanceCriteria": [
-        "`FileTree` component lists roots grouped by host with a 🖥️ or 🪟 badge",
+        "`FileTree` component lists roots grouped by host with a \ud83d\udda5\ufe0f or \ud83e\ude9f badge",
         "Each root is collapsible; children loaded lazily via `GET /api/desktop/fs/tree` (remote) or Tauri command (local)",
         "Context menu includes: New File, New Folder, Copy Path (`ssh://host/path` for remote), Copy Relative Path, Remove from Workspace",
         "New File/Folder prompts for name and calls `PUT /api/desktop/fs/file` or Tauri FS command",
         "Remove from Workspace shows confirm modal; does not delete files on disk",
         "Unit tests cover tree state, expand/collapse, and each menu action"
       ],
-      "technicalNotes": "Per §10.6. `isArchonCodebase` computed by checking root path against `GET /api/codebases` (cached). Do this check later in US-015.",
-      "dependsOn": ["US-012"],
+      "technicalNotes": "Per \u00a710.6. `isArchonCodebase` computed by checking root path against `GET /api/codebases` (cached). Do this check later in US-015.",
+      "dependsOn": [
+        "US-012"
+      ],
       "priority": 13,
       "passes": true,
       "notes": "Implemented in iteration 13. Files: packages/desktop/src/FileTree.tsx, packages/desktop/src/FileTree.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
@@ -263,8 +289,10 @@
         "Cancel button closes with no change",
         "Unit test covers workspace persistence round-trip"
       ],
-      "technicalNotes": "Per §10.6 'Add Folder to Workspace'. Use Tauri's `path` API to resolve app-data dirs. Store list only; contents not cached.",
-      "dependsOn": ["US-013"],
+      "technicalNotes": "Per \u00a710.6 'Add Folder to Workspace'. Use Tauri's `path` API to resolve app-data dirs. Store list only; contents not cached.",
+      "dependsOn": [
+        "US-013"
+      ],
       "priority": 14,
       "passes": true,
       "notes": "Implemented in iteration 14. Files: packages/desktop/src/AddFolderModal.tsx, packages/desktop/src/AddFolderModal.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json."
@@ -280,8 +308,10 @@
         "Badge cached in memory; refreshed on manual tree reload action",
         "Unit test verifies badge visibility for matched vs unmatched paths"
       ],
-      "technicalNotes": "Per §10.6. `/api/codebases` already exists in `packages/server/src/routes/api.ts` — no new server work needed.",
-      "dependsOn": ["US-013"],
+      "technicalNotes": "Per \u00a710.6. `/api/codebases` already exists in `packages/server/src/routes/api.ts` \u2014 no new server work needed.",
+      "dependsOn": [
+        "US-013"
+      ],
       "priority": 15,
       "passes": true,
       "notes": "Implemented in iteration 15. Files: packages/desktop/src/FileTree.tsx, packages/desktop/src/FileTree.test.ts, packages/desktop/src/styles.css."
@@ -297,11 +327,13 @@
         "Uses Tauri's `shell.open` API",
         "Unit test covers command selection branching per OS + remote no-op"
       ],
-      "technicalNotes": "Per §10.6. `shell.open` is a Tauri plugin — add to `tauri.conf.json` allowlist. Branch on `process.platform` in renderer, or expose a Tauri command `reveal_in_os(path)` that handles the split.",
-      "dependsOn": ["US-015"],
+      "technicalNotes": "Per \u00a710.6. `shell.open` is a Tauri plugin \u2014 add to `tauri.conf.json` allowlist. Branch on `process.platform` in renderer, or expose a Tauri command `reveal_in_os(path)` that handles the split.",
+      "dependsOn": [
+        "US-015"
+      ],
       "priority": 16,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented in iteration 16. Files: packages/desktop/src/FileTree.tsx, packages/desktop/src/FileTree.test.ts, packages/desktop/src/App.tsx, packages/desktop/src/styles.css, packages/desktop/package.json, packages/desktop/src-tauri/tauri.conf.json."
     },
     {
       "id": "US-017",
@@ -315,8 +347,10 @@
         "Returns 404 if session not found (for kill/rename)",
         "Unit tests for parse logic + argv construction"
       ],
-      "technicalNotes": "Per §10.1 + §11.2. Spawn tmux with `spawn()` + arg array, never shell-interpolated.",
-      "dependsOn": ["US-002"],
+      "technicalNotes": "Per \u00a710.1 + \u00a711.2. Spawn tmux with `spawn()` + arg array, never shell-interpolated.",
+      "dependsOn": [
+        "US-002"
+      ],
       "priority": 17,
       "passes": false,
       "notes": ""
@@ -326,7 +360,7 @@
       "title": "Host Sessions panel UI with Attach/Kill/Rename + drag-to-grid",
       "description": "As the operator, I want a collapsible Host Sessions drawer listing every tmux session on every saved remote host with Attach/Kill/Rename actions and drag-to-grid targets.",
       "acceptanceCriteria": [
-        "Drawer shows columns: Host, Session name, cwd, Running, Age, Status, Actions (per §11.2)",
+        "Drawer shows columns: Host, Session name, cwd, Running, Age, Status, Actions (per \u00a711.2)",
         "Refreshes every 15 seconds while open; immediate refresh after any action",
         "Attach action opens a PTY WS attached to the existing session (no new-session call) in the first free grid slot",
         "Kill action prompts confirm and calls `POST /api/desktop/tmux/kill`",
@@ -334,8 +368,11 @@
         "Drag a session row onto a grid slot opens an attached pane in that slot",
         "Unit tests cover refresh logic, each action, and drag-drop target resolution"
       ],
-      "technicalNotes": "Per §11.2 + §10.3. Drop target detection via HTML5 drag-and-drop + grid cell `data-slot` attributes.",
-      "dependsOn": ["US-017", "US-010"],
+      "technicalNotes": "Per \u00a711.2 + \u00a710.3. Drop target detection via HTML5 drag-and-drop + grid cell `data-slot` attributes.",
+      "dependsOn": [
+        "US-017",
+        "US-010"
+      ],
       "priority": 18,
       "passes": false,
       "notes": ""
@@ -345,15 +382,17 @@
       "title": "LaunchProfile + ProfilePane schema with JSON persistence",
       "description": "As the operator, I want LaunchProfile and ProfilePane types defined and persisted to local JSON so profiles survive app restarts.",
       "acceptanceCriteria": [
-        "TypeScript types match §11.1 exactly (`LaunchProfile`, `ProfilePane`, `StartupAction`)",
+        "TypeScript types match \u00a711.1 exactly (`LaunchProfile`, `ProfilePane`, `StartupAction`)",
         "Zod schemas derived via `z.infer` pattern per CLAUDE.md conventions",
         "Profiles persisted to `%APPDATA%\\ArchonDesktop\\profiles.json` (Windows) or `~/Library/Application Support/ArchonDesktop/profiles.json` (macOS)",
         "CRUD helper functions: `listProfiles()`, `getProfile(id)`, `saveProfile(p)`, `deleteProfile(id)`",
         "Migration-safe: reading an older-shape file returns defaults for missing fields",
         "Unit tests cover round-trip + migration"
       ],
-      "technicalNotes": "Per §11.1 schema. Zod + `z.infer` per CLAUDE.md 'Zod Schema Conventions'. File I/O via Tauri's `fs` API (scoped to app-data dir).",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Per \u00a711.1 schema. Zod + `z.infer` per CLAUDE.md 'Zod Schema Conventions'. File I/O via Tauri's `fs` API (scoped to app-data dir).",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 19,
       "passes": false,
       "notes": ""
@@ -363,15 +402,17 @@
       "title": "LaunchProfile editor UI",
       "description": "As the operator, I want a UI to create and edit launch profiles, listing panes with their host, cwd, grid position, and startup action.",
       "acceptanceCriteria": [
-        "Settings → Launch Profiles opens editor",
+        "Settings \u2192 Launch Profiles opens editor",
         "List view: profile name, pane count, last-used; actions: Edit, Duplicate, Delete",
         "Detail view: pane table with inline rename, host picker, cwd browser, grid position (x/y/w/h), startup action dropdown (None / Agent preset)",
         "Visual grid preview showing pane placement",
         "Save button persists via `saveProfile()` from US-019",
         "Unit tests cover editor state + persistence"
       ],
-      "technicalNotes": "Per §11.1 + §10.6. Grid preview can reuse the grid engine from US-010 in read-only mode.",
-      "dependsOn": ["US-019"],
+      "technicalNotes": "Per \u00a711.1 + \u00a710.6. Grid preview can reuse the grid engine from US-010 in read-only mode.",
+      "dependsOn": [
+        "US-019"
+      ],
       "priority": 20,
       "passes": false,
       "notes": ""
@@ -382,13 +423,16 @@
       "description": "As the operator, I want to launch a profile and have its panes added to the existing grid (not replace it) so I can stack multiple profiles up to 18 total panes.",
       "acceptanceCriteria": [
         "`launchProfile(id)` computes next free grid slots and creates panes there, preserving each pane's intended `w`/`h`",
-        "If profile panes + existing panes > 18, show warning: `Only N of M panes fit — close a pane and launch again for the rest`, open what fits",
+        "If profile panes + existing panes > 18, show warning: `Only N of M panes fit \u2014 close a pane and launch again for the rest`, open what fits",
         "For each remote pane, resolve tmux session name as `archon-desktop:{profileSlug}:{paneSlug}` and use attach-if-exists semantics",
         "Startup command invoked per pane based on `startupAction.presetId`",
         "Unit tests cover slot allocation with varying pane sizes, over-cap warning, and session naming"
       ],
-      "technicalNotes": "Per §10.5 + §11.1. Slug derivation: kebab-case from name. Deterministic tmux naming per §10.3.",
-      "dependsOn": ["US-020", "US-010"],
+      "technicalNotes": "Per \u00a710.5 + \u00a711.1. Slug derivation: kebab-case from name. Deterministic tmux naming per \u00a710.3.",
+      "dependsOn": [
+        "US-020",
+        "US-010"
+      ],
       "priority": 21,
       "passes": false,
       "notes": ""
@@ -396,17 +440,19 @@
     {
       "id": "US-022",
       "title": "Agent preset defaults with settings UI",
-      "description": "As the operator, I want Claude / Codex / Gemini / YOLO variants / OpenRouter / Llama.cpp presets seeded on first launch, editable via Settings → Agents.",
+      "description": "As the operator, I want Claude / Codex / Gemini / YOLO variants / OpenRouter / Llama.cpp presets seeded on first launch, editable via Settings \u2192 Agents.",
       "acceptanceCriteria": [
-        "First-launch seed writes the 8 default presets from §10.8 to `agents.json` in app-data dir",
-        "Settings → Agents lists presets with: label, command, args, env, prompts",
+        "First-launch seed writes the 8 default presets from \u00a710.8 to `agents.json` in app-data dir",
+        "Settings \u2192 Agents lists presets with: label, command, args, env, prompts",
         "Edit/Duplicate/Delete per preset; `+ Add Custom` creates a blank row",
         "`{MODEL}` placeholders in args render a tag chip to signal runtime prompt",
-        "No OpenCode preset per §10.8",
+        "No OpenCode preset per \u00a710.8",
         "Unit tests cover seed idempotency + CRUD"
       ],
-      "technicalNotes": "Per §10.8 preset JSON. Env var `LLAMACPP_API_BASE` pinned to `http://localhost:8093/v1` for the Llama.cpp preset (remote perspective).",
-      "dependsOn": ["US-019"],
+      "technicalNotes": "Per \u00a710.8 preset JSON. Env var `LLAMACPP_API_BASE` pinned to `http://localhost:8093/v1` for the Llama.cpp preset (remote perspective).",
+      "dependsOn": [
+        "US-019"
+      ],
       "priority": 22,
       "passes": false,
       "notes": ""
@@ -416,14 +462,17 @@
       "title": "Agent launcher dropdown with {MODEL} combobox and YOLO warning",
       "description": "As the operator, I want a Start-with dropdown on each new pane that lists agent presets, prompts for `{MODEL}` when needed, and flags YOLO panes with a red header border.",
       "acceptanceCriteria": [
-        "At pane creation, dropdown shows: None, all presets from agents.json, Custom…",
+        "At pane creation, dropdown shows: None, all presets from agents.json, Custom\u2026",
         "Selecting a preset with `{MODEL}` in args opens an inline combobox with cached recent model choices",
         "Selecting a preset whose label contains `YOLO` applies a red border (`border: 2px solid #ef4444`) to the pane header",
-        "Custom… opens a modal to define `{ command, args, env, cwd override }` for this pane only (not saved to agents.json)",
+        "Custom\u2026 opens a modal to define `{ command, args, env, cwd override }` for this pane only (not saved to agents.json)",
         "Unit tests cover dropdown selection, model prompt flow, YOLO border class, and Custom modal"
       ],
-      "technicalNotes": "Per §11.4. Recent-models cache in app-data JSON, max 10 entries, LRU.",
-      "dependsOn": ["US-022", "US-010"],
+      "technicalNotes": "Per \u00a711.4. Recent-models cache in app-data JSON, max 10 entries, LRU.",
+      "dependsOn": [
+        "US-022",
+        "US-010"
+      ],
       "priority": 23,
       "passes": false,
       "notes": ""
@@ -434,13 +483,16 @@
       "description": "As the operator, I want the app to generate an `aichat` config on the Linux host on first use so OpenRouter and Llama.cpp presets work without manual setup.",
       "acceptanceCriteria": [
         "On first launch of an aichat-based preset, server runs `test -f ~/.config/aichat/config.yaml` on remote",
-        "If absent, writes a config pointing at OpenRouter (reads API key from Archon repo `.env` — does not collect from client) and Llama.cpp (`http://localhost:8093/v1`)",
+        "If absent, writes a config pointing at OpenRouter (reads API key from Archon repo `.env` \u2014 does not collect from client) and Llama.cpp (`http://localhost:8093/v1`)",
         "Config validated against `aichat --list-models` on the remote",
         "Never overwrites an existing config (idempotent)",
         "Unit test with mocked SSH exec covers absent + present branches"
       ],
-      "technicalNotes": "Per §10.8. New helper endpoint: `POST /api/desktop/aichat/ensure-config`. OpenRouter API key resolution mirrors Archon's existing OpenRouter provider (look in `packages/core/src/clients/openrouter*.ts` for env-var loading pattern).",
-      "dependsOn": ["US-022", "US-003"],
+      "technicalNotes": "Per \u00a710.8. New helper endpoint: `POST /api/desktop/aichat/ensure-config`. OpenRouter API key resolution mirrors Archon's existing OpenRouter provider (look in `packages/core/src/clients/openrouter*.ts` for env-var loading pattern).",
+      "dependsOn": [
+        "US-022",
+        "US-003"
+      ],
       "priority": 24,
       "passes": false,
       "notes": ""
@@ -448,17 +500,19 @@
     {
       "id": "US-025",
       "title": "Collapsible editor column with horizontal resize and snap widths",
-      "description": "As the operator, I want a collapsible editor column between the sidebar and the terminal grid, resizable horizontally with snap to 1×, 2×, or 3× column widths.",
+      "description": "As the operator, I want a collapsible editor column between the sidebar and the terminal grid, resizable horizontally with snap to 1\u00d7, 2\u00d7, or 3\u00d7 column widths.",
       "acceptanceCriteria": [
-        "Column renders between sidebar and grid per §10.7 layout",
-        "Drag right edge to resize; snaps to 1 × grid-column-width, 2×, or 3×",
+        "Column renders between sidebar and grid per \u00a710.7 layout",
+        "Drag right edge to resize; snaps to 1 \u00d7 grid-column-width, 2\u00d7, or 3\u00d7",
         "Collapse toggle reduces column to a thin vertical rail with open-file icons; click rail to expand",
         "When no tabs open, collapsed rail is empty",
         "Column state (width, collapsed) persisted to workspace JSON",
         "Unit tests cover resize snap behavior + collapse/expand state"
       ],
-      "technicalNotes": "Per §10.7. Grid-column-width = viewport-width / 6 (matches 3×6 grid). Persist width in app-data workspace.json alongside roots.",
-      "dependsOn": ["US-004"],
+      "technicalNotes": "Per \u00a710.7. Grid-column-width = viewport-width / 6 (matches 3\u00d76 grid). Persist width in app-data workspace.json alongside roots.",
+      "dependsOn": [
+        "US-004"
+      ],
       "priority": 25,
       "passes": false,
       "notes": ""
@@ -469,15 +523,17 @@
       "description": "As the operator, I want tabbed CodeMirror 6 editors with preview vs pinned tabs and a dirty indicator so opening files feels Cursor-like.",
       "acceptanceCriteria": [
         "Tab bar across top of editor column; each tab shows filename + dirty dot",
-        "Single-click in tree → preview tab (italic); replaces previous preview",
-        "Double-click in tree or edit → tab becomes pinned (non-italic)",
-        "Close tab with unsaved changes → modal: Save / Discard / Cancel",
-        "Right-click tab → Open in New Split",
+        "Single-click in tree \u2192 preview tab (italic); replaces previous preview",
+        "Double-click in tree or edit \u2192 tab becomes pinned (non-italic)",
+        "Close tab with unsaved changes \u2192 modal: Save / Discard / Cancel",
+        "Right-click tab \u2192 Open in New Split",
         "CodeMirror 6 loaded with `@codemirror/lang-javascript`, `@codemirror/lang-python`, `@codemirror/lang-markdown`, language auto-selected by extension",
-        "Unit tests cover tab state machine (preview↔pinned, dirty flag, close flow)"
+        "Unit tests cover tab state machine (preview\u2194pinned, dirty flag, close flow)"
       ],
-      "technicalNotes": "Per §11.5 + §10.7. Add deps: `codemirror`, `@codemirror/state`, `@codemirror/view`, language packs.",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Per \u00a711.5 + \u00a710.7. Add deps: `codemirror`, `@codemirror/state`, `@codemirror/view`, language packs.",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 26,
       "passes": false,
       "notes": ""
@@ -494,8 +550,10 @@
         "Path traversal rejection (no `..`)",
         "Unit tests cover read, atomic write, conflict detection, and traversal rejection"
       ],
-      "technicalNotes": "Per §10.1 + §10.7 'atomic write'. Use `fs.promises.rename` which is atomic on same filesystem.",
-      "dependsOn": ["US-012"],
+      "technicalNotes": "Per \u00a710.1 + \u00a710.7 'atomic write'. Use `fs.promises.rename` which is atomic on same filesystem.",
+      "dependsOn": [
+        "US-012"
+      ],
       "priority": 27,
       "passes": false,
       "notes": ""
@@ -512,8 +570,11 @@
         "Tab close with dirty state shows per-file Save/Discard/Cancel",
         "Unit tests cover save, conflict path, and close-with-dirty"
       ],
-      "technicalNotes": "Per §10.11 'File write conflict' + §11.5. Banner component reusable from US-030 error classifier work.",
-      "dependsOn": ["US-026", "US-027"],
+      "technicalNotes": "Per \u00a710.11 'File write conflict' + \u00a711.5. Banner component reusable from US-030 error classifier work.",
+      "dependsOn": [
+        "US-026",
+        "US-027"
+      ],
       "priority": 28,
       "passes": false,
       "notes": ""
@@ -523,14 +584,16 @@
       "title": "Split-right editor action within column",
       "description": "As the operator, I want to split a tab to the right so I can view two files side by side inside the editor column.",
       "acceptanceCriteria": [
-        "Right-click tab → Open in New Split creates a side-by-side editor pane",
+        "Right-click tab \u2192 Open in New Split creates a side-by-side editor pane",
         "Each split pane has its own tab bar + focused tab",
         "Closing the last tab in a split collapses that split",
         "Closing the last editor tab entirely collapses the column to its rail (from US-025)",
         "Unit tests cover split creation, tab focus, and collapse-on-empty"
       ],
-      "technicalNotes": "Per §11.5 'Split right'. Model as `column.splits: TabGroup[]` where each TabGroup has `tabs` and `activeTabId`.",
-      "dependsOn": ["US-028"],
+      "technicalNotes": "Per \u00a711.5 'Split right'. Model as `column.splits: TabGroup[]` where each TabGroup has `tabs` and `activeTabId`.",
+      "dependsOn": [
+        "US-028"
+      ],
       "priority": 29,
       "passes": false,
       "notes": ""
@@ -545,12 +608,14 @@
         "On-demand spawn per project dir; reuse connection for subsequent files in same project",
         "CM6 integration via `codemirror-languageserver` (or equivalent); diagnostics, hover, and completion visible",
         "2-day spike checkpoint: if CM6 LSP can't pipe through WS cleanly, swap to Monaco + `monaco-languageclient`; keep tab/dirty/save behavior identical (US-026 through US-028)",
-        "Missing language server → LSP features disabled with tooltip; editor otherwise works (fail-fast per §10.11)",
+        "Missing language server \u2192 LSP features disabled with tooltip; editor otherwise works (fail-fast per \u00a710.11)",
         "Integration test with a mocked LSP server",
         "Spike outcome documented in a `decisions/editor-backend.md` note"
       ],
-      "technicalNotes": "Per §10.7 + §12 Phase 6. This story explicitly allows the CM6→Monaco swap mid-iteration if the spike fails. Document the decision.",
-      "dependsOn": ["US-029"],
+      "technicalNotes": "Per \u00a710.7 + \u00a712 Phase 6. This story explicitly allows the CM6\u2192Monaco swap mid-iteration if the spike fails. Document the decision.",
+      "dependsOn": [
+        "US-029"
+      ],
       "priority": 30,
       "passes": false,
       "notes": ""
@@ -560,15 +625,18 @@
       "title": "SSH reconnection banner with exponential backoff",
       "description": "As the operator, I want a banner with a Reconnect button when the SSH tunnel drops and auto-retry with backoff for up to 30 seconds before requiring manual action.",
       "acceptanceCriteria": [
-        "On tunnel drop event from US-003 sidecar, renderer shows banner `SSH connection lost — reconnecting…`",
+        "On tunnel drop event from US-003 sidecar, renderer shows banner `SSH connection lost \u2014 reconnecting\u2026`",
         "Auto-retry at intervals: 1s, 2s, 4s, 8s, 16s (total ~30s); exponential backoff",
         "Manual Reconnect button always available and resets the retry counter",
-        "After 30s of failure, banner updates to `Reconnection failed — click Reconnect to try again` with no further auto-retry",
+        "After 30s of failure, banner updates to `Reconnection failed \u2014 click Reconnect to try again` with no further auto-retry",
         "Once reconnected, banner fades out after 2s",
         "Unit test covers backoff intervals + terminal state"
       ],
-      "technicalNotes": "Per §10.11 fail-fast + §10.2 'show a banner with Reconnect button'. Tauri event from Rust sidecar on tunnel exit.",
-      "dependsOn": ["US-003", "US-004"],
+      "technicalNotes": "Per \u00a710.11 fail-fast + \u00a710.2 'show a banner with Reconnect button'. Tauri event from Rust sidecar on tunnel exit.",
+      "dependsOn": [
+        "US-003",
+        "US-004"
+      ],
       "priority": 31,
       "passes": false,
       "notes": ""
@@ -582,11 +650,13 @@
         "Categories: `ssh`, `tmux`, `lsp`, `file`, `port`",
         "SSH: maps `Host key verification failed`, `Permission denied (publickey)`, `Connection refused`, `No such host`, timeout to human messages with fix hints",
         "Tmux: version < 3.0, binary missing, session name invalid",
-        "Port: detect collision with worktree range (3190–4089), show `Port in use — close the other Archon instance`",
+        "Port: detect collision with worktree range (3190\u20134089), show `Port in use \u2014 close the other Archon instance`",
         "Unit tests cover each error branch"
       ],
-      "technicalNotes": "Per §10.11. Mirror `classifyIsolationError` pattern from `@archon/isolation`.",
-      "dependsOn": ["US-031"],
+      "technicalNotes": "Per \u00a710.11. Mirror `classifyIsolationError` pattern from `@archon/isolation`.",
+      "dependsOn": [
+        "US-031"
+      ],
       "priority": 32,
       "passes": false,
       "notes": ""
@@ -597,14 +667,16 @@
       "description": "As the operator, I want the desktop app to write local logs with 10 MB rotation to the per-OS standard location so I can debug without telemetry leaving my machine.",
       "acceptanceCriteria": [
         "Logs written to `%APPDATA%\\ArchonDesktop\\logs\\archon-desktop.log` (Windows) or `~/Library/Logs/ArchonDesktop/archon-desktop.log` (macOS)",
-        "On 10 MB size, rotate: current → `.1`, `.1` → `.2`, up to `.5`, older deleted",
-        "Structured JSON lines with `{ ts, level, event, ...fields }` (match `@archon/paths` Pino convention — but do NOT pull in Pino; a minimal logger is fine)",
+        "On 10 MB size, rotate: current \u2192 `.1`, `.1` \u2192 `.2`, up to `.5`, older deleted",
+        "Structured JSON lines with `{ ts, level, event, ...fields }` (match `@archon/paths` Pino convention \u2014 but do NOT pull in Pino; a minimal logger is fine)",
         "No secrets logged (API keys, tokens masked); no message content logged",
         "Unit test covers rotation trigger and file naming",
-        "Log path exposed via a Tauri command for Settings → About → Open Logs"
+        "Log path exposed via a Tauri command for Settings \u2192 About \u2192 Open Logs"
       ],
-      "technicalNotes": "Per §10.10 'No telemetry'. Keep dependencies minimal — implement rotation in-house. Match event-naming convention from CLAUDE.md (`domain.action_state`).",
-      "dependsOn": ["US-001"],
+      "technicalNotes": "Per \u00a710.10 'No telemetry'. Keep dependencies minimal \u2014 implement rotation in-house. Match event-naming convention from CLAUDE.md (`domain.action_state`).",
+      "dependsOn": [
+        "US-001"
+      ],
       "priority": 33,
       "passes": false,
       "notes": ""
@@ -622,8 +694,10 @@
         "Build steps documented in `packages/desktop/README.md` for both OSes",
         "Smoke test: installed MSI launches on Windows; installed DMG launches on macOS without Gatekeeper prompt"
       ],
-      "technicalNotes": "Per §12 Phase 7. Bundle id: `com.archon.desktop` (or similar). Icons needed at multiple sizes — check Tauri v2 asset requirements.",
-      "dependsOn": ["US-032"],
+      "technicalNotes": "Per \u00a712 Phase 7. Bundle id: `com.archon.desktop` (or similar). Icons needed at multiple sizes \u2014 check Tauri v2 asset requirements.",
+      "dependsOn": [
+        "US-032"
+      ],
       "priority": 34,
       "passes": false,
       "notes": ""
@@ -633,18 +707,29 @@
       "title": "Cross-platform parity pass + README",
       "description": "As the operator, I want every feature exercised on both Windows and macOS, platform-specific branches verified (shell defaults, Reveal-in-OS, app-data paths), Aqua Voice smoke tested, and a full install/usage README so the app is GA-ready.",
       "acceptanceCriteria": [
-        "Test matrix executed: every Must-have feature from §9 on both Windows and macOS",
+        "Test matrix executed: every Must-have feature from \u00a79 on both Windows and macOS",
         "Shell defaults verified: `pwsh` on Windows, `zsh` on macOS",
         "Reveal-in-OS verified: Explorer on Windows, Finder on macOS",
         "App-data paths verified: `%APPDATA%\\ArchonDesktop\\` and `~/Library/Application Support/ArchonDesktop/`",
-        "Aqua Voice smoke test: dictation works into a focused xterm.js pane on both OSes (OS-level keystroke injection path per §10.5/§10.11 assumption)",
-        "G9 ultrawide (5120×1440) validation: 18 panes rendered smoothly on Windows; macOS validation on operator's display",
+        "Aqua Voice smoke test: dictation works into a focused xterm.js pane on both OSes (OS-level keystroke injection path per \u00a710.5/\u00a710.11 assumption)",
+        "G9 ultrawide (5120\u00d71440) validation: 18 panes rendered smoothly on Windows; macOS validation on operator's display",
         "README covers: install steps (Windows MSI + macOS DMG), remote `tmux` and `aichat` install commands, troubleshooting for SSH/tmux/port collisions",
         "Results captured in a checklist file in the repo under `packages/desktop/docs/ga-validation.md`",
-        "All 5 Primary Success Metrics from §6 observed and noted in the validation file"
+        "All 5 Primary Success Metrics from \u00a76 observed and noted in the validation file"
       ],
-      "technicalNotes": "Per §12 Phase 7 + §6. This is the GA gate — no feature story should ship without this pass. If Aqua Voice needs clipboard-paste instead of keystroke injection, document and verify paste-into-xterm works.",
-      "dependsOn": ["US-034", "US-030", "US-024", "US-023", "US-021", "US-018", "US-016", "US-011", "US-005", "US-033"],
+      "technicalNotes": "Per \u00a712 Phase 7 + \u00a76. This is the GA gate \u2014 no feature story should ship without this pass. If Aqua Voice needs clipboard-paste instead of keystroke injection, document and verify paste-into-xterm works.",
+      "dependsOn": [
+        "US-034",
+        "US-030",
+        "US-024",
+        "US-023",
+        "US-021",
+        "US-018",
+        "US-016",
+        "US-011",
+        "US-005",
+        "US-033"
+      ],
       "priority": 35,
       "passes": false,
       "notes": ""

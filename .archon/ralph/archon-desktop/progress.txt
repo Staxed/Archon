@@ -456,3 +456,28 @@
 - fetchCodebases returns empty array on error (fail-safe, no badge shown on network error)
 
 ---
+
+## 2026-04-17 — US-016: Reveal in OS + Open Archon Web UI actions
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/FileTree.tsx` — Added reveal-in-os and open-archon-web-ui context menu actions, getRevealCommand and canRevealInOs helpers, onToast and archonWebUiUrl props
+- `packages/desktop/src/FileTree.test.ts` — Added 8 tests: getRevealCommand (3), canRevealInOs (4), Open Archon Web UI visibility (2 — reuses matchesCodebasePath)
+- `packages/desktop/src/App.tsx` — Pass showToast as onToast to FileTree
+- `packages/desktop/src/styles.css` — Added .tree-context-item-hint style for remote path indicator
+- `packages/desktop/package.json` — Added @tauri-apps/plugin-shell dependency
+- `packages/desktop/src-tauri/tauri.conf.json` — Added shell plugin with open: true
+
+**Acceptance criteria verified**:
+- [x] Reveal in OS: on client-local Windows calls `explorer.exe /select,<path>`; on macOS calls `open -R <path>` (via getRevealCommand helper)
+- [x] Remote paths: menu item shows tooltip and action is a no-op toast (canRevealInOs returns false, onToast fires)
+- [x] Open Archon Web UI: menu item shown only when root has isArchonCodebase = true (checked via matchesCodebasePath against archonCodebasePaths)
+- [x] Uses Tauri's shell.open API (dynamic import of @tauri-apps/plugin-shell with dev fallback)
+- [x] Unit tests cover command selection branching per OS + remote no-op (8 new tests)
+
+**Learnings**:
+- Tauri v2 shell plugin config goes in `plugins.shell` in tauri.conf.json (not in `app.security.allowlist`)
+- Dynamic import of @tauri-apps/plugin-shell with try/catch allows graceful fallback when running outside Tauri (dev mode)
+- canRevealInOs is just isLocalHost — kept as a separate named function for semantic clarity in the context menu code
+
+---
