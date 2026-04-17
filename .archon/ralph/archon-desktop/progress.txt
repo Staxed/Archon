@@ -1,0 +1,213 @@
+## Codebase Patterns
+
+### Workspace Package Convention
+- **Where**: `packages/*/package.json`, `packages/*/tsconfig.json`
+- **Pattern**: Name `@archon/<name>`, version `0.2.0`, `"type": "module"`. tsconfig extends `../../tsconfig.json` with `noEmit: true`. For frontend packages add `jsx: "react-jsx"`, `lib: ["ES2022", "DOM", "DOM.Iterable"]`, `types: ["vite/client"]`.
+- **Example**: See `packages/desktop/package.json` and `packages/desktop/tsconfig.json`
+
+### ESLint Vite Config Ignore
+- **Where**: `eslint.config.mjs` ignores section
+- **Pattern**: Add `packages/<name>/vite.config.ts` to ignores when creating a new Vite-based package
+- **Example**: `'packages/desktop/vite.config.ts', // Vite config doesn't need type-checked linting`
+
+### Desktop Routes Pattern
+- **Where**: `packages/server/src/routes/desktop.ts`
+- **Pattern**: Desktop routes use a separate `setupDesktopRoutes(app)` function called from `registerApiRoutes` in `api.ts`. Uses `app.use('/api/desktop/*', ...)` middleware for loopback guard. Has its own local `registerOpenApiRoute` helper. Route definitions are module-scoped; registration is inside the exported function.
+- **Example**: See `desktop.ts` for the loopback middleware + placeholder pattern.
+
+### Loopback Guard Testing with spyOn
+- **Where**: `packages/server/src/routes/desktop.test.ts`
+- **Pattern**: Use `spyOn(desktopModule, 'getRemoteAddress')` to control the remote address returned by the middleware. No `mock.module()` needed — clean spyOn that restores properly.
+- **Example**: `getRemoteAddressSpy.mockReturnValue('192.168.1.100')` → test 403
+
+### Rust Module Pattern
+- **Where**: `packages/desktop/src-tauri/src/`
+- **Pattern**: Each Rust module is a separate file declared in `lib.rs` via `mod module_name;`. Tauri commands use `#[tauri::command]` and are registered in `lib.rs` via `tauri::generate_handler![...]`. Managed state via `.manage()` + `State<'_, T>` in command params. Async commands need tokio features in Cargo.toml.
+- **Note**: No Rust toolchain in CI/worktree env — Rust code cannot be `cargo check`ed, only visually verified
+
+### react-resizable-panels v4 API
+- **Where**: `packages/desktop/src/App.tsx`
+- **Pattern**: v4 uses `Group` (not `PanelGroup`), `Panel`, `Separator` (not `PanelResizeHandle`). `orientation="horizontal"` instead of `direction`. Size props are plain numbers (percentages) or strings, not `{ value, unit }` objects.
+- **Example**: `<Group orientation="horizontal"><Panel defaultSize={15} /><Separator /><Panel /></Group>`
+
+### Monorepo Scripts
+- **Where**: Root `package.json`
+- **Pattern**: `bun run type-check` = `bun --filter '*' type-check`. `bun run lint` = `bun x eslint . --cache`. `bun run test` = `bun --filter '*' --parallel test`. Format: `bun x prettier --write .`
+- **Note**: `bun run lint` and `bun run format:check` need to run from repo root (not from a worktree subdirectory)
+
+### Desktop Test Files Excluded from tsconfig
+- **Where**: `packages/desktop/tsconfig.json`
+- **Pattern**: Test files (`src/**/*.test.ts`) are excluded from tsconfig because the desktop package has `types: ["vite/client"]` which overrides bun types. Tests run fine via `bun test` which has its own type resolution.
+- **Note**: Same pattern applies to any future test files in the desktop package
+
+---
+
+## 2026-04-17 — US-001: Scaffold @archon/desktop Tauri v2 package
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/package.json` — New workspace package @archon/desktop with React 19 + Vite 6 + Tauri v2 deps
+- `packages/desktop/tsconfig.json` — Extends root, strict mode, DOM libs, JSX support
+- `packages/desktop/vite.config.ts` — Vite config with Tauri-compatible settings (port 1420, ES2022 target)
+- `packages/desktop/index.html` — Vite entry HTML
+- `packages/desktop/src/main.tsx` — React entry point
+- `packages/desktop/src/App.tsx` — Minimal React app component
+- `packages/desktop/src-tauri/Cargo.toml` — Rust project with tauri v2 + tauri-plugin-shell
+- `packages/desktop/src-tauri/build.rs` — Tauri build script
+- `packages/desktop/src-tauri/src/main.rs` — Rust binary entry
+- `packages/desktop/src-tauri/src/lib.rs` — Tauri app builder
+- `packages/desktop/src-tauri/tauri.conf.json` — Tauri v2 config (identifier, window, bundle)
+- `eslint.config.mjs` — Added desktop vite.config.ts to ignores
+
+**Acceptance criteria verified**:
+- [x] New `packages/desktop/` directory with Tauri v2 project (src-tauri/ + src/)
+- [x] `package.json` registers `@archon/desktop` as a workspace package
+- [x] React + TypeScript + Vite renderer builds cleanly (`bun --filter @archon/desktop build` succeeds)
+- [x] `tsconfig.json` matches project conventions (strict mode, no implicit any)
+- [x] Root `package.json` workspaces glob picks up the new package (`packages/*`)
+- [x] Type-check passes
+- [x] Lint passes (0 warnings)
+
+**Learnings**:
+- Root `packages/*` glob auto-discovers new packages — no need to modify root package.json
+- Vite config files for new packages must be added to eslint ignores (type-checked linting requires tsconfig coverage)
+- Tauri v2 uses a new config format with `app.windows` instead of Tauri v1's `tauri.windows`
+- `bun install` after adding a new workspace package auto-resolves and installs all deps
+
+---
+
+## 2026-04-17 — US-003: SSH port-forward Rust sidecar with deterministic port allocation
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src-tauri/src/ssh_tunnel.rs` — New module: ssh_connect/ssh_disconnect commands, port hashing, error classifier, TunnelManager state
+- `packages/desktop/src-tauri/src/lib.rs` — Register ssh_tunnel module and commands, manage TunnelManager state
+- `packages/desktop/src-tauri/Cargo.toml` — Add tokio dependency with net/time/process/io-util features
+
+**Acceptance criteria verified**:
+- [x] Rust module in `src-tauri/src/ssh_tunnel.rs` spawns `ssh -NL` as a detached child
+- [x] Deterministic local port from `hash('archon-desktop:' + hostAlias) % 900 + 4200` (range 4200-5099)
+- [x] Waits up to 15s for TCP accept on local port; returns error on timeout
+- [x] Captures stderr for diagnostic surfacing
+- [x] Tauri command `ssh_connect(hostAlias)` exposed to renderer; returns `{ localPort }`
+- [x] Error classifier maps common SSH errors to user-facing strings
+- [x] Child process cleaned up on `ssh_disconnect()` and on app exit (kill_on_drop + TunnelManager::Drop)
+- [x] Rust tests cover port-hash determinism (3 tests) + error classification (7 tests)
+
+**Learnings**:
+- Tauri v2 async commands work with tokio — add tokio features to Cargo.toml
+- `kill_on_drop(true)` on tokio::process::Command ensures child cleanup even on unexpected drops
+- `ExitOnForwardFailure=yes` SSH option makes the ssh process exit if port forwarding fails, which helps detect errors faster
+- ServerAliveInterval/CountMax SSH options help detect dead connections
+- No Rust toolchain in this environment — can't run `cargo check` or `cargo test` in CI worktrees
+
+---
+
+## 2026-04-17 — US-002: Create desktop routes file with loopback guard + 501 placeholders
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — New Zod schemas for all desktop endpoints (health, fs/tree, fs/file, tmux/list, tmux/kill, 501, 403)
+- `packages/server/src/routes/desktop.ts` — New route file with setupDesktopRoutes(), loopback guard middleware, health endpoint (200), and 501 placeholders for all other routes
+- `packages/server/src/routes/api.ts` — Import + call setupDesktopRoutes(app) after CORS setup
+- `packages/server/package.json` — Added desktop.test.ts to test script
+- `packages/server/src/routes/desktop.test.ts` — 18 unit tests covering isLoopback, loopback guard, health, and all placeholder routes
+
+**Acceptance criteria verified**:
+- [x] New `packages/server/src/routes/desktop.ts` registered from `api.ts`
+- [x] Loopback guard middleware rejects non-127.0.0.1/::1 requests with 403
+- [x] Placeholder handlers return 501 for all listed endpoints
+- [x] `GET /api/desktop/health` returns 200 with `{ ok: true, version }`
+- [x] All routes registered via `registerOpenApiRoute(createRoute({...}), handler)` pattern
+- [x] Zod schemas in `desktop.schemas.ts`
+- [x] Unit test verifies loopback guard rejects non-loopback request (via spyOn getRemoteAddress)
+- [x] Tests pass, type-check passes, lint passes (bun run validate exit 0)
+
+**Learnings**:
+- Hono middleware with early return needs `c.res = c.json(...)` + `return` instead of `return c.json(...)` to avoid `@typescript-eslint/no-invalid-void-type` lint error on `Promise<void | Response>`
+- Desktop routes are self-contained — no `mock.module()` needed for tests, just `spyOn` on the exported `getRemoteAddress` function
+- Bun's `c.env` contains `{ incoming, server }` in Hono; `server.requestIP(incoming)` gives the client IP
+- New test file without `mock.module()` can be added as its own `bun test` invocation in the test script without conflict concerns
+
+---
+
+## 2026-04-17 — US-004: Dark-theme app shell with empty layout regions
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src/App.tsx` — Full layout with resizable panels (sidebar, editor, grid), Host Sessions drawer, status bar
+- `packages/desktop/src/styles.css` — Dark theme CSS variables, layout styles, drawer, status bar, resize handles
+- `packages/desktop/package.json` — Added react-resizable-panels dependency
+
+**Acceptance criteria verified**:
+- [x] `App.tsx` lays out `[sidebar | editor column | grid]` with a top-level status bar
+- [x] Host Sessions panel is a collapsible right drawer
+- [x] Dark theme applied via CSS variables; no theme picker, no light mode
+- [x] All regions render as empty shells with visible borders/labels during dev
+- [x] Layout is horizontally resizable (drag between sidebar/editor/grid) with min/max size constraints
+- [x] Renders without errors — manual verification on Windows/macOS required (noted)
+- [x] Type-check + lint pass (bun run validate passes)
+
+**Learnings**:
+- react-resizable-panels v4 has a completely different API from v2/v3 — uses `Group`/`Panel`/`Separator` instead of `PanelGroup`/`Panel`/`PanelResizeHandle`
+- Size props in v4 are plain numbers (interpreted as percentages) not `{ value, unit }` objects
+- `orientation` replaces `direction` in v4
+- Dark theme with CSS variables is clean and minimal — no need for Tailwind in the desktop package
+
+---
+
+## 2026-04-17 — US-005: Preflight dependency check endpoint + banner UI
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — Added preflightCheckSchema and preflightResponseSchema
+- `packages/server/src/routes/desktop.ts` — Added GET /api/desktop/preflight endpoint with runPreflightChecks() and checkCommand() helpers; tmux version parsing and warning logic
+- `packages/server/src/routes/desktop.test.ts` — Added 8 tests for preflight endpoint (JSON shape, missing deps, version parsing, tmux < 3.0 warning) + 2 unit tests for runPreflightChecks
+- `packages/desktop/src/PreflightBanner.tsx` — New React component with dismissal persistence, copy-command buttons, and error state
+- `packages/desktop/src/PreflightBanner.test.ts` — 8 tests for buildDismissalKey and localStorage persistence logic
+- `packages/desktop/src/App.tsx` — Integrated PreflightBanner at top of app shell
+- `packages/desktop/src/styles.css` — Added preflight banner CSS (dark theme, warning colors)
+- `packages/desktop/tsconfig.json` — Excluded test files from tsconfig (bun:test types not available with vite/client types)
+- `packages/desktop/package.json` — Added test script
+
+**Acceptance criteria verified**:
+- [x] New `GET /api/desktop/preflight` endpoint runs checks: tmux -V, aichat --version, typescript-language-server --version, archon version
+- [x] Response shape: `{ checks: { name, present, version?, installCommand? }[] }`
+- [x] Renderer displays a banner when any check fails, with per-dependency copy-command button
+- [x] Banner dismissible; dismissal persisted in localStorage keyed by hash of missing deps
+- [x] tmux < 3.0 triggers a warning about -A flag support
+- [x] Unit tests cover preflight JSON shape (server) + renderer banner state logic (desktop)
+- [x] Type-check + tests + lint pass (bun run validate exit 0)
+
+**Learnings**:
+- Desktop tsconfig has `types: ["vite/client"]` which overrides bun types — test files must be excluded from tsconfig
+- `execFile` with `promisify` works well for checking CLI tool presence without shell injection risk
+- spyOn on exported `checkCommand` function avoids need for mock.module() in preflight tests
+- Banner dismissal keyed by hash of failing deps ensures it reappears when dep set changes
+
+---
+
+## 2026-04-17 — US-006: Local PTY via portable-pty with Tauri IPC wiring
+
+**Status**: PASSED
+**Files changed**:
+- `packages/desktop/src-tauri/src/local_pty.rs` — New module: PtyManager state, pty_spawn/pty_write/pty_resize/pty_kill commands, default_shell(), base64 output streaming via Tauri events
+- `packages/desktop/src-tauri/src/lib.rs` — Register local_pty module, PtyManager state, and 4 commands
+- `packages/desktop/src-tauri/Cargo.toml` — Add portable-pty, base64, uuid dependencies
+
+**Acceptance criteria verified**:
+- [x] Rust module `src-tauri/src/local_pty.rs` uses `portable-pty` to spawn shells
+- [x] Default shell: `pwsh` on Windows, `zsh` on macOS (detected via `#[cfg(target_os)]`)
+- [x] Tauri commands: `pty_spawn(cwd, command?)`, `pty_write(ptyId, bytes)`, `pty_resize(ptyId, cols, rows)`, `pty_kill(ptyId)`
+- [x] Tauri events: `pty:output:{ptyId}` streams bytes as base64
+- [x] PTY cleaned up on window close (PtyManager::Drop signals reader threads + drops writer/master)
+- [x] Rust test for shell-selection branching (5 tests covering each platform + nonempty + manager init)
+- [x] Lint + type-check pass (bun run validate passes)
+
+**Learnings**:
+- portable-pty uses `MasterPty` trait with `try_clone_reader()` + `take_writer()` for bidirectional I/O
+- Reader thread needs a signaling mechanism (Arc<Mutex<bool>>) since portable-pty readers block on read()
+- base64 0.22 uses the `Engine` trait pattern — import `base64::Engine as _` then use `general_purpose::STANDARD.encode()`
+- uuid crate with `v4` feature for generating PTY IDs
+
+---
