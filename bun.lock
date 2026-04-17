@@ -93,6 +93,7 @@
         "react-dom": "^19.0.0",
         "react-grid-layout": "^2.2.3",
         "react-resizable-panels": "^4.10.0",
+        "zod": "^3.24.0",
       },
       "devDependencies": {
         "@tauri-apps/cli": "^2.0.0",
