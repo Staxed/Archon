@@ -37,7 +37,6 @@ import {
   tmuxKillQuerySchema,
   tmuxRenameQuerySchema,
   notFoundResponseSchema,
-  notImplementedResponseSchema,
   loopbackForbiddenResponseSchema,
   preflightResponseSchema,
   aichatEnsureConfigResponseSchema,
@@ -413,13 +412,6 @@ export async function ensureAichatConfig(): Promise<{
 // Route definitions (module-scope — pure config, no runtime dependencies)
 // =========================================================================
 
-function json501(description: string): {
-  content: { 'application/json': { schema: typeof notImplementedResponseSchema } };
-  description: string;
-} {
-  return { content: { 'application/json': { schema: notImplementedResponseSchema } }, description };
-}
-
 const desktopHealthRoute = createRoute({
   method: 'get',
   path: '/api/desktop/health',
@@ -595,20 +587,6 @@ const tmuxRenameRoute = createRoute({
   },
 });
 
-const lspRoute = createRoute({
-  method: 'get',
-  path: '/api/desktop/lsp',
-  tags: ['Desktop'],
-  summary: 'WebSocket LSP proxy endpoint (placeholder)',
-  responses: {
-    403: {
-      content: { 'application/json': { schema: loopbackForbiddenResponseSchema } },
-      description: 'Forbidden',
-    },
-    501: json501('Not implemented — future WebSocket endpoint'),
-  },
-});
-
 const aichatEnsureConfigRoute = createRoute({
   method: 'post',
   path: '/api/desktop/aichat/ensure-config',
@@ -723,6 +701,90 @@ export function spawnProcess(
   options: { stdio: 'ignore' | ('pipe' | 'ignore')[] }
 ): ChildProcess {
   return spawn(command, args, options);
+}
+
+// =========================================================================
+// LSP proxy helpers
+// =========================================================================
+
+/**
+ * Supported language → language server command + args.
+ * Returns null if the language is not supported.
+ */
+export function getLanguageServerCommand(
+  language: string
+): { command: string; args: string[] } | null {
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      return { command: 'typescript-language-server', args: ['--stdio'] };
+    case 'python':
+      return { command: 'pylsp', args: [] };
+    case 'go':
+      return { command: 'gopls', args: ['serve'] };
+    case 'rust':
+      return { command: 'rust-analyzer', args: [] };
+    case 'markdown':
+      return { command: 'marksman', args: ['server'] };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build a unique key for an LSP connection (language + project dir).
+ * Reuse connections for files within the same project dir and language.
+ */
+export function lspConnectionKey(language: string, projectDir: string): string {
+  return `${language}:${projectDir}`;
+}
+
+/**
+ * Active LSP server processes keyed by lspConnectionKey.
+ * Allows reuse of an existing language server for subsequent files in the same project.
+ */
+const activeLspServers = new Map<string, { process: ChildProcess; refCount: number }>();
+
+/**
+ * Get or spawn a language server process for the given language and project dir.
+ * Increments refCount when reusing; callers must call releaseLspServer when done.
+ */
+export function acquireLspServer(
+  language: string,
+  projectDir: string
+): { process: ChildProcess; key: string; reused: boolean } | null {
+  const cmd = getLanguageServerCommand(language);
+  if (!cmd) return null;
+
+  const key = lspConnectionKey(language, projectDir);
+  const existing = activeLspServers.get(key);
+  if (existing && !existing.process.killed) {
+    existing.refCount++;
+    return { process: existing.process, key, reused: true };
+  }
+
+  // Spawn a new language server
+  const proc = spawnProcess(cmd.command, cmd.args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  proc.on('exit', () => {
+    activeLspServers.delete(key);
+  });
+  activeLspServers.set(key, { process: proc, refCount: 1 });
+  return { process: proc, key, reused: false };
+}
+
+/**
+ * Release a reference to an LSP server. When refCount reaches 0, the server is killed.
+ */
+export function releaseLspServer(key: string): void {
+  const entry = activeLspServers.get(key);
+  if (!entry) return;
+  entry.refCount--;
+  if (entry.refCount <= 0) {
+    entry.process.kill();
+    activeLspServers.delete(key);
+  }
 }
 
 // =========================================================================
@@ -870,9 +932,9 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
     }
   });
 
-  // Placeholder 501 handler
-  const notImplemented = (c: Context): Response => c.json({ error: 'Not implemented' }, 501);
-  registerOpenApiRoute(lspRoute, notImplemented);
+  // WS /api/desktop/lsp — LSP proxy endpoint (language server relay)
+  // No OpenAPI route — WS upgrade is not spec'd, same pattern as PTY.
+  // Loopback guard middleware at /api/desktop/* still applies.
 
   // -----------------------------------------------------------------------
   // POST /api/desktop/aichat/ensure-config — ensure aichat config exists
@@ -1075,6 +1137,114 @@ export function setupDesktopRoutes(app: OpenAPIHono): void {
           if (attachProcess) {
             attachProcess.kill();
             attachProcess = null;
+          }
+        },
+      };
+    })
+  );
+
+  // -----------------------------------------------------------------------
+  // WS /api/desktop/lsp — LSP proxy endpoint (language server relay)
+  // -----------------------------------------------------------------------
+  // Spawns the appropriate language server on the server host and relays
+  // JSON-RPC messages bidirectionally between the WebSocket and the LS process.
+  // On-demand spawn per project dir; reuse connection for subsequent files.
+  app.get(
+    '/api/desktop/lsp',
+    upgradeWebSocket(c => {
+      const url = new URL(c.req.url);
+      const language = url.searchParams.get('language') ?? '';
+      const projectDir = url.searchParams.get('projectDir') ?? '';
+
+      let lspKey: string | null = null;
+      let lspProc: ChildProcess | null = null;
+
+      return {
+        onOpen(_event, ws): void {
+          if (!language || !projectDir) {
+            ws.close(1008, 'Missing required query params: language, projectDir');
+            return;
+          }
+
+          const cmd = getLanguageServerCommand(language);
+          if (!cmd) {
+            ws.close(
+              1008,
+              `Unsupported language: ${language}. Supported: typescript, javascript, python, go, rust, markdown`
+            );
+            return;
+          }
+
+          const acquired = acquireLspServer(language, projectDir);
+          if (!acquired) {
+            ws.close(1011, `Failed to start language server for ${language}`);
+            return;
+          }
+
+          lspKey = acquired.key;
+          lspProc = acquired.process;
+
+          // Relay stdout (JSON-RPC responses) → WebSocket
+          // LSP uses Content-Length headers followed by JSON-RPC body.
+          // We relay raw bytes — the client LSP library handles framing.
+          lspProc.stdout?.on('data', (data: Buffer) => {
+            try {
+              ws.send(data.toString('utf-8'));
+            } catch {
+              // WS already closed
+            }
+          });
+
+          // Relay stderr → WebSocket as diagnostic messages (prefixed)
+          lspProc.stderr?.on('data', (data: Buffer) => {
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'lsp-stderr',
+                  message: data.toString('utf-8'),
+                })
+              );
+            } catch {
+              // WS already closed
+            }
+          });
+
+          // If the LS process exits, close the WS
+          lspProc.on('close', () => {
+            lspProc = null;
+            try {
+              ws.close(1000, 'Language server exited');
+            } catch {
+              // WS already closed
+            }
+          });
+        },
+
+        onMessage(event): void {
+          if (!lspProc?.stdin) return;
+
+          // Forward JSON-RPC messages from the client to the LS process.
+          const data = event.data;
+          if (typeof data === 'string') {
+            lspProc.stdin.write(data);
+          } else if (data instanceof ArrayBuffer) {
+            lspProc.stdin.write(Buffer.from(data));
+          }
+        },
+
+        onClose(): void {
+          if (lspKey) {
+            releaseLspServer(lspKey);
+            lspKey = null;
+            lspProc = null;
+          }
+        },
+
+        onError(): void {
+          if (lspKey) {
+            releaseLspServer(lspKey);
+            lspKey = null;
+            lspProc = null;
           }
         },
       };

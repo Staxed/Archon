@@ -20,6 +20,10 @@ import {
   fileExists,
   buildAichatConfig,
   ensureAichatConfig,
+  getLanguageServerCommand,
+  lspConnectionKey,
+  acquireLspServer,
+  releaseLspServer,
 } from './desktop';
 
 // ---------------------------------------------------------------------------
@@ -144,26 +148,148 @@ describe('GET /api/desktop/health', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Placeholder 501 routes
+// Tests: LSP proxy helpers (pure functions)
 // ---------------------------------------------------------------------------
 
-describe('placeholder 501 routes', () => {
+describe('getLanguageServerCommand', () => {
+  test('returns typescript-language-server for typescript', () => {
+    const result = getLanguageServerCommand('typescript');
+    expect(result).toEqual({ command: 'typescript-language-server', args: ['--stdio'] });
+  });
+
+  test('returns typescript-language-server for javascript', () => {
+    const result = getLanguageServerCommand('javascript');
+    expect(result).toEqual({ command: 'typescript-language-server', args: ['--stdio'] });
+  });
+
+  test('returns pylsp for python', () => {
+    const result = getLanguageServerCommand('python');
+    expect(result).toEqual({ command: 'pylsp', args: [] });
+  });
+
+  test('returns gopls for go', () => {
+    const result = getLanguageServerCommand('go');
+    expect(result).toEqual({ command: 'gopls', args: ['serve'] });
+  });
+
+  test('returns rust-analyzer for rust', () => {
+    const result = getLanguageServerCommand('rust');
+    expect(result).toEqual({ command: 'rust-analyzer', args: [] });
+  });
+
+  test('returns marksman for markdown', () => {
+    const result = getLanguageServerCommand('markdown');
+    expect(result).toEqual({ command: 'marksman', args: ['server'] });
+  });
+
+  test('returns null for unsupported language', () => {
+    expect(getLanguageServerCommand('cobol')).toBeNull();
+    expect(getLanguageServerCommand('')).toBeNull();
+  });
+});
+
+describe('lspConnectionKey', () => {
+  test('combines language and project dir', () => {
+    expect(lspConnectionKey('typescript', '/home/user/project')).toBe(
+      'typescript:/home/user/project'
+    );
+  });
+
+  test('different languages produce different keys', () => {
+    const key1 = lspConnectionKey('typescript', '/project');
+    const key2 = lspConnectionKey('python', '/project');
+    expect(key1).not.toBe(key2);
+  });
+
+  test('different project dirs produce different keys', () => {
+    const key1 = lspConnectionKey('typescript', '/project-a');
+    const key2 = lspConnectionKey('typescript', '/project-b');
+    expect(key1).not.toBe(key2);
+  });
+});
+
+describe('acquireLspServer / releaseLspServer', () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+
   beforeEach(() => {
-    getRemoteAddressSpy = spyOn(desktopModule, 'getRemoteAddress');
-    getRemoteAddressSpy.mockReturnValue('127.0.0.1');
+    spawnSpy = spyOn(desktopModule, 'spawnProcess');
   });
 
   afterEach(() => {
-    getRemoteAddressSpy.mockRestore();
+    spawnSpy.mockRestore();
   });
 
-  test('GET /api/desktop/lsp returns 501', async () => {
-    const app = makeApp();
-    const response = await app.request('/api/desktop/lsp', { method: 'GET' });
-    expect(response.status).toBe(501);
+  test('returns null for unsupported language', () => {
+    const result = acquireLspServer('cobol', '/project');
+    expect(result).toBeNull();
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
 
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toContain('Not implemented');
+  test('spawns a language server process for supported language', () => {
+    const mockProc = {
+      killed: false,
+      on: (_event: string, _cb: () => void): void => {},
+      kill: (): void => {},
+      stdin: null,
+      stdout: null,
+      stderr: null,
+    };
+    spawnSpy.mockReturnValue(mockProc);
+
+    const result = acquireLspServer('typescript', '/home/user/project');
+    expect(result).not.toBeNull();
+    expect(result!.reused).toBe(false);
+    expect(result!.key).toBe('typescript:/home/user/project');
+    expect(spawnSpy).toHaveBeenCalledWith('typescript-language-server', ['--stdio'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Clean up
+    releaseLspServer(result!.key);
+  });
+
+  test('reuses existing process for same key', () => {
+    const mockProc = {
+      killed: false,
+      on: (_event: string, _cb: () => void): void => {},
+      kill: (): void => {},
+      stdin: null,
+      stdout: null,
+      stderr: null,
+    };
+    spawnSpy.mockReturnValue(mockProc);
+
+    const first = acquireLspServer('typescript', '/project');
+    expect(first!.reused).toBe(false);
+
+    const second = acquireLspServer('typescript', '/project');
+    expect(second!.reused).toBe(true);
+    expect(spawnSpy).toHaveBeenCalledTimes(1); // Only spawned once
+
+    // Clean up both refs
+    releaseLspServer(first!.key);
+    releaseLspServer(second!.key);
+  });
+
+  test('releaseLspServer kills process when refCount reaches 0', () => {
+    let killed = false;
+    const mockProc = {
+      killed: false,
+      on: (_event: string, _cb: () => void): void => {},
+      kill: (): void => {
+        killed = true;
+      },
+      stdin: null,
+      stdout: null,
+      stderr: null,
+    };
+    spawnSpy.mockReturnValue(mockProc);
+
+    const result = acquireLspServer('python', '/project');
+    expect(result).not.toBeNull();
+
+    releaseLspServer(result!.key);
+    expect(killed).toBe(true);
   });
 });
 

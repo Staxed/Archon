@@ -3,6 +3,12 @@ import { loadWorkspace, saveWorkspace } from './AddFolderModal';
 import type { EditorColumnPersistedState } from './AddFolderModal';
 import type { TabState, EditorTab, TabAction, SplitState, SplitAction } from './EditorTabs';
 import { getExtension, extensionToLanguage, getAllSplitTabs } from './EditorTabs';
+import {
+  fileExtToLspLanguage,
+  buildLspWsUri,
+  deriveProjectDir,
+  getFileExtension,
+} from './LspClient';
 
 // ── Snap logic ──────────────────────────────────────────────────
 
@@ -74,6 +80,7 @@ interface CMModules {
   css: () => Extension;
   html: () => Extension;
   oneDark: Extension;
+  languageServer: typeof import('codemirror-languageserver').languageServer;
 }
 
 let cmModulesPromise: Promise<CMModules> | null = null;
@@ -90,7 +97,8 @@ function loadCMModules(): Promise<CMModules> {
       import('@codemirror/lang-json'),
       import('@codemirror/lang-css'),
       import('@codemirror/lang-html'),
-    ]).then(([view, state, cm, jsLang, pyLang, mdLang, jsonLang, cssLang, htmlLang]) => ({
+      import('codemirror-languageserver'),
+    ]).then(([view, state, cm, jsLang, pyLang, mdLang, jsonLang, cssLang, htmlLang, lspMod]) => ({
       EditorView: view.EditorView,
       EditorState: state.EditorState,
       basicSetup: cm.basicSetup,
@@ -114,6 +122,7 @@ function loadCMModules(): Promise<CMModules> {
         },
         { dark: true }
       ),
+      languageServer: lspMod.languageServer,
     }));
   }
   return cmModulesPromise;
@@ -160,11 +169,15 @@ export function replaceEditorContent(tabId: string, newContent: string): void {
   });
 }
 
+/** Default server base URL for LSP connections. */
+const DEFAULT_SERVER_BASE_URL = 'http://localhost:3090';
+
 interface CodeMirrorEditorProps {
   tab: EditorTab;
   content: string;
   onDirty: (tabId: string) => void;
   onPin: (tabId: string) => void;
+  serverBaseUrl?: string;
 }
 
 function CodeMirrorEditor({
@@ -172,6 +185,7 @@ function CodeMirrorEditor({
   content,
   onDirty,
   onPin,
+  serverBaseUrl,
 }: CodeMirrorEditorProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -190,6 +204,7 @@ function CodeMirrorEditor({
     void loadCMModules().then(cm => {
       if (!el.isConnected) return;
 
+      const ext = getFileExtension(tab.path) || getExtension(tab.name);
       const lang = extensionToLanguage(getExtension(tab.name));
       const langExt = getLanguageExtension(lang, cm);
 
@@ -204,6 +219,28 @@ function CodeMirrorEditor({
         }),
       ];
       if (langExt) extensions.push(langExt);
+
+      // Add LSP support if the language is supported
+      const lspLang = fileExtToLspLanguage(ext);
+      if (lspLang) {
+        try {
+          const base = serverBaseUrl || DEFAULT_SERVER_BASE_URL;
+          const projectDir = deriveProjectDir(tab.path);
+          const wsUri = buildLspWsUri(base, lspLang, projectDir);
+          const lspExts = cm.languageServer({
+            serverUri: wsUri as `ws://${string}`,
+            rootUri: `file://${projectDir}`,
+            workspaceFolders: [
+              { uri: `file://${projectDir}`, name: projectDir.split('/').pop() || 'workspace' },
+            ],
+            documentUri: `file://${tab.path}`,
+            languageId: lspLang,
+          });
+          extensions.push(...lspExts);
+        } catch {
+          // LSP connection failed — editor works without LSP features
+        }
+      }
 
       view = new cm.EditorView({
         state: cm.EditorState.create({
@@ -428,6 +465,7 @@ interface EditorColumnContentProps {
   windowCloseDirtyFiles?: string[] | null;
   onWindowCloseConfirm?: () => void;
   onWindowCloseCancel?: () => void;
+  serverBaseUrl?: string;
 }
 
 // ── Single split pane ──────────────────────────────────────────
@@ -440,6 +478,7 @@ interface SplitPaneProps {
   fileContents: Record<string, string>;
   onSaveTab?: (tabId: string) => void;
   onSplitRight: (tabId: string) => void;
+  serverBaseUrl?: string;
 }
 
 function SplitPane({
@@ -450,6 +489,7 @@ function SplitPane({
   fileContents,
   onSaveTab,
   onSplitRight,
+  serverBaseUrl,
 }: SplitPaneProps): React.JSX.Element {
   const [closeDirtyTab, setCloseDirtyTab] = useState<EditorTab | null>(null);
   const [contextMenu, setContextMenu] = useState<TabContextMenuState | null>(null);
@@ -538,6 +578,7 @@ function SplitPane({
             content={fileContents[activeTab.id] ?? ''}
             onDirty={handleDirty}
             onPin={handlePin}
+            serverBaseUrl={serverBaseUrl}
           />
         ) : (
           <div className="editor-split-empty">
@@ -616,6 +657,7 @@ export function EditorColumnContent({
   windowCloseDirtyFiles,
   onWindowCloseConfirm,
   onWindowCloseCancel,
+  serverBaseUrl,
 }: EditorColumnContentProps): React.JSX.Element {
   const handleSplitRight = useCallback(
     (id: string): void => {
@@ -681,6 +723,7 @@ export function EditorColumnContent({
               fileContents={fileContents}
               onSaveTab={onSaveTab}
               onSplitRight={handleSplitRight}
+              serverBaseUrl={serverBaseUrl}
             />
           ))
         ) : (
