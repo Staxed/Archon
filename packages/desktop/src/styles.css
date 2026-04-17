@@ -367,6 +367,16 @@ body,
   background-color: rgba(240, 128, 128, 0.1);
 }
 
+.session-action-btn.launch-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.session-action-btn.launch-btn:hover {
+  background-color: rgba(0, 122, 204, 0.15);
+}
+
 /* Status bar drawer toggle button */
 .status-bar-btn {
   background: none;

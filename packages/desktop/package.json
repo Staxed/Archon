@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "bun test src/PreflightBanner.test.ts src/TerminalPane.test.ts src/Osc133Addon.test.ts src/GridEngine.test.ts src/AdHocTerminal.test.ts src/FileTree.test.ts src/AddFolderModal.test.ts src/HostSessionsPanel.test.ts && bun test src/LaunchProfile.test.ts src/ProfileEditor.test.ts",
+    "test": "bun test src/PreflightBanner.test.ts src/TerminalPane.test.ts src/Osc133Addon.test.ts src/GridEngine.test.ts src/AdHocTerminal.test.ts src/FileTree.test.ts src/AddFolderModal.test.ts src/HostSessionsPanel.test.ts && bun test src/LaunchProfile.test.ts src/ProfileEditor.test.ts src/ProfileLauncher.test.ts",
     "type-check": "tsc --noEmit",
     "tauri": "tauri"
   },

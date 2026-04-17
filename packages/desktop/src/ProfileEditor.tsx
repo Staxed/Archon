@@ -369,6 +369,7 @@ interface ProfileListItemProps {
   onEdit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onLaunch?: () => void;
 }
 
 function ProfileListItem({
@@ -376,6 +377,7 @@ function ProfileListItem({
   onEdit,
   onDuplicate,
   onDelete,
+  onLaunch,
 }: ProfileListItemProps): React.JSX.Element {
   return (
     <div className="profile-list-item">
@@ -387,6 +389,11 @@ function ProfileListItem({
         </span>
       </div>
       <div className="profile-list-item-actions">
+        {onLaunch && (
+          <button className="session-action-btn launch-btn" onClick={onLaunch}>
+            Launch
+          </button>
+        )}
         <button className="session-action-btn" onClick={onEdit}>
           Edit
         </button>
@@ -405,9 +412,10 @@ function ProfileListItem({
 
 export interface ProfileEditorProps {
   onClose: () => void;
+  onLaunch?: (profileId: string) => void;
 }
 
-export function ProfileEditor({ onClose }: ProfileEditorProps): React.JSX.Element {
+export function ProfileEditor({ onClose, onLaunch }: ProfileEditorProps): React.JSX.Element {
   const [view, setView] = useState<EditorView>('list');
   const [profiles, setProfiles] = useState<LaunchProfile[]>(() => listProfiles());
   const [editingProfile, setEditingProfile] = useState<LaunchProfile | null>(null);
@@ -501,6 +509,13 @@ export function ProfileEditor({ onClose }: ProfileEditorProps): React.JSX.Elemen
                     onDelete={(): void => {
                       handleDelete(p.id);
                     }}
+                    onLaunch={
+                      onLaunch
+                        ? (): void => {
+                            onLaunch(p.id);
+                          }
+                        : undefined
+                    }
                   />
                 ))}
               </div>

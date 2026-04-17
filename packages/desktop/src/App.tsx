@@ -9,6 +9,7 @@ import type { TreeRoot } from './FileTree';
 import { AddFolderModal, loadWorkspace, removeRootFromWorkspace } from './AddFolderModal';
 import { HostSessionsPanel } from './HostSessionsPanel';
 import { ProfileEditor } from './ProfileEditor';
+import { launchProfile } from './ProfileLauncher';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -137,6 +138,25 @@ function App(): React.JSX.Element {
     setAddFolderOpen(true);
   }, []);
 
+  // Launch a profile: compute panes and add them to the grid
+  const handleLaunchProfile = useCallback(
+    (profileId: string): void => {
+      const result = launchProfile(profileId, gridState.panes);
+      if (result.kind === 'error') {
+        showToast(result.message);
+        return;
+      }
+      for (const pane of result.panes) {
+        gridDispatch({ type: 'ADD_PANE', pane });
+      }
+      if (result.warning) {
+        showToast(result.warning);
+      }
+      setProfileEditorOpen(false);
+    },
+    [gridState.panes, gridDispatch, showToast]
+  );
+
   const handleCloseAddFolder = useCallback((): void => {
     setAddFolderOpen(false);
   }, []);
@@ -210,6 +230,7 @@ function App(): React.JSX.Element {
           onClose={(): void => {
             setProfileEditorOpen(false);
           }}
+          onLaunch={handleLaunchProfile}
         />
       )}
       {toast && <div className="toast">{toast}</div>}
