@@ -10,6 +10,7 @@ import { AddFolderModal, loadWorkspace, removeRootFromWorkspace } from './AddFol
 import { HostSessionsPanel } from './HostSessionsPanel';
 import { ProfileEditor } from './ProfileEditor';
 import { launchProfile } from './ProfileLauncher';
+import { AgentPresetsEditor } from './AgentPresetsEditor';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -48,12 +49,14 @@ interface StatusBarProps {
   drawerOpen: boolean;
   onToggleDrawer: () => void;
   onOpenProfiles: () => void;
+  onOpenAgents: () => void;
 }
 
 function StatusBar({
   drawerOpen,
   onToggleDrawer,
   onOpenProfiles,
+  onOpenAgents,
 }: StatusBarProps): React.JSX.Element {
   return (
     <div className="status-bar">
@@ -61,6 +64,9 @@ function StatusBar({
         <span>Archon Desktop</span>
       </div>
       <div className="status-bar-right">
+        <button className="status-bar-btn" onClick={onOpenAgents} title="Agent Presets">
+          Agents
+        </button>
         <button className="status-bar-btn" onClick={onOpenProfiles} title="Launch Profiles">
           Profiles
         </button>
@@ -86,6 +92,7 @@ function App(): React.JSX.Element {
   const [workspaceRoots, setWorkspaceRoots] = useState<TreeRoot[]>(() => loadWorkspace().roots);
   const [addFolderOpen, setAddFolderOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [agentPresetsOpen, setAgentPresetsOpen] = useState(false);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -216,6 +223,9 @@ function App(): React.JSX.Element {
         onOpenProfiles={(): void => {
           setProfileEditorOpen(true);
         }}
+        onOpenAgents={(): void => {
+          setAgentPresetsOpen(true);
+        }}
       />
       {addFolderOpen && (
         <AddFolderModal
@@ -231,6 +241,13 @@ function App(): React.JSX.Element {
             setProfileEditorOpen(false);
           }}
           onLaunch={handleLaunchProfile}
+        />
+      )}
+      {agentPresetsOpen && (
+        <AgentPresetsEditor
+          onClose={(): void => {
+            setAgentPresetsOpen(false);
+          }}
         />
       )}
       {toast && <div className="toast">{toast}</div>}

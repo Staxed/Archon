@@ -1436,3 +1436,132 @@ body,
     transform: translateX(-50%) translateY(0);
   }
 }
+
+/* ── Agent Presets Editor ─────────────────────────────────────── */
+
+.agent-presets-modal {
+  max-width: 700px;
+  max-height: 80vh;
+}
+
+.agent-presets-list {
+  overflow-y: auto;
+  max-height: calc(80vh - 60px);
+  padding: 8px 0;
+}
+
+.agent-presets-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  gap: 8px;
+}
+
+.agent-preset-row.editing {
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--bg-tertiary);
+  padding: 12px;
+}
+
+.agent-preset-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-preset-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.agent-preset-cmd {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.agent-preset-env {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: monospace;
+  opacity: 0.7;
+}
+
+.agent-preset-prompts {
+  font-size: 11px;
+  color: var(--border-accent);
+}
+
+.agent-preset-model-chip {
+  display: inline-block;
+  background: var(--border-accent);
+  color: var(--text-primary);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  margin: 0 2px;
+}
+
+.agent-preset-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.agent-preset-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-preset-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-preset-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.agent-preset-input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: monospace;
+  flex: 1;
+}
+
+.agent-preset-input.wide {
+  flex: 2;
+}
+
+.agent-preset-input:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+
+.agent-preset-edit-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
