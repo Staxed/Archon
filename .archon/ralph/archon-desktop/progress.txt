@@ -757,3 +757,27 @@
 - EditorView.theme() with `{ dark: true }` creates a proper dark mode CM6 theme
 
 ---
+
+## 2026-04-17 — US-027: fs/file read + atomic write endpoints
+
+**Status**: PASSED
+**Files changed**:
+- `packages/server/src/routes/desktop.ts` — Replace 501 placeholders with real GET/PUT /api/desktop/fs/file handlers; add readFileContent and writeFileAtomically helpers; MAX_FILE_SIZE constant
+- `packages/server/src/routes/schemas/desktop.schemas.ts` — Add fsFileWriteQuerySchema, fsFileWriteResponseSchema, conflictResponseSchema, tooLargeResponseSchema
+- `packages/server/src/routes/desktop.test.ts` — Add 22 tests: readFileContent (3), writeFileAtomically (6), GET endpoint (4), PUT endpoint (5); remove fs/file from 501 placeholder list; import new helpers
+
+**Acceptance criteria verified**:
+- [x] `GET /api/desktop/fs/file?host=&path=` returns `{ content: string, encoding, mtime, size }`; rejects files > 10 MB with 413 (readFileContent with TOO_LARGE error code)
+- [x] `PUT /api/desktop/fs/file?host=&path=` body `{ content, expectedMtime? }` writes atomically (tempfile + `rename`) (writeFileAtomically with tmpPath + rename)
+- [x] If `expectedMtime` provided and file mtime changed, returns 409 Conflict with current content (conflict detection with currentContent/currentMtime in response)
+- [x] Creates parent dirs if absent (opt-in via query flag) (createParents=true query param → mkdir recursive)
+- [x] Path traversal rejection (no `..`) (containsTraversal check reused from US-012)
+- [x] Unit tests cover read, atomic write, conflict detection, and traversal rejection (22 new tests with real temp dirs)
+
+**Learnings**:
+- Atomic writes via tempfile + rename work cleanly with `fs.promises.rename` — same filesystem guarantees atomicity
+- ENOENT on expectedMtime stat means file doesn't exist yet — no conflict possible, proceed with write
+- Tests use real temp directories (mkdtemp + cleanup) rather than mocking fs — simpler and more reliable for file I/O tests
+- The 501 placeholder list shrinks to just LSP endpoint now
+
+---
