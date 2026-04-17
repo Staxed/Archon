@@ -119,6 +119,55 @@ describe('loopback guard', () => {
     const response = await app.request('/api/desktop/health');
     expect(response.status).toBe(403);
   });
+
+  test('rejects non-loopback WS upgrade to /api/desktop/pty with 403', async () => {
+    getRemoteAddressSpy.mockReturnValue('10.0.0.5');
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/pty', {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Key': 'dGVzdEtleQ==',
+        'Sec-WebSocket-Version': '13',
+      },
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('loopback-only');
+  });
+
+  test('rejects non-loopback WS upgrade to /api/desktop/lsp with 403', async () => {
+    getRemoteAddressSpy.mockReturnValue('10.0.0.5');
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/lsp?host=local&language=typescript', {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Key': 'dGVzdEtleQ==',
+        'Sec-WebSocket-Version': '13',
+      },
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('loopback-only');
+  });
+
+  test('rejects unknown-IP WS upgrade to /api/desktop/pty with 403 (fail-closed)', async () => {
+    getRemoteAddressSpy.mockReturnValue('unknown');
+
+    const app = makeApp();
+    const response = await app.request('/api/desktop/pty', {
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Key': 'dGVzdEtleQ==',
+        'Sec-WebSocket-Version': '13',
+      },
+    });
+    expect(response.status).toBe(403);
+  });
 });
 
 // ---------------------------------------------------------------------------
