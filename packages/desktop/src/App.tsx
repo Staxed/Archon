@@ -36,6 +36,20 @@ import {
 } from './EditorTabs';
 import { saveFile, isSaveShortcut, hasDirtyTabs } from './SaveFlow';
 import type { FileMtimeMap } from './SaveFlow';
+import {
+  createInitialReconnectState,
+  getBackoffDelay,
+  advanceRetry,
+  onTunnelDrop,
+  onManualReconnect,
+  onReconnected,
+  onFadeOutComplete,
+  getBannerMessage,
+  isBannerVisible,
+  isAutoRetrying,
+  FADE_OUT_DELAY_MS,
+} from './SshReconnectBanner';
+import type { ReconnectState } from './SshReconnectBanner';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -98,6 +112,31 @@ function StatusBar({
   );
 }
 
+/** SSH reconnection banner component. */
+interface SshReconnectBannerProps {
+  state: ReconnectState;
+  onReconnect: () => void;
+}
+
+function SshReconnectBannerUI({
+  state,
+  onReconnect,
+}: SshReconnectBannerProps): React.JSX.Element | null {
+  if (!isBannerVisible(state)) return null;
+  const message = getBannerMessage(state);
+  const fadeOut = state.phase === 'reconnected';
+  return (
+    <div className={`ssh-reconnect-banner${fadeOut ? ' ssh-reconnect-fade-out' : ''}`}>
+      <span className="ssh-reconnect-message">{message}</span>
+      {state.phase !== 'reconnected' && (
+        <button className="ssh-reconnect-btn" onClick={onReconnect}>
+          Reconnect
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** Primary host alias used for ad-hoc terminals when no project context. */
 const PRIMARY_HOST = 'linux-beast';
 
@@ -121,6 +160,71 @@ function App(): React.JSX.Element {
   // Editor split/tabs state
   const [splitState, splitDispatch] = useReducer(splitReducer, undefined, createInitialSplitState);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+
+  // SSH reconnection state
+  const [reconnectState, setReconnectState] = useState<ReconnectState>(createInitialReconnectState);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Listen for Tauri tunnel-drop events (or simulate via window custom events in dev)
+  useEffect(() => {
+    const handleTunnelDrop = (): void => {
+      setReconnectState(onTunnelDrop());
+    };
+    window.addEventListener('archon:tunnel-drop', handleTunnelDrop);
+    return (): void => {
+      window.removeEventListener('archon:tunnel-drop', handleTunnelDrop);
+    };
+  }, []);
+
+  // Auto-retry with exponential backoff
+  useEffect(() => {
+    if (!isAutoRetrying(reconnectState)) return;
+    const delay = getBackoffDelay(reconnectState.retryIndex);
+    if (delay === null) return;
+
+    const attemptReconnect = (): void => {
+      // Try to reach the server health endpoint
+      fetch(`${DEFAULT_SERVER_URL}/api/desktop/health`, { signal: AbortSignal.timeout(5000) })
+        .then(res => {
+          if (res.ok) {
+            setReconnectState(onReconnected());
+          } else {
+            setReconnectState(prev => advanceRetry(prev));
+          }
+        })
+        .catch(() => {
+          setReconnectState(prev => advanceRetry(prev));
+        });
+    };
+
+    reconnectTimerRef.current = setTimeout(attemptReconnect, delay);
+    return (): void => {
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [reconnectState]);
+
+  // Fade-out after reconnection
+  useEffect(() => {
+    if (reconnectState.phase !== 'reconnected') return;
+    const timer = setTimeout(() => {
+      setReconnectState(onFadeOutComplete());
+    }, FADE_OUT_DELAY_MS);
+    return (): void => {
+      clearTimeout(timer);
+    };
+  }, [reconnectState.phase]);
+
+  // Manual reconnect handler
+  const handleManualReconnect = useCallback((): void => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setReconnectState(onManualReconnect());
+  }, []);
 
   // Save flow state
   const fileMtimes = useRef<FileMtimeMap>({});
@@ -457,6 +561,7 @@ function App(): React.JSX.Element {
   return (
     <div className="app-shell">
       <PreflightBanner serverUrl={DEFAULT_SERVER_URL} />
+      <SshReconnectBannerUI state={reconnectState} onReconnect={handleManualReconnect} />
       <div className="app-main">
         <div className="app-content">
           <Group

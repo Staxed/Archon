@@ -868,6 +868,63 @@ body,
   border-color: var(--text-muted);
 }
 
+/* SSH Reconnect Banner */
+.ssh-reconnect-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background-color: #4a0000;
+  border-bottom: 1px solid #7a2200;
+  color: #f08080;
+  font-size: 12px;
+  flex-shrink: 0;
+  animation: ssh-reconnect-fade-in 0.2s ease-out;
+}
+
+.ssh-reconnect-banner.ssh-reconnect-fade-out {
+  animation: ssh-reconnect-fade-out 2s ease-out forwards;
+}
+
+.ssh-reconnect-message {
+  flex: 1;
+}
+
+.ssh-reconnect-btn {
+  background-color: var(--bg-tertiary);
+  border: 1px solid #7a2200;
+  color: #f08080;
+  cursor: pointer;
+  padding: 3px 12px;
+  font-size: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.ssh-reconnect-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+@keyframes ssh-reconnect-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ssh-reconnect-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 /* Preflight banner */
 .preflight-banner {
   display: flex;
