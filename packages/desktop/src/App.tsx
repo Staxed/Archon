@@ -2,10 +2,12 @@ import { useState, useCallback, useEffect } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { PreflightBanner } from './PreflightBanner';
 import { GridEngine, useGridEngine } from './GridEngine';
+import type { GridPane } from './GridEngine';
 import { openAdHocTerminal } from './AdHocTerminal';
 import { FileTree } from './FileTree';
 import type { TreeRoot } from './FileTree';
 import { AddFolderModal, loadWorkspace, removeRootFromWorkspace } from './AddFolderModal';
+import { HostSessionsPanel } from './HostSessionsPanel';
 import './styles.css';
 
 /** Default server URL — overridden once SSH tunnel is established. */
@@ -37,28 +39,8 @@ function TerminalGrid({ gridState, gridDispatch }: TerminalGridProps): React.JSX
   return <GridEngine state={gridState} dispatch={gridDispatch} />;
 }
 
-interface HostSessionsDrawerProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-function HostSessionsDrawer({ open, onClose }: HostSessionsDrawerProps): React.JSX.Element {
-  return (
-    <div className={`host-sessions-drawer${open ? '' : ' collapsed'}`}>
-      {open && (
-        <>
-          <div className="drawer-header">
-            <span>Host Sessions</span>
-            <button className="drawer-toggle" onClick={onClose} title="Close">
-              &times;
-            </button>
-          </div>
-          <div className="drawer-content">No sessions</div>
-        </>
-      )}
-    </div>
-  );
-}
+/** Saved SSH hosts for the Host Sessions panel. */
+const SAVED_HOSTS = ['linux-beast'];
 
 interface StatusBarProps {
   drawerOpen: boolean;
@@ -123,6 +105,14 @@ function App(): React.JSX.Element {
     [gridState.panes, gridDispatch, showToast]
   );
 
+  // Attach a tmux session from Host Sessions panel into the grid
+  const handleAttachSession = useCallback(
+    (pane: GridPane): void => {
+      gridDispatch({ type: 'ADD_PANE', pane });
+    },
+    [gridDispatch]
+  );
+
   const handleRemoveRoot = useCallback((rootId: string): void => {
     removeRootFromWorkspace(rootId);
     setWorkspaceRoots(prev => prev.filter(r => r.id !== rootId));
@@ -180,7 +170,15 @@ function App(): React.JSX.Element {
             </Panel>
           </Group>
         </div>
-        <HostSessionsDrawer open={drawerOpen} onClose={closeDrawer} />
+        <HostSessionsPanel
+          open={drawerOpen}
+          onClose={closeDrawer}
+          serverUrl={DEFAULT_SERVER_URL}
+          hosts={SAVED_HOSTS}
+          existingPanes={gridState.panes}
+          onAttach={handleAttachSession}
+          onToast={showToast}
+        />
       </div>
       <StatusBar drawerOpen={drawerOpen} onToggleDrawer={toggleDrawer} />
       {addFolderOpen && (

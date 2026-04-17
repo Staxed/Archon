@@ -196,6 +196,177 @@ body,
   font-size: 12px;
 }
 
+.drawer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.drawer-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drawer-refresh-btn:hover {
+  color: var(--text-primary);
+}
+
+.drawer-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Sessions list */
+.sessions-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sessions-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 80px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sessions-host-group {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sessions-host-label {
+  padding: 6px 12px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+/* Session row */
+.session-row {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  cursor: grab;
+  transition: background-color 0.1s;
+}
+
+.session-row:hover {
+  background-color: var(--bg-hover);
+}
+
+.session-row:active {
+  cursor: grabbing;
+}
+
+.session-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.session-host {
+  display: none;
+}
+
+.session-name-cell {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-name {
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  font-size: 12px;
+}
+
+.session-rename-input {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-accent);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 0 4px;
+  height: 18px;
+  width: 100%;
+  outline: none;
+}
+
+.session-cwd {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.session-age {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.session-status {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.session-status.attached {
+  color: #4ec9b0;
+  background-color: rgba(78, 201, 176, 0.1);
+}
+
+.session-status.detached {
+  color: var(--text-muted);
+  background-color: rgba(110, 110, 110, 0.1);
+}
+
+.session-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.session-action-btn {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+
+.session-action-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.session-action-btn.destructive {
+  color: #f08080;
+  border-color: rgba(240, 128, 128, 0.3);
+}
+
+.session-action-btn.destructive:hover {
+  background-color: rgba(240, 128, 128, 0.1);
+}
+
 /* Status bar drawer toggle button */
 .status-bar-btn {
   background: none;
