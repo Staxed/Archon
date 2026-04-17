@@ -15,6 +15,7 @@ export interface GridPane {
   y: number;
   w: number;
   h: number;
+  yolo?: boolean;
 }
 
 export interface GridState {
@@ -195,7 +196,7 @@ function PaneHeader({
 
   return (
     <div
-      className="grid-pane-header"
+      className={`grid-pane-header${pane.yolo ? ' grid-pane-header-yolo' : ''}`}
       onContextMenu={handleContextMenu}
       onDoubleClick={handleDoubleClick}
     >
