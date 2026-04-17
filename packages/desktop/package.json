@@ -1,0 +1,44 @@
+{
+  "name": "@archon/desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "bun test src/PreflightBanner.test.ts src/TerminalPane.test.ts src/Osc133Addon.test.ts src/GridEngine.test.ts src/AdHocTerminal.test.ts src/FileTree.test.ts src/AddFolderModal.test.ts src/HostSessionsPanel.test.ts src/EditorTabs.test.ts src/SaveFlow.test.ts src/LspClient.test.ts src/SshReconnectBanner.test.ts src/lib/errors.test.ts src/lib/logger.test.ts && bun test src/LaunchProfile.test.ts src/ProfileEditor.test.ts src/ProfileLauncher.test.ts src/AgentPresets.test.ts src/AgentLauncher.test.ts src/EditorColumn.test.ts && bun test src/lib/appDataStorage.test.ts",
+    "type-check": "tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.11",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.41.0",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "codemirror": "^6.0.2",
+    "codemirror-languageserver": "^1.22.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-grid-layout": "^2.2.3",
+    "react-resizable-panels": "^4.10.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.3.0",
+    "vite": "^6.0.0"
+  }
+}

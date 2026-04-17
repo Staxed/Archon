@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicovrc/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Archon Desktop",
+  "version": "0.1.0",
+  "identifier": "com.archon.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "cd .. && bun run dev",
+    "beforeBuildCommand": "cd .. && bun run build"
+  },
+  "app": {
+    "title": "Archon Desktop",
+    "windows": [
+      {
+        "title": "Archon Desktop",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    },
+    "macOS": {
+      "signingIdentity": null,
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}
