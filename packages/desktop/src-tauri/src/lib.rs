@@ -1,4 +1,5 @@
 mod local_pty;
+mod log_path;
 mod ssh_tunnel;
 
 pub fn run() {
@@ -13,6 +14,7 @@ pub fn run() {
             local_pty::pty_write,
             local_pty::pty_resize,
             local_pty::pty_kill,
+            log_path::get_log_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
