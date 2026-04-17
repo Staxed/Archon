@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { loadWorkspace, saveWorkspace } from './AddFolderModal';
 import type { EditorColumnPersistedState } from './AddFolderModal';
-import type { TabState, EditorTab, TabAction } from './EditorTabs';
-import { getExtension, extensionToLanguage } from './EditorTabs';
+import type { TabState, EditorTab, TabAction, SplitState, SplitAction } from './EditorTabs';
+import { getExtension, extensionToLanguage, getAllSplitTabs } from './EditorTabs';
 
 // ── Snap logic ──────────────────────────────────────────────────
 
@@ -418,10 +418,9 @@ interface EditorColumnContentProps {
   collapsed: boolean;
   openFiles: OpenFile[];
   onToggleCollapse: () => void;
-  tabState: TabState;
-  tabDispatch: (action: TabAction) => void;
+  splitState: SplitState;
+  splitDispatch: (action: SplitAction) => void;
   fileContents: Record<string, string>;
-  onSplitRight?: (tabId: string) => void;
   onSaveTab?: (tabId: string) => void;
   conflict?: ConflictState | null;
   onConflictReload?: () => void;
@@ -431,35 +430,43 @@ interface EditorColumnContentProps {
   onWindowCloseCancel?: () => void;
 }
 
-/**
- * Content rendered inside the editor Panel.
- * Shows a thin clickable rail when collapsed (with open-file icons).
- * Shows tabs + CodeMirror editor when expanded.
- */
-export function EditorColumnContent({
-  collapsed,
-  openFiles,
-  onToggleCollapse,
+// ── Single split pane ──────────────────────────────────────────
+
+interface SplitPaneProps {
+  splitIndex: number;
+  tabState: TabState;
+  isActive: boolean;
+  splitDispatch: (action: SplitAction) => void;
+  fileContents: Record<string, string>;
+  onSaveTab?: (tabId: string) => void;
+  onSplitRight: (tabId: string) => void;
+}
+
+function SplitPane({
+  splitIndex,
   tabState,
-  tabDispatch,
+  isActive,
+  splitDispatch,
   fileContents,
-  onSplitRight,
   onSaveTab,
-  conflict,
-  onConflictReload,
-  onConflictOverwrite,
-  windowCloseDirtyFiles,
-  onWindowCloseConfirm,
-  onWindowCloseCancel,
-}: EditorColumnContentProps): React.JSX.Element {
+  onSplitRight,
+}: SplitPaneProps): React.JSX.Element {
   const [closeDirtyTab, setCloseDirtyTab] = useState<EditorTab | null>(null);
   const [contextMenu, setContextMenu] = useState<TabContextMenuState | null>(null);
 
+  const dispatchTab = useCallback(
+    (action: TabAction): void => {
+      splitDispatch({ type: 'SPLIT_TAB', splitIndex, action });
+    },
+    [splitDispatch, splitIndex]
+  );
+
   const handleActivate = useCallback(
     (id: string): void => {
-      tabDispatch({ type: 'ACTIVATE_TAB', id });
+      splitDispatch({ type: 'ACTIVATE_SPLIT', splitIndex });
+      dispatchTab({ type: 'ACTIVATE_TAB', id });
     },
-    [tabDispatch]
+    [splitDispatch, splitIndex, dispatchTab]
   );
 
   const handleClose = useCallback(
@@ -469,23 +476,23 @@ export function EditorColumnContent({
         setCloseDirtyTab(tab);
         return;
       }
-      tabDispatch({ type: 'CLOSE_TAB', id });
+      dispatchTab({ type: 'CLOSE_TAB', id });
     },
-    [tabState.tabs, tabDispatch]
+    [tabState.tabs, dispatchTab]
   );
 
   const handleDirty = useCallback(
     (id: string): void => {
-      tabDispatch({ type: 'SET_DIRTY', id, dirty: true });
+      dispatchTab({ type: 'SET_DIRTY', id, dirty: true });
     },
-    [tabDispatch]
+    [dispatchTab]
   );
 
   const handlePin = useCallback(
     (id: string): void => {
-      tabDispatch({ type: 'PIN_TAB', id });
+      dispatchTab({ type: 'PIN_TAB', id });
     },
-    [tabDispatch]
+    [dispatchTab]
   );
 
   const handleTabContextMenu = useCallback((e: React.MouseEvent, id: string): void => {
@@ -493,7 +500,10 @@ export function EditorColumnContent({
     setContextMenu({ x: e.clientX, y: e.clientY, tabId: id });
   }, []);
 
-  // Close context menu on click anywhere
+  const handleFocus = useCallback((): void => {
+    splitDispatch({ type: 'ACTIVATE_SPLIT', splitIndex });
+  }, [splitDispatch, splitIndex]);
+
   useEffect(() => {
     if (!contextMenu) return;
     const handler = (): void => {
@@ -504,6 +514,115 @@ export function EditorColumnContent({
       window.removeEventListener('click', handler);
     };
   }, [contextMenu]);
+
+  const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) ?? null;
+
+  return (
+    <div
+      className={`editor-split-pane ${isActive ? 'editor-split-pane-active' : ''}`}
+      onClick={handleFocus}
+      role="presentation"
+    >
+      <TabBar
+        tabs={tabState.tabs}
+        activeTabId={tabState.activeTabId}
+        onActivate={handleActivate}
+        onClose={handleClose}
+        onContextMenu={handleTabContextMenu}
+      />
+      <div className="editor-split-body">
+        {activeTab ? (
+          <CodeMirrorEditor
+            key={activeTab.id}
+            tab={activeTab}
+            content={fileContents[activeTab.id] ?? ''}
+            onDirty={handleDirty}
+            onPin={handlePin}
+          />
+        ) : (
+          <div className="editor-split-empty">
+            <span className="region-sublabel">No open file</span>
+          </div>
+        )}
+      </div>
+
+      {closeDirtyTab && (
+        <CloseDirtyModal
+          fileName={closeDirtyTab.name}
+          onSave={(): void => {
+            if (onSaveTab) {
+              onSaveTab(closeDirtyTab.id);
+            }
+            dispatchTab({ type: 'CLOSE_TAB', id: closeDirtyTab.id });
+            setCloseDirtyTab(null);
+          }}
+          onDiscard={(): void => {
+            dispatchTab({ type: 'CLOSE_TAB', id: closeDirtyTab.id });
+            setCloseDirtyTab(null);
+          }}
+          onCancel={(): void => {
+            setCloseDirtyTab(null);
+          }}
+        />
+      )}
+
+      {contextMenu && (
+        <div
+          className="editor-tab-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            className="editor-tab-context-item"
+            onClick={(): void => {
+              onSplitRight(contextMenu.tabId);
+              setContextMenu(null);
+            }}
+          >
+            Open in New Split
+          </button>
+          <button
+            className="editor-tab-context-item"
+            onClick={(): void => {
+              handleClose(contextMenu.tabId);
+              setContextMenu(null);
+            }}
+          >
+            Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main component ──────────────────────────────────────────────
+
+/**
+ * Content rendered inside the editor Panel.
+ * Shows a thin clickable rail when collapsed (with open-file icons).
+ * Shows one or more side-by-side split panes when expanded.
+ */
+export function EditorColumnContent({
+  collapsed,
+  openFiles,
+  onToggleCollapse,
+  splitState,
+  splitDispatch,
+  fileContents,
+  onSaveTab,
+  conflict,
+  onConflictReload,
+  onConflictOverwrite,
+  windowCloseDirtyFiles,
+  onWindowCloseConfirm,
+  onWindowCloseCancel,
+}: EditorColumnContentProps): React.JSX.Element {
+  const handleSplitRight = useCallback(
+    (id: string): void => {
+      splitDispatch({ type: 'SPLIT_RIGHT', tabId: id });
+    },
+    [splitDispatch]
+  );
 
   if (collapsed) {
     return (
@@ -529,19 +648,16 @@ export function EditorColumnContent({
     );
   }
 
-  const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId) ?? null;
+  const allTabs = getAllSplitTabs(splitState);
+  const hasTabs = allTabs.length > 0;
 
   return (
     <div className="editor-column">
       <div className="editor-column-header">
-        {tabState.tabs.length > 0 ? (
-          <TabBar
-            tabs={tabState.tabs}
-            activeTabId={tabState.activeTabId}
-            onActivate={handleActivate}
-            onClose={handleClose}
-            onContextMenu={handleTabContextMenu}
-          />
+        {hasTabs ? (
+          <span className="editor-column-title">
+            Editor{splitState.splits.length > 1 ? ` (${splitState.splits.length} splits)` : ''}
+          </span>
         ) : (
           <span className="editor-column-title">Editor</span>
         )}
@@ -553,15 +669,20 @@ export function EditorColumnContent({
           ◀
         </button>
       </div>
-      <div className="editor-column-body">
-        {activeTab ? (
-          <CodeMirrorEditor
-            key={activeTab.id}
-            tab={activeTab}
-            content={fileContents[activeTab.id] ?? ''}
-            onDirty={handleDirty}
-            onPin={handlePin}
-          />
+      <div className="editor-column-body editor-column-splits">
+        {hasTabs ? (
+          splitState.splits.map((split, idx) => (
+            <SplitPane
+              key={idx}
+              splitIndex={idx}
+              tabState={split}
+              isActive={idx === splitState.activeSplitIndex}
+              splitDispatch={splitDispatch}
+              fileContents={fileContents}
+              onSaveTab={onSaveTab}
+              onSplitRight={handleSplitRight}
+            />
+          ))
         ) : (
           <>
             <span className="region-label">Editor</span>
@@ -578,26 +699,6 @@ export function EditorColumnContent({
         />
       )}
 
-      {closeDirtyTab && (
-        <CloseDirtyModal
-          fileName={closeDirtyTab.name}
-          onSave={(): void => {
-            if (onSaveTab) {
-              onSaveTab(closeDirtyTab.id);
-            }
-            tabDispatch({ type: 'CLOSE_TAB', id: closeDirtyTab.id });
-            setCloseDirtyTab(null);
-          }}
-          onDiscard={(): void => {
-            tabDispatch({ type: 'CLOSE_TAB', id: closeDirtyTab.id });
-            setCloseDirtyTab(null);
-          }}
-          onCancel={(): void => {
-            setCloseDirtyTab(null);
-          }}
-        />
-      )}
-
       {windowCloseDirtyFiles &&
         windowCloseDirtyFiles.length > 0 &&
         onWindowCloseConfirm &&
@@ -608,34 +709,6 @@ export function EditorColumnContent({
             onCancel={onWindowCloseCancel}
           />
         )}
-
-      {contextMenu && (
-        <div
-          className="editor-tab-context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          {onSplitRight && (
-            <button
-              className="editor-tab-context-item"
-              onClick={(): void => {
-                onSplitRight(contextMenu.tabId);
-                setContextMenu(null);
-              }}
-            >
-              Open in New Split
-            </button>
-          )}
-          <button
-            className="editor-tab-context-item"
-            onClick={(): void => {
-              handleClose(contextMenu.tabId);
-              setContextMenu(null);
-            }}
-          >
-            Close
-          </button>
-        </div>
-      )}
     </div>
   );
 }

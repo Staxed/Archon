@@ -26,8 +26,14 @@ import {
   replaceEditorContent,
 } from './EditorColumn';
 import type { ConflictState } from './EditorColumn';
-import { tabReducer, createInitialTabState, tabId } from './EditorTabs';
-import type { TabAction } from './EditorTabs';
+import {
+  splitReducer,
+  createInitialSplitState,
+  tabId,
+  getAllSplitTabs,
+  getActiveSplit,
+  findSplitForTab,
+} from './EditorTabs';
 import { saveFile, isSaveShortcut, hasDirtyTabs } from './SaveFlow';
 import type { FileMtimeMap } from './SaveFlow';
 import './styles.css';
@@ -112,8 +118,8 @@ function App(): React.JSX.Element {
   // Track the last expanded width for restoring after collapse
   const lastExpandedWidthRef = useRef(savedEditorWidth.current);
 
-  // Editor tabs state
-  const [tabState, tabDispatch] = useReducer(tabReducer, undefined, createInitialTabState);
+  // Editor split/tabs state
+  const [splitState, splitDispatch] = useReducer(splitReducer, undefined, createInitialSplitState);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
 
   // Save flow state
@@ -145,29 +151,35 @@ function App(): React.JSX.Element {
     [fileContents]
   );
 
-  // File click handlers for the tree
+  // File click handlers for the tree — target the active split
   const handleFileClick = useCallback(
     (host: string, path: string, name: string): void => {
-      tabDispatch({ type: 'OPEN_PREVIEW', host, path, name });
+      splitDispatch({
+        type: 'SPLIT_TAB',
+        splitIndex: splitState.activeSplitIndex,
+        action: { type: 'OPEN_PREVIEW', host, path, name },
+      });
       fetchFileContent(host, path);
-      // Expand editor if collapsed
       if (editorPanelRef.current?.isCollapsed()) {
         editorPanelRef.current.expand();
       }
     },
-    [fetchFileContent]
+    [fetchFileContent, splitState.activeSplitIndex]
   );
 
   const handleFileDoubleClick = useCallback(
     (host: string, path: string, name: string): void => {
-      tabDispatch({ type: 'OPEN_PINNED', host, path, name });
+      splitDispatch({
+        type: 'SPLIT_TAB',
+        splitIndex: splitState.activeSplitIndex,
+        action: { type: 'OPEN_PINNED', host, path, name },
+      });
       fetchFileContent(host, path);
-      // Expand editor if collapsed
       if (editorPanelRef.current?.isCollapsed()) {
         editorPanelRef.current.expand();
       }
     },
-    [fetchFileContent]
+    [fetchFileContent, splitState.activeSplitIndex]
   );
 
   // Show toast with auto-dismiss
@@ -181,18 +193,26 @@ function App(): React.JSX.Element {
   // Save a tab's content to the remote server
   const handleSaveTab = useCallback(
     (id: string): void => {
-      const tab = tabState.tabs.find(t => t.id === id);
+      const allTabs = getAllSplitTabs(splitState);
+      const tab = allTabs.find(t => t.id === id);
       if (!tab) return;
 
       const content = getEditorContent(id);
       if (content === null) return;
 
+      const splitIdx = findSplitForTab(splitState, id);
       const expectedMtime = fileMtimes.current[id];
       void saveFile(DEFAULT_SERVER_URL, tab.host, tab.path, content, expectedMtime).then(
         outcome => {
           if (outcome.kind === 'success') {
             fileMtimes.current[id] = outcome.mtime;
-            tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+            if (splitIdx !== -1) {
+              splitDispatch({
+                type: 'SPLIT_TAB',
+                splitIndex: splitIdx,
+                action: { type: 'SET_DIRTY', id, dirty: false },
+              });
+            }
             setConflict(null);
           } else if (outcome.kind === 'conflict') {
             setConflict({
@@ -207,7 +227,7 @@ function App(): React.JSX.Element {
         }
       );
     },
-    [tabState.tabs, showToast]
+    [splitState, showToast]
   );
 
   // Conflict: reload file from server (discard edits)
@@ -216,15 +236,23 @@ function App(): React.JSX.Element {
     const { tabId: id, currentContent, currentMtime } = conflict;
     replaceEditorContent(id, currentContent);
     fileMtimes.current[id] = currentMtime;
-    tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+    const splitIdx = findSplitForTab(splitState, id);
+    if (splitIdx !== -1) {
+      splitDispatch({
+        type: 'SPLIT_TAB',
+        splitIndex: splitIdx,
+        action: { type: 'SET_DIRTY', id, dirty: false },
+      });
+    }
     setConflict(null);
-  }, [conflict]);
+  }, [conflict, splitState]);
 
   // Conflict: overwrite anyway (retry without mtime)
   const handleConflictOverwrite = useCallback((): void => {
     if (!conflict) return;
     const { tabId: id } = conflict;
-    const tab = tabState.tabs.find(t => t.id === id);
+    const allTabs = getAllSplitTabs(splitState);
+    const tab = allTabs.find(t => t.id === id);
     if (!tab) return;
 
     const content = getEditorContent(id);
@@ -233,13 +261,20 @@ function App(): React.JSX.Element {
     void saveFile(DEFAULT_SERVER_URL, tab.host, tab.path, content).then(outcome => {
       if (outcome.kind === 'success') {
         fileMtimes.current[id] = outcome.mtime;
-        tabDispatch({ type: 'SET_DIRTY', id, dirty: false });
+        const splitIdx = findSplitForTab(splitState, id);
+        if (splitIdx !== -1) {
+          splitDispatch({
+            type: 'SPLIT_TAB',
+            splitIndex: splitIdx,
+            action: { type: 'SET_DIRTY', id, dirty: false },
+          });
+        }
         setConflict(null);
       } else if (outcome.kind === 'error') {
         showToast(`Save failed: ${outcome.message}`);
       }
     });
-  }, [conflict, tabState.tabs, showToast]);
+  }, [conflict, splitState, showToast]);
 
   // Window close dirty guard
   const handleWindowCloseCancel = useCallback((): void => {
@@ -249,20 +284,29 @@ function App(): React.JSX.Element {
   const handleWindowCloseConfirm = useCallback((): void => {
     setWindowCloseDirtyFiles(null);
     // In Tauri, this would close the window. For now, clear all dirty state.
-    for (const tab of tabState.tabs) {
+    const allTabs = getAllSplitTabs(splitState);
+    for (const tab of allTabs) {
       if (tab.dirty) {
-        tabDispatch({ type: 'SET_DIRTY', id: tab.id, dirty: false });
+        const splitIdx = findSplitForTab(splitState, tab.id);
+        if (splitIdx !== -1) {
+          splitDispatch({
+            type: 'SPLIT_TAB',
+            splitIndex: splitIdx,
+            action: { type: 'SET_DIRTY', id: tab.id, dirty: false },
+          });
+        }
       }
     }
-  }, [tabState.tabs]);
+  }, [splitState]);
 
-  // Ctrl+S / Cmd+S shortcut
+  // Ctrl+S / Cmd+S shortcut — saves the active tab in the active split
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
       if (isSaveShortcut(e)) {
         e.preventDefault();
-        if (tabState.activeTabId) {
-          handleSaveTab(tabState.activeTabId);
+        const activeSplit = getActiveSplit(splitState);
+        if (activeSplit.activeTabId) {
+          handleSaveTab(activeSplit.activeTabId);
         }
       }
     };
@@ -270,12 +314,13 @@ function App(): React.JSX.Element {
     return (): void => {
       window.removeEventListener('keydown', handler);
     };
-  }, [tabState.activeTabId, handleSaveTab]);
+  }, [splitState, handleSaveTab]);
 
-  // beforeunload guard for dirty tabs
+  // beforeunload guard for dirty tabs across all splits
   useEffect(() => {
+    const allTabs = getAllSplitTabs(splitState);
     const handler = (e: BeforeUnloadEvent): void => {
-      if (hasDirtyTabs(tabState.tabs)) {
+      if (hasDirtyTabs(allTabs)) {
         e.preventDefault();
       }
     };
@@ -283,7 +328,7 @@ function App(): React.JSX.Element {
     return (): void => {
       window.removeEventListener('beforeunload', handler);
     };
-  }, [tabState.tabs]);
+  }, [splitState]);
 
   const toggleDrawer = useCallback(() => {
     setDrawerOpen(prev => !prev);
@@ -444,10 +489,14 @@ function App(): React.JSX.Element {
             >
               <EditorColumnContent
                 collapsed={editorCollapsed}
-                openFiles={tabState.tabs.map(t => ({ path: t.path, host: t.host, name: t.name }))}
+                openFiles={getAllSplitTabs(splitState).map(t => ({
+                  path: t.path,
+                  host: t.host,
+                  name: t.name,
+                }))}
                 onToggleCollapse={handleToggleEditorCollapse}
-                tabState={tabState}
-                tabDispatch={tabDispatch as (action: TabAction) => void}
+                splitState={splitState}
+                splitDispatch={splitDispatch}
                 fileContents={fileContents}
                 onSaveTab={handleSaveTab}
                 conflict={conflict}

@@ -5,8 +5,14 @@ import {
   tabId,
   getExtension,
   extensionToLanguage,
+  splitReducer,
+  createInitialSplitState,
+  isSplitEmpty,
+  getAllSplitTabs,
+  getActiveSplit,
+  findSplitForTab,
 } from './EditorTabs';
-import type { TabState } from './EditorTabs';
+import type { TabState, SplitState } from './EditorTabs';
 
 // ── Helper tests ───────────────────────────────────────────────
 
@@ -292,5 +298,272 @@ describe('tabReducer', () => {
     // Close (after user confirms)
     s = tabReducer(s, { type: 'CLOSE_TAB', id: 'h:/a.ts' });
     expect(s.tabs).toHaveLength(0);
+  });
+});
+
+// ── Split state machine ───────────────────────────────────────
+
+describe('splitReducer', () => {
+  test('initial state has one empty split', () => {
+    const s = createInitialSplitState();
+    expect(s.splits).toHaveLength(1);
+    expect(s.splits[0].tabs).toHaveLength(0);
+    expect(s.activeSplitIndex).toBe(0);
+  });
+
+  test('SPLIT_TAB dispatches tab action to correct split', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    expect(s.splits[0].tabs).toHaveLength(1);
+    expect(s.splits[0].activeTabId).toBe('h:/a.ts');
+  });
+
+  test('SPLIT_RIGHT creates a new split with the tab', () => {
+    let s = createInitialSplitState();
+    // Open two tabs in split 0
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/b.ts', name: 'b.ts' },
+    });
+
+    // Split right with tab a.ts
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+
+    expect(s.splits).toHaveLength(2);
+    // New split has the tab
+    expect(s.splits[1].tabs).toHaveLength(1);
+    expect(s.splits[1].tabs[0].id).toBe('h:/a.ts');
+    expect(s.splits[1].activeTabId).toBe('h:/a.ts');
+    // Original split still has both tabs
+    expect(s.splits[0].tabs).toHaveLength(2);
+    // Active split is the new one
+    expect(s.activeSplitIndex).toBe(1);
+  });
+
+  test('SPLIT_RIGHT pins the tab in the new split', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PREVIEW', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+
+    expect(s.splits[1].tabs[0].preview).toBe(false);
+  });
+
+  test('SPLIT_RIGHT with unknown tabId is a no-op', () => {
+    const s = createInitialSplitState();
+    const s2 = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'nope' });
+    expect(s2).toBe(s);
+  });
+
+  test('closing last tab in a split removes the split', () => {
+    let s = createInitialSplitState();
+    // Open a tab and split it
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+    expect(s.splits).toHaveLength(2);
+
+    // Close the tab in the second split
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 1,
+      action: { type: 'CLOSE_TAB', id: 'h:/a.ts' },
+    });
+
+    // Second split is removed since there are other splits
+    expect(s.splits).toHaveLength(1);
+  });
+
+  test('closing last tab in the only split does NOT remove it', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'CLOSE_TAB', id: 'h:/a.ts' },
+    });
+
+    // The single split remains (even though empty)
+    expect(s.splits).toHaveLength(1);
+    expect(s.splits[0].tabs).toHaveLength(0);
+  });
+
+  test('ACTIVATE_SPLIT changes active split', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+    expect(s.activeSplitIndex).toBe(1);
+
+    s = splitReducer(s, { type: 'ACTIVATE_SPLIT', splitIndex: 0 });
+    expect(s.activeSplitIndex).toBe(0);
+  });
+
+  test('ACTIVATE_SPLIT ignores out-of-range index', () => {
+    const s = createInitialSplitState();
+    const s2 = splitReducer(s, { type: 'ACTIVATE_SPLIT', splitIndex: 5 });
+    expect(s2).toBe(s);
+  });
+
+  test('activeSplitIndex adjusts when a split before it is removed', () => {
+    let s = createInitialSplitState();
+    // Create three splits
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 1,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/b.ts', name: 'b.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/b.ts' });
+    expect(s.splits).toHaveLength(3);
+
+    // Activate the last split
+    s = splitReducer(s, { type: 'ACTIVATE_SPLIT', splitIndex: 2 });
+
+    // Remove middle split by closing its tabs
+    // Split 1 has a.ts and b.ts
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 1,
+      action: { type: 'CLOSE_TAB', id: 'h:/a.ts' },
+    });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 1,
+      action: { type: 'CLOSE_TAB', id: 'h:/b.ts' },
+    });
+
+    // Split at index 1 was removed, active index adjusted
+    expect(s.splits).toHaveLength(2);
+    expect(s.activeSplitIndex).toBe(1);
+  });
+
+  test('each split has independent tab focus', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/b.ts', name: 'b.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+
+    // Split 0 active tab is b (last opened)
+    expect(s.splits[0].activeTabId).toBe('h:/b.ts');
+    // Split 1 active tab is a (split target)
+    expect(s.splits[1].activeTabId).toBe('h:/a.ts');
+  });
+});
+
+// ── Split helper functions ────────────────────────────────────
+
+describe('split helpers', () => {
+  test('isSplitEmpty returns true when no tabs in any split', () => {
+    expect(isSplitEmpty(createInitialSplitState())).toBe(true);
+  });
+
+  test('isSplitEmpty returns false when any split has tabs', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    expect(isSplitEmpty(s)).toBe(false);
+  });
+
+  test('getAllSplitTabs collects tabs from all splits', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 1,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/b.ts', name: 'b.ts' },
+    });
+
+    const all = getAllSplitTabs(s);
+    expect(all).toHaveLength(3); // a in split0, a+b in split1
+  });
+
+  test('getActiveSplit returns the active split TabState', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    const active = getActiveSplit(s);
+    expect(active.tabs).toHaveLength(1);
+    expect(active.activeTabId).toBe('h:/a.ts');
+  });
+
+  test('findSplitForTab finds the correct split index', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, { type: 'SPLIT_RIGHT', tabId: 'h:/a.ts' });
+
+    // Tab exists in both splits — findSplitForTab returns the first one
+    expect(findSplitForTab(s, 'h:/a.ts')).toBe(0);
+    expect(findSplitForTab(s, 'nonexistent')).toBe(-1);
+  });
+
+  test('collapse-on-empty: all tabs closed collapses column', () => {
+    let s = createInitialSplitState();
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'OPEN_PINNED', host: 'h', path: '/a.ts', name: 'a.ts' },
+    });
+    s = splitReducer(s, {
+      type: 'SPLIT_TAB',
+      splitIndex: 0,
+      action: { type: 'CLOSE_TAB', id: 'h:/a.ts' },
+    });
+
+    // Column should show rail because all tabs empty
+    expect(isSplitEmpty(s)).toBe(true);
+    expect(getAllSplitTabs(s)).toHaveLength(0);
   });
 });

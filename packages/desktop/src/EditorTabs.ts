@@ -164,3 +164,99 @@ export function tabReducer(state: TabState, action: TabAction): TabState {
       return state;
   }
 }
+
+// ── Split state (multiple side-by-side tab groups) ────────────
+
+export interface SplitState {
+  splits: TabState[];
+  activeSplitIndex: number;
+}
+
+export type SplitAction =
+  | { type: 'SPLIT_RIGHT'; tabId: string }
+  | { type: 'ACTIVATE_SPLIT'; splitIndex: number }
+  | { type: 'SPLIT_TAB'; splitIndex: number; action: TabAction };
+
+export function createInitialSplitState(): SplitState {
+  return { splits: [createInitialTabState()], activeSplitIndex: 0 };
+}
+
+/** Check if all splits are empty (no tabs in any split). */
+export function isSplitEmpty(state: SplitState): boolean {
+  return state.splits.every(s => s.tabs.length === 0);
+}
+
+/** Get all tabs across all splits. */
+export function getAllSplitTabs(state: SplitState): EditorTab[] {
+  return state.splits.flatMap(s => s.tabs);
+}
+
+/** Get the active split's TabState. */
+export function getActiveSplit(state: SplitState): TabState {
+  return state.splits[state.activeSplitIndex] ?? createInitialTabState();
+}
+
+/** Find which split index contains a given tab id. Returns -1 if not found. */
+export function findSplitForTab(state: SplitState, id: string): number {
+  return state.splits.findIndex(s => s.tabs.some(t => t.id === id));
+}
+
+export function splitReducer(state: SplitState, action: SplitAction): SplitState {
+  switch (action.type) {
+    case 'SPLIT_RIGHT': {
+      // Find the tab to split into a new pane
+      const srcIdx = findSplitForTab(state, action.tabId);
+      if (srcIdx === -1) return state;
+      const tab = state.splits[srcIdx].tabs.find(t => t.id === action.tabId);
+      if (!tab) return state;
+
+      // Create a new split with a pinned copy of the tab
+      const newSplit: TabState = {
+        tabs: [{ ...tab, preview: false }],
+        activeTabId: tab.id,
+      };
+
+      // Insert new split after the source split
+      const newSplits = [
+        ...state.splits.slice(0, srcIdx + 1),
+        newSplit,
+        ...state.splits.slice(srcIdx + 1),
+      ];
+
+      return {
+        splits: newSplits,
+        activeSplitIndex: srcIdx + 1,
+      };
+    }
+
+    case 'ACTIVATE_SPLIT': {
+      if (action.splitIndex < 0 || action.splitIndex >= state.splits.length) return state;
+      return { ...state, activeSplitIndex: action.splitIndex };
+    }
+
+    case 'SPLIT_TAB': {
+      const { splitIndex, action: tabAction } = action;
+      if (splitIndex < 0 || splitIndex >= state.splits.length) return state;
+
+      const updatedSplit = tabReducer(state.splits[splitIndex], tabAction);
+      let newSplits = state.splits.map((s, i) => (i === splitIndex ? updatedSplit : s));
+
+      // If the split is now empty and there are other splits, remove it
+      if (updatedSplit.tabs.length === 0 && newSplits.length > 1) {
+        newSplits = newSplits.filter((_, i) => i !== splitIndex);
+        const newActiveIdx =
+          state.activeSplitIndex >= newSplits.length
+            ? newSplits.length - 1
+            : state.activeSplitIndex > splitIndex
+              ? state.activeSplitIndex - 1
+              : state.activeSplitIndex;
+        return { splits: newSplits, activeSplitIndex: newActiveIdx };
+      }
+
+      return { ...state, splits: newSplits };
+    }
+
+    default:
+      return state;
+  }
+}

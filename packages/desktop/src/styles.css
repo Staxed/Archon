@@ -443,6 +443,43 @@ body,
   border: 1px dashed var(--border-color);
 }
 
+.editor-column-splits {
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.editor-split-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border-color);
+}
+
+.editor-split-pane:last-child {
+  border-right: none;
+}
+
+.editor-split-pane-active {
+  border-top: 2px solid var(--border-accent);
+}
+
+.editor-split-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.editor-split-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Editor rail (collapsed state) */
 .editor-rail {
   display: flex;
