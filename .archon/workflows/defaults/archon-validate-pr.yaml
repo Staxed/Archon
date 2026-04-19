@@ -140,7 +140,7 @@ nodes:
       required: [testable, reasoning, test_plan]
 
   - id: e2e-test-main
-    model: claude-opus-4-7[1m]
+    model: claude-opus-4-6[1m]
     command: archon-validate-pr-e2e-main
     depends_on: [classify-testability, find-ports, resolve-paths, code-review-main, code-review-feature]
     when: "$classify-testability.output.testable == 'e2e_testable'"
@@ -148,7 +148,7 @@ nodes:
     idle_timeout: 1800000
 
   - id: e2e-test-feature
-    model: claude-opus-4-7[1m]
+    model: claude-opus-4-6[1m]
     command: archon-validate-pr-e2e-feature
     depends_on: [e2e-test-main, find-ports, resolve-paths]
     when: "$classify-testability.output.testable == 'e2e_testable'"

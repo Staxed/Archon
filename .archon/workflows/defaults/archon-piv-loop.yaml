@@ -27,7 +27,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: explore
-    model: claude-opus-4-7[1m]
+    model: claude-opus-4-6[1m]
     loop:
       prompt: |
         # PIV Loop — Exploration
@@ -420,7 +420,7 @@ nodes:
   - id: implement
     depends_on: [implement-setup]
     idle_timeout: 600000
-    model: claude-opus-4-7[1m]
+    model: claude-opus-4-6[1m]
     loop:
       prompt: |
         # PIV Loop — Implementation Agent
