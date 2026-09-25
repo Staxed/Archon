@@ -8,6 +8,7 @@ import { isModelCompatible } from './model-validation';
 import { dagNodeSchema, BASH_NODE_AI_FIELDS } from './schemas/dag-node';
 import { modelReasoningEffortSchema, webSearchModeSchema } from './schemas/workflow';
 import { workflowNodeHooksSchema } from './schemas/hooks';
+import { providerSchema } from './schemas/provider';
 import { z } from '@hono/zod-openapi';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -274,8 +275,14 @@ export function parseWorkflow(content: string, filename: string): ParseResult {
     // Parse workflow-level fields using WorkflowBaseSchema for validation
     // Note: modelReasoningEffort and webSearchMode use warn-and-ignore for invalid values
     // (consistent with original behavior) rather than schema-level rejection.
-    const provider =
-      raw.provider === 'claude' || raw.provider === 'codex' ? raw.provider : undefined;
+    // Every provider the executor knows (it used to accept only claude|codex here, so
+    // `provider: openrouter|llamacpp|grok` was silently dropped and the run fell back
+    // to the configured default assistant).
+    const parsedProvider = providerSchema.safeParse(raw.provider);
+    const provider = parsedProvider.success ? parsedProvider.data : undefined;
+    if (raw.provider !== undefined && !parsedProvider.success) {
+      getLog().warn({ filename, provider: raw.provider }, 'workflow_unknown_provider_ignored');
+    }
     const model = typeof raw.model === 'string' ? raw.model : undefined;
 
     // Validate model/provider compatibility at workflow level
