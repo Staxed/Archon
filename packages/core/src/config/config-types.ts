@@ -78,8 +78,10 @@ export interface ClaudeAssistantDefaults {
 export interface OpenRouterAssistantDefaults {
   /** Model in vendor/model format (e.g., 'anthropic/claude-3-haiku', 'meta-llama/llama-4-scout') */
   model?: string;
-  /** OpenRouter API key (or use OPENROUTER_API_KEY env var) */
+  /** OpenRouter API key (or use OPENROUTER_API_KEY env var). Not needed via the LLM gateway. */
   apiKey?: string;
+  /** OpenAI-compatible base URL ending in /v1 (or OPENROUTER_BASE_URL). Default: the LLM gateway. */
+  baseUrl?: string;
   /** HTTP-Referer header value for OpenRouter requests */
   siteUrl?: string;
   /** X-Title header value for OpenRouter requests */
@@ -89,8 +91,8 @@ export interface OpenRouterAssistantDefaults {
 export interface LlamaCppAssistantDefaults {
   /** Model name (informational — model is loaded server-side) */
   model?: string;
-  /** llama-server endpoint URL
-   *  @default 'http://localhost:8080'
+  /** llama-server endpoint URL (or LLAMACPP_ENDPOINT)
+   *  @default the LLM gateway, http://host.docker.internal:8093 (clients/llm-gateway.ts)
    */
   endpoint?: string;
 }

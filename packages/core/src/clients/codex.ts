@@ -30,6 +30,7 @@ import { toolDefinitions } from './tool-definitions';
 import { McpToolProvider, type McpServerConfig } from './mcp-client';
 import { loadSkills, type SkillContext } from './skill-loader';
 import { ContextWindowManager } from './context-window';
+import { GATEWAY_CALLER_HEADERS, gatewayProviderBase, isDirectProviderUrl } from './llm-gateway';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -121,8 +122,14 @@ const AUTH_PATTERNS = [
 /** Patterns indicating a transient process crash (worth retrying) */
 const SUBPROCESS_CRASH_PATTERNS = ['exited with code', 'killed', 'signal', 'codex exec'];
 
-/** OpenAI chat/completions endpoint used by the tool-loop fallback path. */
-const OPENAI_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+/**
+ * Base URL of the OpenAI chat/completions API used by the tool-loop fallback
+ * path: OPENAI_BASE_URL, else the Dashed LLM gateway's /openai/v1 route (see
+ * llm-gateway.ts), which holds the key.
+ */
+function openAIBaseUrl(): string {
+  return (process.env.OPENAI_BASE_URL ?? gatewayProviderBase('openai')).replace(/\/+$/, '');
+}
 
 /**
  * Features the Codex SDK v0.116.0 supports natively:
@@ -593,9 +600,10 @@ export class CodexClient implements IAssistantClient {
     options?: AssistantRequestOptions
   ): AsyncGenerator<MessageChunk> {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    const baseUrl = openAIBaseUrl();
+    if (!apiKey && isDirectProviderUrl(`${baseUrl}/`)) {
       throw new Error(
-        'Codex tool-loop fallback requires OPENAI_API_KEY environment variable to call the OpenAI API directly.'
+        'Codex tool-loop fallback requires OPENAI_API_KEY because OPENAI_BASE_URL points straight at OpenAI. Leave OPENAI_BASE_URL unset to go through the LLM gateway, which holds the key.'
       );
     }
 
@@ -631,8 +639,9 @@ export class CodexClient implements IAssistantClient {
 
     // ── Context window management ──
     const endpoint = {
-      url: OPENAI_CHAT_ENDPOINT,
+      url: `${baseUrl}/chat/completions`,
       apiKey,
+      headers: { ...GATEWAY_CALLER_HEADERS },
     };
     const ctxManager = new ContextWindowManager({ model, endpoint });
     let finalMessages = messages;

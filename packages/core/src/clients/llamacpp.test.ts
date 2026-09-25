@@ -94,18 +94,22 @@ describe('LlamaCppClient', () => {
       expect(requestUrl).toBe('http://envhost:7070/v1/chat/completions');
     });
 
-    it('defaults to http://localhost:8080 when no config or env', async () => {
+    it('defaults to the LLM gateway, tagged X-Caller: archon, when no config or env', async () => {
       delete process.env.LLAMACPP_ENDPOINT;
+      delete process.env.LLM_GATEWAY_URL;
       let requestUrl = '';
-      globalThis.fetch = async (url: string | URL | Request) => {
+      let headers: Record<string, string> = {};
+      globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
         requestUrl = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+        headers = (init?.headers ?? {}) as Record<string, string>;
         return okResponse(makeSSE('ok'));
       };
 
       const client = new LlamaCppClient();
       await collectChunks(client.sendQuery('Hi', '/tmp/test'));
 
-      expect(requestUrl).toBe('http://localhost:8080/v1/chat/completions');
+      expect(requestUrl).toBe('http://host.docker.internal:8093/v1/chat/completions');
+      expect(headers['X-Caller']).toBe('archon');
     });
 
     it('strips trailing slashes from endpoint', async () => {

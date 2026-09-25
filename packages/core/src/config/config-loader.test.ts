@@ -230,7 +230,7 @@ concurrency:
         claude: {},
         codex: {},
         openrouter: {},
-        llamacpp: { endpoint: 'http://localhost:8080' },
+        llamacpp: {},
       });
       expect(config.streaming.telegram).toBe('stream');
       expect(config.concurrency.maxConversations).toBe(10);

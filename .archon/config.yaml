@@ -13,14 +13,21 @@ docs:
 #
 # API keys and endpoints come from environment variables (.env) and override
 # anything set here. Config values are a fallback for local customization.
+#
+# Every HTTP model call goes through the Dashed LLM gateway (llm-metrics, port
+# 8093; default http://host.docker.internal:8093, override LLM_GATEWAY_URL). It
+# holds the provider keys and records usage per caller (X-Caller: archon). From
+# the archon sandbox it is the only route out: loopback and provider hosts are
+# blocked. See packages/core/src/clients/llm-gateway.ts.
 # =============================================================================
 
 assistants:
   # ---------------------------------------------------------------------------
   # OpenRouter — cloud gateway to 300+ models (Anthropic, Google, Meta, etc.)
   # ---------------------------------------------------------------------------
-  # API key: read from OPENROUTER_API_KEY env var (already set in .env).
-  # Endpoint is hardcoded to https://openrouter.ai/api/v1/chat/completions.
+  # Endpoint: the gateway's /openrouter/v1 route, which holds the key (override
+  # with OPENROUTER_BASE_URL or `baseUrl` below). A key (OPENROUTER_API_KEY or
+  # `apiKey`) is only required if the base URL points straight at OpenRouter.
   #
   # Model naming: "<vendor>/<model>" format. Browse available models at
   # https://openrouter.ai/models. Add ":free" suffix for free-tier variants.
@@ -38,8 +45,8 @@ assistants:
   # ---------------------------------------------------------------------------
   # Llama.cpp — local llama-swap server on port 8093
   # ---------------------------------------------------------------------------
-  # Endpoint: read from LLAMACPP_ENDPOINT env var (set in .env to
-  # http://localhost:8093 — the llamacpp Docker container).
+  # Endpoint: the LLM gateway, whose bare /v1 is llama.cpp (override with
+  # LLAMACPP_ENDPOINT). Never localhost: that does not work from the sandbox.
   #
   # This setup uses llama-swap with on-demand model loading. The `model` field
   # in each request selects which preset to load. Available model IDs on your

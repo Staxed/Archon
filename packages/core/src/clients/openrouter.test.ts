@@ -84,15 +84,24 @@ describe('OpenRouterClient', () => {
       expect(client.getType()).toBe('openrouter');
     });
 
-    it('throws OpenRouterMissingApiKeyError when no key available', () => {
+    it('needs no key through the LLM gateway (the default)', () => {
       delete process.env.OPENROUTER_API_KEY;
-      expect(() => new OpenRouterClient()).toThrow(OpenRouterMissingApiKeyError);
+      delete process.env.OPENROUTER_BASE_URL;
+      expect(() => new OpenRouterClient()).not.toThrow();
+    });
+
+    it('throws OpenRouterMissingApiKeyError with no key and a direct OpenRouter base URL', () => {
+      delete process.env.OPENROUTER_API_KEY;
+      expect(() => new OpenRouterClient({ baseUrl: 'https://openrouter.ai/api/v1' })).toThrow(
+        OpenRouterMissingApiKeyError
+      );
     });
 
     it('error message includes actionable guidance', () => {
       delete process.env.OPENROUTER_API_KEY;
+      expect.assertions(2);
       try {
-        new OpenRouterClient();
+        new OpenRouterClient({ baseUrl: 'https://openrouter.ai/api/v1' });
       } catch (e) {
         const err = e as Error;
         expect(err.message).toContain('OPENROUTER_API_KEY');
@@ -211,17 +220,39 @@ describe('OpenRouterClient', () => {
       expect(body!.model).toBe('meta-llama/llama-4-scout');
     });
 
-    it('sends requests to OpenRouter endpoint', async () => {
+    it('sends requests through the LLM gateway by default, tagged X-Caller: archon', async () => {
+      delete process.env.OPENROUTER_BASE_URL;
+      delete process.env.LLM_GATEWAY_URL;
       let requestUrl = '';
-      globalThis.fetch = async (url: string | URL | Request, _init?: RequestInit) => {
+      let headers: Record<string, string> = {};
+      globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
         requestUrl = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+        headers = (init?.headers ?? {}) as Record<string, string>;
         return okResponse(makeSSE('ok'));
       };
 
       const client = new OpenRouterClient({ apiKey: 'test-key' });
       await collectChunks(client.sendQuery('Hi', '/tmp/test'));
 
-      expect(requestUrl).toBe('https://openrouter.ai/api/v1/chat/completions');
+      expect(requestUrl).toBe('http://host.docker.internal:8093/openrouter/v1/chat/completions');
+      expect(headers['X-Caller']).toBe('archon');
+    });
+
+    it('honours OPENROUTER_BASE_URL', async () => {
+      process.env.OPENROUTER_BASE_URL = 'http://gw.test:9000/openrouter/v1/';
+      let requestUrl = '';
+      globalThis.fetch = async (url: string | URL | Request, _init?: RequestInit) => {
+        requestUrl = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+        return okResponse(makeSSE('ok'));
+      };
+
+      try {
+        const client = new OpenRouterClient();
+        await collectChunks(client.sendQuery('Hi', '/tmp/test'));
+        expect(requestUrl).toBe('http://gw.test:9000/openrouter/v1/chat/completions');
+      } finally {
+        delete process.env.OPENROUTER_BASE_URL;
+      }
     });
   });
 
@@ -253,9 +284,11 @@ describe('OpenRouterClient', () => {
       expect(client.getType()).toBe('openrouter');
     });
 
-    it('throws when config has no apiKey and env var not set', () => {
+    it('throws when config has no apiKey, env var not set, and baseUrl is direct', () => {
       delete process.env.OPENROUTER_API_KEY;
-      expect(() => OpenRouterClient.fromConfig({})).toThrow(OpenRouterMissingApiKeyError);
+      expect(() =>
+        OpenRouterClient.fromConfig({ baseUrl: 'https://openrouter.ai/api/v1' })
+      ).toThrow(OpenRouterMissingApiKeyError);
     });
   });
 

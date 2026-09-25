@@ -2,7 +2,9 @@
  * Llama.cpp provider client.
  *
  * Extends OpenAICompatibleClient with Llama.cpp-specific configuration:
- *   - Local server endpoint (default http://localhost:8080)
+ *   - Server endpoint: config, else LLAMACPP_ENDPOINT, else the Dashed LLM
+ *     gateway (see llm-gateway.ts), which serves local llama.cpp on /v1 and
+ *     records the usage. localhost does not work from Archon's sandbox.
  *   - No API key required
  *   - GBNF grammar for structured output (instead of response_format)
  *   - Model loaded server-side; model field is informational
@@ -13,10 +15,9 @@ import type { AssistantRequestOptions } from '../types';
 import type { LlamaCppAssistantDefaults } from '../config/config-types';
 
 import { createLogger } from '@archon/paths';
+import { GATEWAY_CALLER_HEADERS, llmGatewayUrl } from './llm-gateway';
 
 const log = createLogger('client.llamacpp');
-
-const DEFAULT_ENDPOINT = 'http://localhost:8080';
 
 /** Error thrown when the Llama.cpp endpoint is unreachable. */
 export class LlamaCppEndpointUnreachableError extends Error {
@@ -46,10 +47,11 @@ export class LlamaCppClient extends OpenAICompatibleClient {
   private readonly endpoint: string;
 
   constructor(config: LlamaCppClientConfig = {}) {
-    const endpoint = config.endpoint ?? process.env.LLAMACPP_ENDPOINT ?? DEFAULT_ENDPOINT;
+    const endpoint = config.endpoint ?? process.env.LLAMACPP_ENDPOINT ?? llmGatewayUrl();
 
     const baseConfig: OpenAICompatibleClientConfig = {
       endpointUrl: `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`,
+      headers: { ...GATEWAY_CALLER_HEADERS },
       providerName: 'llamacpp',
       defaultModel: config.model ?? 'local',
     };

@@ -177,7 +177,9 @@ function getDefaults(): MergedConfig {
       claude: {},
       codex: {},
       openrouter: {},
-      llamacpp: { endpoint: 'http://localhost:8080' },
+      // No endpoint here: LlamaCppClient falls back to LLAMACPP_ENDPOINT, then
+      // the LLM gateway (clients/llm-gateway.ts).
+      llamacpp: {},
     },
     streaming: {
       telegram: 'stream',

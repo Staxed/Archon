@@ -1206,8 +1206,9 @@ describe('CodexClient', () => {
       }
     });
 
-    test('throws when OPENAI_API_KEY is missing for tool-loop path', async () => {
+    test('throws when OPENAI_API_KEY is missing and OPENAI_BASE_URL is direct', async () => {
       delete process.env.OPENAI_API_KEY;
+      process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
       const consumeGenerator = async (): Promise<void> => {
         for await (const _ of client.sendQuery('test', '/workspace', undefined, {
@@ -1217,7 +1218,32 @@ describe('CodexClient', () => {
         }
       };
 
-      await expect(consumeGenerator()).rejects.toThrow('OPENAI_API_KEY');
+      try {
+        await expect(consumeGenerator()).rejects.toThrow('OPENAI_API_KEY');
+      } finally {
+        delete process.env.OPENAI_BASE_URL;
+      }
+    });
+
+    test('tool-loop path goes through the LLM gateway with no key, tagged X-Caller: archon', async () => {
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.OPENAI_BASE_URL;
+      delete process.env.LLM_GATEWAY_URL;
+
+      for await (const _ of client.sendQuery('test', '/workspace', undefined, {
+        systemPrompt: 'Custom prompt',
+      })) {
+        // consume
+      }
+
+      const loopConfig = mockExecuteToolLoop.mock.calls[0][0] as {
+        endpoint: { url: string; apiKey?: string; headers?: Record<string, string> };
+      };
+      expect(loopConfig.endpoint.url).toBe(
+        'http://host.docker.internal:8093/openai/v1/chat/completions'
+      );
+      expect(loopConfig.endpoint.apiKey).toBeUndefined();
+      expect(loopConfig.endpoint.headers?.['X-Caller']).toBe('archon');
     });
 
     test('getType still returns codex regardless of dispatch path', () => {
