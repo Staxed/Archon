@@ -47,6 +47,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createLogger } from '@archon/paths';
+import { formatUsd } from '@archon/workflows/utils/format-usd';
 import type { AssistantRequestOptions, IAssistantClient, MessageChunk, TokenUsage } from '../types';
 import { ensureGrokDispatcher, prepareHookRun, unsupportedHookEvents } from './cli-hooks';
 import { loadSkills } from './skill-loader';
@@ -622,7 +623,7 @@ export class GrokClient implements IAssistantClient {
                 );
                 yield {
                   type: 'system',
-                  content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent${rates.note}), over its maxBudgetUsd of $${options.maxBudgetUsd.toFixed(2)}.`,
+                  content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent${rates.note}), over its maxBudgetUsd of $${formatUsd(options.maxBudgetUsd)}.`,
                 };
                 yield {
                   type: 'result',

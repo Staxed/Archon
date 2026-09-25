@@ -4571,6 +4571,53 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     expect(capMessage).toBeDefined();
   });
 
+  it('error message shows a sub-cent cost cap instead of $0.00', async () => {
+    // A workflow whose every node failed only sends its summary, so 'ok' succeeds first
+    let callCount = 0;
+    mockSendQueryDag.mockImplementation(function* () {
+      callCount++;
+      if (callCount === 1) {
+        yield { type: 'assistant', content: 'done' };
+        yield { type: 'result', sessionId: 'sid-ok' };
+      } else {
+        yield {
+          type: 'result',
+          isError: true,
+          errorSubtype: 'error_max_budget_usd',
+          sessionId: 'sid-cap',
+        };
+      }
+    });
+
+    const platform = createMockPlatform();
+    await executeDagWorkflow(
+      createMockDeps(createMockStore()),
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'budget-subcent-test',
+        nodes: [
+          { id: 'ok', prompt: 'do work first' },
+          { id: 'capped', command: 'my-cmd', maxBudgetUsd: 0.001, depends_on: ['ok'] },
+        ],
+      },
+      makeWorkflowRun(),
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    const sendMessage = platform.sendMessage as ReturnType<typeof mock>;
+    const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
+    expect(messages.some(m => m.includes('cost cap of $0.001'))).toBe(true);
+    expect(messages.some(m => m.includes('$0.00.'))).toBe(false);
+  });
+
   it('forwards workflow-level effort to node when no per-node override', async () => {
     const mockDeps = createMockDeps();
     const platform = createMockPlatform();

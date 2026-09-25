@@ -42,6 +42,7 @@ import {
   isApprovalContext,
 } from './schemas';
 import { formatToolCall } from './utils/tool-formatter';
+import { formatUsd } from './utils/format-usd';
 import { createLogger } from '@archon/paths';
 import { getWorkflowEventEmitter } from './event-emitter';
 import { evaluateCondition } from './condition-evaluator';
@@ -1075,7 +1076,7 @@ async function executeNodeInternal(
             'dag.node_budget_cap_exceeded'
           );
           throw new Error(
-            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${cap.toFixed(2)}` : ''}.`
+            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${formatUsd(cap)}` : ''}.`
           );
         }
         break; // Result is the "I'm done" signal — don't wait for subprocess to exit

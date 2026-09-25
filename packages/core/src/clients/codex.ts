@@ -39,6 +39,7 @@ import {
   type TokenUsage,
 } from '../types';
 import { createLogger } from '@archon/paths';
+import { formatUsd } from '@archon/workflows/utils/format-usd';
 import { loadSkills } from './skill-loader';
 import {
   codexHookTrustOverride,
@@ -993,7 +994,7 @@ function* budgetExceeded(
   getLog().warn({ cost, budget, model: spend.model }, 'codex.max_budget_exceeded');
   yield {
     type: 'system',
-    content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent), over its maxBudgetUsd of $${budget.toFixed(2)}.`,
+    content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent), over its maxBudgetUsd of $${formatUsd(budget)}.`,
   };
   yield {
     type: 'result',
