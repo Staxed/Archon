@@ -95,6 +95,8 @@ export interface IWorkflowStore {
     output_tokens: number;
     total_tokens: number;
     cost_usd?: number | null;
+    /** The provider's own session id, so collectors of its session files can skip it */
+    session_id?: string | null;
   }): Promise<void>;
 
   // Per-codebase env vars for workflow node injection

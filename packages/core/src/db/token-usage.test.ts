@@ -31,6 +31,7 @@ describe('token-usage', () => {
     total_tokens: 700,
     cost_usd: 0.001,
     created_at: '2026-04-12T00:00:00.000Z',
+    session_id: 'sess-abc',
   };
 
   describe('recordTokenUsage', () => {
@@ -47,6 +48,7 @@ describe('token-usage', () => {
         output_tokens: 200,
         total_tokens: 700,
         cost_usd: 0.001,
+        session_id: 'sess-abc',
       });
 
       expect(result).toEqual(mockRow);
@@ -60,6 +62,7 @@ describe('token-usage', () => {
       expect(params[7]).toBe(200); // output_tokens
       expect(params[8]).toBe(700); // total_tokens
       expect(params[9]).toBe(0.001); // cost_usd
+      expect(params[10]).toBe('sess-abc'); // session_id
     });
 
     test('defaults nullable fields to null', async () => {
@@ -69,6 +72,7 @@ describe('token-usage', () => {
         conversation_id: null,
         node_id: null,
         cost_usd: null,
+        session_id: null,
       };
       mockQuery.mockResolvedValueOnce(createQueryResult([minRow]));
 
@@ -85,6 +89,7 @@ describe('token-usage', () => {
       expect(params[2]).toBeNull(); // conversation_id
       expect(params[3]).toBeNull(); // node_id
       expect(params[9]).toBeNull(); // cost_usd
+      expect(params[10]).toBeNull(); // session_id
     });
 
     test('throws when INSERT returns no rows', async () => {

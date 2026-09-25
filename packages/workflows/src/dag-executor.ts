@@ -1304,6 +1304,7 @@ async function executeNodeInternal(
         output_tokens: outputTokens,
         total_tokens: nodeTokens?.total ?? inputTokens + outputTokens,
         cost_usd: nodeCostUsd ?? null,
+        session_id: newSessionId ?? null,
       })
       .catch((err: Error) => {
         getLog().error(
@@ -1885,6 +1886,7 @@ async function executeLoopNode(
                 output_tokens: iterOutput,
                 total_tokens: msg.tokens?.total ?? iterInput + iterOutput,
                 cost_usd: msg.cost ?? null,
+                session_id: msg.sessionId ?? null,
               })
               .catch((err: Error) => {
                 getLog().error(

@@ -1941,6 +1941,45 @@ describe('executeDagWorkflow -- tool_called event persistence', () => {
       toolInput: { path: '/bar', content: 'x' },
     });
   });
+
+  it("records the provider's session id on the node's token usage row", async () => {
+    const mockStore = createMockStore();
+    const mockDeps = createMockDeps(mockStore);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    mockSendQueryDag.mockImplementation(function* () {
+      yield { type: 'assistant', content: 'done' };
+      yield {
+        type: 'result',
+        sessionId: 'thread-usage-1',
+        tokens: { input: 10, output: 5, total: 40, model: 'gpt-6-astra' },
+      };
+    });
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag-usage',
+      testDir,
+      { name: 'dag-usage-test', nodes: [node('my-cmd')] },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    const usageCalls = (mockStore.recordTokenUsage as ReturnType<typeof mock>).mock.calls;
+    expect(usageCalls.length).toBe(1);
+    const row = usageCalls[0][0] as Record<string, unknown>;
+    expect(row.node_id).toBe('my-cmd');
+    expect(row.session_id).toBe('thread-usage-1');
+    expect(row.total_tokens).toBe(40);
+  });
 });
 
 describe('executeDagWorkflow -- tool_completed event emission', () => {

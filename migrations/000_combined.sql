@@ -270,8 +270,10 @@ CREATE TABLE IF NOT EXISTS remote_agent_token_usage (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd NUMERIC(12, 6),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  session_id VARCHAR(255)
 );
+ALTER TABLE remote_agent_token_usage ADD COLUMN IF NOT EXISTS session_id VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_workflow_run
   ON remote_agent_token_usage(workflow_run_id);

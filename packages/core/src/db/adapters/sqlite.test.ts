@@ -1,4 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SqliteAdapter } from './sqlite';
 import { unlinkSync } from 'fs';
 import { join } from 'path';
@@ -133,6 +134,30 @@ describe('SqliteAdapter', () => {
           ['destroyed', 'test-id']
         )
       ).rejects.toThrow('does not support RETURNING clause on UPDATE/DELETE');
+    });
+  });
+
+  describe('column migrations', () => {
+    test('adds session_id to a token usage table created before it existed', async () => {
+      currentDbPath = join(
+        import.meta.dir,
+        `.test-sqlite-adapter-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+      );
+      const old = new Database(currentDbPath);
+      old.run(`CREATE TABLE remote_agent_token_usage (
+        id TEXT PRIMARY KEY, workflow_run_id TEXT, conversation_id TEXT, node_id TEXT,
+        provider TEXT NOT NULL, model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL,
+        created_at TEXT DEFAULT (datetime('now')))`);
+      old.close();
+
+      db = new SqliteAdapter(currentDbPath);
+      const cols = await db.query<{ name: string }>(
+        `SELECT name FROM pragma_table_info('remote_agent_token_usage')`,
+        []
+      );
+      expect(cols.rows.map(c => c.name)).toContain('session_id');
     });
   });
 });

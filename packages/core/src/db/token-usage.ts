@@ -26,6 +26,8 @@ export interface TokenUsageRow {
   total_tokens: number;
   cost_usd: number | null;
   created_at: string;
+  /** The provider's own session id (Claude session, Codex thread, Grok session) */
+  session_id: string | null;
 }
 
 export interface TokenUsageInput {
@@ -38,6 +40,7 @@ export interface TokenUsageInput {
   output_tokens: number;
   total_tokens: number;
   cost_usd?: number | null;
+  session_id?: string | null;
 }
 
 export interface TokenUsageSummaryRow {
@@ -74,8 +77,8 @@ export async function recordTokenUsage(data: TokenUsageInput): Promise<TokenUsag
   const result = await pool.query<TokenUsageRow>(
     `INSERT INTO remote_agent_token_usage
        (id, workflow_run_id, conversation_id, node_id, provider, model,
-        input_tokens, output_tokens, total_tokens, cost_usd)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        input_tokens, output_tokens, total_tokens, cost_usd, session_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       id,
@@ -88,6 +91,7 @@ export async function recordTokenUsage(data: TokenUsageInput): Promise<TokenUsag
       data.output_tokens,
       data.total_tokens,
       data.cost_usd ?? null,
+      data.session_id ?? null,
     ]
   );
 

@@ -239,6 +239,20 @@ export class SqliteAdapter implements IDatabase {
     } catch (e: unknown) {
       getLog().error({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
     }
+
+    // Token usage columns
+    try {
+      const tuCols = this.db.prepare("PRAGMA table_info('remote_agent_token_usage')").all() as {
+        name: string;
+      }[];
+      const tuColNames = new Set(tuCols.map(c => c.name));
+
+      if (!tuColNames.has('session_id')) {
+        this.db.run('ALTER TABLE remote_agent_token_usage ADD COLUMN session_id TEXT');
+      }
+    } catch (e: unknown) {
+      getLog().error({ err: e as Error }, 'db.sqlite_migration_token_usage_columns_failed');
+    }
   }
 
   /**
@@ -385,7 +399,8 @@ export class SqliteAdapter implements IDatabase {
         output_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL,
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        session_id TEXT
       );
 
       -- Indexes
