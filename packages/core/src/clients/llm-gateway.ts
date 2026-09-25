@@ -9,7 +9,7 @@
  * no key, and one it does send is harmless (the gateway substitutes its own).
  *
  * Override the gateway with LLM_GATEWAY_URL, or one provider with its own
- * variable (OPENROUTER_BASE_URL, OPENAI_BASE_URL, LLAMACPP_ENDPOINT).
+ * variable (OPENROUTER_BASE_URL, LLAMACPP_ENDPOINT).
  * Read at call time, not import time, so tests and config reloads see changes.
  */
 
@@ -23,12 +23,16 @@ export function llmGatewayUrl(): string {
   return (process.env.LLM_GATEWAY_URL ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
 }
 
-/** OpenAI-compatible base URL (ending in `/v1`) for a provider behind the gateway. */
-export function gatewayProviderBase(provider: 'openrouter' | 'openai'): string {
+/**
+ * OpenAI-compatible base URL (ending in `/v1`) for a provider behind the gateway.
+ * Only OpenRouter: Codex and Grok run on the user's subscriptions and never use
+ * the gateway (Codex's old OpenAI API tool loop is gone).
+ */
+export function gatewayProviderBase(provider: 'openrouter'): string {
   return `${llmGatewayUrl()}/${provider}/v1`;
 }
 
 /** True when a base URL points straight at a provider rather than a gateway, so a key is needed. */
 export function isDirectProviderUrl(url: string): boolean {
-  return /^https:\/\/(openrouter\.ai|api\.openai\.com)\//.test(url);
+  return url.startsWith('https://openrouter.ai/');
 }

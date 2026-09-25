@@ -431,27 +431,31 @@ async function resolveNodeProviderAndModel(
   // --- Build provider-specific options ---
   let options: WorkflowAssistantOptions | undefined;
 
-  if (provider === 'codex') {
-    // Codex: SDK-native options + tool-loop fallback handles all other features
-    const codexOptions: WorkflowAssistantOptions = {
-      model,
-      modelReasoningEffort: config.assistants.codex.modelReasoningEffort,
-      webSearchMode: config.assistants.codex.webSearchMode,
-      additionalDirectories: config.assistants.codex.additionalDirectories,
-    };
-    if (node.output_format) {
-      codexOptions.outputFormat = { type: 'json_schema', schema: node.output_format };
+  if (provider === 'codex' || provider === 'grok') {
+    // Subscription CLIs: every node option maps onto the CLI's own switches or
+    // Archon's CLI hook dispatcher, and anything that cannot be is refused by the
+    // client. Never sent to an API (see codex.ts / grok.ts).
+    const cliOptions: WorkflowAssistantOptions = {};
+    if (model) cliOptions.model = model;
+    if (provider === 'codex') {
+      cliOptions.modelReasoningEffort = config.assistants.codex.modelReasoningEffort;
+      cliOptions.webSearchMode = config.assistants.codex.webSearchMode;
+      cliOptions.additionalDirectories = config.assistants.codex.additionalDirectories;
     }
-    // Pass through features that Codex handles via tool-loop fallback
-    if (node.allowed_tools !== undefined) codexOptions.tools = node.allowed_tools;
-    if (node.denied_tools !== undefined) codexOptions.disallowedTools = node.denied_tools;
+    if (node.output_format) {
+      cliOptions.outputFormat = { type: 'json_schema', schema: node.output_format };
+    }
+    if (node.allowed_tools !== undefined) cliOptions.tools = node.allowed_tools;
+    if (node.denied_tools !== undefined) cliOptions.disallowedTools = node.denied_tools;
     if (node.hooks) {
-      const builtHooks = buildSDKHooksFromYAML(node.hooks);
-      if (Object.keys(builtHooks).length > 0) codexOptions.hooks = builtHooks;
+      const specs = Object.fromEntries(
+        Object.entries(node.hooks).filter(([, list]) => (list?.length ?? 0) > 0)
+      );
+      if (Object.keys(specs).length > 0) cliOptions.hookSpecs = specs;
     }
     if (node.mcp) {
       try {
-        codexOptions.mcpConfigs = await loadMcpConfigRaw(
+        cliOptions.mcpConfigs = await loadMcpConfigRaw(
           node.mcp,
           cwd,
           node.id,
@@ -468,25 +472,27 @@ async function resolveNodeProviderAndModel(
         throw new Error(`Node '${node.id}': ${errMsg}`);
       }
     }
-    if (node.skills) codexOptions.skills = node.skills;
-    if (node.systemPrompt !== undefined) codexOptions.systemPrompt = node.systemPrompt;
+    if (node.skills) cliOptions.skills = node.skills;
+    if (node.systemPrompt !== undefined) cliOptions.systemPrompt = node.systemPrompt;
     // Per-node overrides for workflow-level options
     const effort = node.effort ?? workflowLevelOptions.effort;
-    if (effort !== undefined) codexOptions.effort = effort;
+    if (effort !== undefined) cliOptions.effort = effort;
     const thinking = node.thinking ?? workflowLevelOptions.thinking;
-    if (thinking !== undefined) codexOptions.thinking = thinking;
-    if (node.maxBudgetUsd !== undefined) codexOptions.maxBudgetUsd = node.maxBudgetUsd;
+    if (thinking !== undefined) cliOptions.thinking = thinking;
+    if (node.maxBudgetUsd !== undefined) cliOptions.maxBudgetUsd = node.maxBudgetUsd;
     const fallbackModel = node.fallbackModel ?? workflowLevelOptions.fallbackModel;
-    if (fallbackModel !== undefined) codexOptions.fallbackModel = fallbackModel;
+    if (fallbackModel !== undefined) cliOptions.fallbackModel = fallbackModel;
     const betas = node.betas ?? workflowLevelOptions.betas;
-    if (betas !== undefined) codexOptions.betas = betas;
+    if (betas !== undefined) cliOptions.betas = betas;
     const sandbox = node.sandbox ?? workflowLevelOptions.sandbox;
-    if (sandbox !== undefined) codexOptions.sandbox = sandbox;
-    options = codexOptions;
-  } else if (provider === 'openrouter' || provider === 'llamacpp' || provider === 'grok') {
+    if (sandbox !== undefined) cliOptions.sandbox = sandbox;
+    // Inject per-project env vars
+    if (config.envVars && Object.keys(config.envVars).length > 0) {
+      cliOptions.env = config.envVars;
+    }
+    options = Object.keys(cliOptions).length > 0 ? cliOptions : undefined;
+  } else if (provider === 'openrouter' || provider === 'llamacpp') {
     // OpenRouter / Llama.cpp: all features flow through the tool loop.
-    // Grok: the same full option set; GrokClient maps each onto the grok CLI's own
-    // flags or refuses the node (it never falls back to an API).
     const toolLoopOptions: WorkflowAssistantOptions = {};
     if (model) toolLoopOptions.model = model;
     if (node.output_format) {

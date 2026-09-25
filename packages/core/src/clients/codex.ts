@@ -2,18 +2,32 @@
  * Codex SDK wrapper
  * Provides async generator interface for streaming Codex responses.
  *
- * Dual-path dispatch:
- *   - SDK path: Uses @openai/codex-sdk directly (for basic workflows)
- *   - Tool-loop path: Uses Archon's agentic tool loop via OpenAI API
- *     (for features the SDK doesn't support: allowed_tools, denied_tools,
- *      hooks, skills, systemPrompt, effort, thinking, maxBudgetUsd,
- *      fallbackModel, betas, sandbox, mcpConfigs)
+ * Runs the Codex CLI on the user's ChatGPT subscription (the login in
+ * $CODEX_HOME/auth.json). It never uses an API key and never goes through the LLM
+ * gateway; API-key variables are removed from the CLI's environment.
  *
- * With Bun runtime, we can directly import ESM packages without the
- * dynamic import workaround that was needed for CommonJS/Node.js.
+ * Every workflow node option maps onto Codex itself (each verified by a live run in
+ * the archon sandbox, codex 0.157):
+ *   systemPrompt   -> model_instructions_file (replaces Codex's base instructions,
+ *                     as Claude's string systemPrompt replaces its preset)
+ *   skills         -> preloaded into developer_instructions (as Claude preloads them)
+ *   mcp            -> mcp_servers.<name> config (stdio and streamable HTTP)
+ *   effort         -> model_reasoning_effort; thinking: disabled -> `low` (Codex
+ *                     models cannot turn reasoning off; said so in a system message)
+ *   sandbox        -> sandbox_mode workspace-write (+ writable roots, network on/off)
+ *   allowed/denied tools, hooks, and the worktree path guard
+ *                  -> Archon's CLI hook dispatcher (hook-dispatcher.ts, cli-hooks.ts)
+ *   maxBudgetUsd   -> Archon prices the rollout's token counts mid-turn and stops
+ *   fallbackModel  -> Archon retries on a model-access error
+ *   betas          -> refused (Anthropic-only)
  */
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   Codex,
+  type CodexOptions,
   type ThreadOptions,
   type TurnOptions,
   type TurnCompletedEvent,
@@ -24,54 +38,28 @@ import {
   type MessageChunk,
   type TokenUsage,
 } from '../types';
-import { readdirSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { createLogger } from '@archon/paths';
-import { executeToolLoop, type ChatMessage, type ToolLoopConfig } from './tool-loop';
-import { toolDefinitions } from './tool-definitions';
-import { McpToolProvider, type McpServerConfig } from './mcp-client';
-import { loadSkills, type SkillContext } from './skill-loader';
-import { ContextWindowManager } from './context-window';
-import { GATEWAY_CALLER_HEADERS, gatewayProviderBase, isDirectProviderUrl } from './llm-gateway';
+import { loadSkills } from './skill-loader';
+import {
+  codexHookTrustOverride,
+  ensureCodexDispatcher,
+  prepareHookRun,
+  unsupportedHookEvents,
+} from './cli-hooks';
+import {
+  mapSandboxForCodex,
+  modelRates,
+  noRatesError,
+  priceTokens,
+  refusedClaudeOnlyOptions,
+  type PricedTokens,
+} from './subscription-options';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('client.codex');
   return cachedLog;
-}
-
-// Singleton Codex instance
-let codexInstance: Codex | null = null;
-
-/**
- * Get or create Codex SDK instance
- * Synchronous now that we have direct ESM import
- */
-function getCodex(): Codex {
-  if (!codexInstance) {
-    codexInstance = new Codex();
-  }
-  return codexInstance;
-}
-
-/**
- * Build thread options for Codex SDK
- * Extracted to avoid duplication across thread creation paths
- */
-function buildThreadOptions(cwd: string, options?: AssistantRequestOptions): ThreadOptions {
-  return {
-    workingDirectory: cwd,
-    skipGitRepoCheck: true,
-    sandboxMode: 'danger-full-access', // Full filesystem access (needed for git worktree operations)
-    networkAccessEnabled: true, // Allow network calls (GitHub CLI, HTTP requests)
-    approvalPolicy: 'never', // Auto-approve all operations without user confirmation
-    model: options?.model,
-    modelReasoningEffort: options?.modelReasoningEffort,
-    webSearchMode: options?.webSearchMode,
-    additionalDirectories: options?.additionalDirectories,
-  };
 }
 
 const CODEX_MODEL_FALLBACKS: Record<string, string> = {
@@ -82,7 +70,13 @@ function isModelAccessError(errorMessage: string): boolean {
   const m = errorMessage.toLowerCase();
   const hasModel = m.includes('model');
   const hasAvailabilitySignal =
-    m.includes('not available') || m.includes('not found') || m.includes('access denied');
+    m.includes('not available') ||
+    m.includes('not found') ||
+    m.includes('access denied') ||
+    // ChatGPT accounts: "The 'x' model is not supported when using Codex with a
+    // ChatGPT account." Anchored on the model coming first, so an unsupported
+    // parameter ("'none' is not supported with the 'y' model") does not match.
+    /model[^.]{0,40}(is not supported|does not exist)/.test(m);
   return hasModel && hasAvailabilitySignal;
 }
 
@@ -101,6 +95,9 @@ function buildModelAccessMessage(model?: string): string {
 
   return `❌ Model "${selectedModel}" is not available for your account.\n\n${fixLine}\n\n${workflowLine}`;
 }
+
+/** A model-access failure, kept distinct so fallbackModel can retry on it. */
+class CodexModelAccessError extends Error {}
 
 /** Max retries for transient failures (3 = 4 total attempts).
  *  Mirrors ClaudeClient retry logic — Codex process crashes are similarly intermittent. */
@@ -125,42 +122,14 @@ const AUTH_PATTERNS = [
 /** Patterns indicating a transient process crash (worth retrying) */
 const SUBPROCESS_CRASH_PATTERNS = ['exited with code', 'killed', 'signal', 'codex exec'];
 
-/**
- * Base URL of the OpenAI chat/completions API used by the tool-loop fallback
- * path: OPENAI_BASE_URL, else the Dashed LLM gateway's /openai/v1 route (see
- * llm-gateway.ts), which holds the key.
- */
-function openAIBaseUrl(): string {
-  return (process.env.OPENAI_BASE_URL ?? gatewayProviderBase('openai')).replace(/\/+$/, '');
-}
+/** API-key variables a subscription run must never see (Codex would bill the key). */
+const API_KEY_ENV = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL'];
 
-/**
- * Features the Codex SDK v0.116.0 supports natively:
- *   model, modelReasoningEffort, webSearchMode, additionalDirectories,
- *   outputFormat (as outputSchema), abortSignal
- *
- * Features requiring the tool-loop fallback:
- *   tools (allowed_tools), disallowedTools (denied_tools), hooks,
- *   mcpConfigs, skills, systemPrompt, effort, thinking, maxBudgetUsd,
- *   fallbackModel, betas, sandbox
- */
-function needsToolLoopFallback(options?: AssistantRequestOptions): boolean {
-  if (!options) return false;
-  return !!(
-    options.tools !== undefined ||
-    options.disallowedTools !== undefined ||
-    options.hooks ||
-    options.mcpConfigs ||
-    options.skills ||
-    options.systemPrompt ||
-    options.effort ||
-    options.thinking ||
-    options.maxBudgetUsd !== undefined ||
-    options.fallbackModel ||
-    options.betas ||
-    options.sandbox
-  );
-}
+/** Claude effort levels Codex accepts as model_reasoning_effort. */
+const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+/** MCP server names become dotted config keys; a dot in the name would split the key. */
+const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 function classifyCodexError(
   errorMessage: string
@@ -198,20 +167,17 @@ function extractUsageFromCodexEvent(
   };
 }
 
+function codexHomeDir(codexHome?: string): string {
+  return codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex');
+}
+
 /**
- * The model Codex actually ran, read from the thread's rollout file. The SDK's
- * events never name it, and with no `model` configured Codex picks its own default,
- * which Archon would otherwise record as 'default'. The rollout is
- * $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl (dated by local
- * time when the thread started); each turn writes a `turn_context` record carrying
- * the model. Only the two most recent day folders are searched, so a thread resumed
- * days later falls back to the configured model. Never throws.
+ * The thread's rollout file: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl
+ * (dated by local time when the thread started). Only the two most recent day
+ * folders are searched. Never throws.
  */
-export function findRolloutModel(threadId: string, codexHome?: string): string | undefined {
-  const sessions = join(
-    codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'),
-    'sessions'
-  );
+export function findRolloutFile(threadId: string, codexHome?: string): string | undefined {
+  const sessions = join(codexHomeDir(codexHome), 'sessions');
   try {
     const days: string[] = [];
     const newest = (dir: string): string[] =>
@@ -231,25 +197,321 @@ export function findRolloutModel(threadId: string, codexHome?: string): string |
     }
     for (const day of days) {
       const file = readdirSync(day).find(n => n.endsWith(`-${threadId}.jsonl`));
-      if (!file) continue;
-      let model: string | undefined;
-      for (const line of readFileSync(join(day, file), 'utf8').split('\n')) {
-        if (!line.includes('"turn_context"')) continue;
-        try {
-          const rec = JSON.parse(line) as { type?: string; payload?: { model?: unknown } };
-          if (rec.type === 'turn_context' && typeof rec.payload?.model === 'string') {
-            model = rec.payload.model;
-          }
-        } catch {
-          // a partly written last line; the earlier turn_context still counts
-        }
-      }
-      return model;
+      if (file) return join(day, file);
     }
   } catch (err) {
-    getLog().debug({ err, threadId }, 'codex.rollout_model_lookup_failed');
+    getLog().debug({ err, threadId }, 'codex.rollout_lookup_failed');
   }
   return undefined;
+}
+
+/**
+ * The model Codex actually ran, read from the thread's rollout file. The SDK's
+ * events never name it, and with no `model` configured Codex picks its own default,
+ * which Archon would otherwise record as 'default'. Each turn writes a
+ * `turn_context` record carrying the model. A thread resumed days later falls back
+ * to the configured model. Never throws.
+ */
+export function findRolloutModel(threadId: string, codexHome?: string): string | undefined {
+  const file = findRolloutFile(threadId, codexHome);
+  if (!file) return undefined;
+  try {
+    let model: string | undefined;
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (!line.includes('"turn_context"')) continue;
+      try {
+        const rec = JSON.parse(line) as { type?: string; payload?: { model?: unknown } };
+        if (rec.type === 'turn_context' && typeof rec.payload?.model === 'string') {
+          model = rec.payload.model;
+        }
+      } catch {
+        // a partly written last line; the earlier turn_context still counts
+      }
+    }
+    return model;
+  } catch (err) {
+    getLog().debug({ err, threadId }, 'codex.rollout_model_lookup_failed');
+    return undefined;
+  }
+}
+
+/**
+ * Spend of one Codex turn so far, from the rollout: Codex appends a `token_count`
+ * record after every model call (`last_token_usage`, OpenAI shape: cached tokens
+ * inside input_tokens) and a `turn_context` record naming the model. Reads only
+ * the bytes appended since the turn started, so a resumed thread's earlier turns
+ * are not counted again.
+ */
+export class RolloutSpend {
+  readonly tokens: PricedTokens = { uncached: 0, cached: 0, output: 0 };
+  model: string | undefined;
+  private file: string | undefined;
+  private offset: number | undefined;
+  private partial = '';
+
+  constructor(
+    private readonly configuredModel: string | undefined,
+    private readonly codexHome?: string
+  ) {
+    this.model = configuredModel;
+  }
+
+  /** Remember where the thread's rollout ends before the turn (resumed threads). */
+  markStart(threadId: string | null | undefined): void {
+    if (!threadId || this.offset !== undefined) return;
+    const file = findRolloutFile(threadId, this.codexHome);
+    if (!file) return;
+    try {
+      this.file = file;
+      this.offset = statSync(file).size;
+    } catch {
+      // not there yet: a new thread, read from the start
+    }
+  }
+
+  /** Read what the rollout gained since the last poll. Never throws. */
+  poll(threadId: string | null | undefined): void {
+    if (!threadId) return;
+    this.file ??= findRolloutFile(threadId, this.codexHome);
+    if (!this.file) return;
+    let text: string;
+    try {
+      const buf = readFileSync(this.file);
+      const from = this.offset ?? 0;
+      if (buf.length <= from) return;
+      text = this.partial + buf.subarray(from).toString('utf8');
+      this.offset = buf.length;
+    } catch {
+      return;
+    }
+    const lines = text.split('\n');
+    this.partial = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.includes('"token_count"') && !line.includes('"turn_context"')) continue;
+      try {
+        const rec = JSON.parse(line) as {
+          type?: string;
+          payload?: {
+            type?: string;
+            model?: unknown;
+            info?: {
+              last_token_usage?: {
+                input_tokens?: number;
+                cached_input_tokens?: number;
+                output_tokens?: number;
+              };
+            } | null;
+          };
+        };
+        if (rec.type === 'turn_context' && typeof rec.payload?.model === 'string') {
+          this.model = rec.payload.model;
+        } else if (rec.payload?.type === 'token_count' && rec.payload.info?.last_token_usage) {
+          const u = rec.payload.info.last_token_usage;
+          const cached = u.cached_input_tokens ?? 0;
+          this.tokens.uncached += Math.max((u.input_tokens ?? 0) - cached, 0);
+          this.tokens.cached += cached;
+          this.tokens.output += u.output_tokens ?? 0;
+        }
+      } catch {
+        // skip a malformed line
+      }
+    }
+  }
+
+  /**
+   * Whether the spend so far passes `budget`. Nothing is priced before the first
+   * model call lands (the rollout names the model in the same turn), so an unset
+   * `model` resolves to Codex's real default before it matters.
+   */
+  exceeds(budget: number): boolean {
+    const t = this.tokens;
+    if (t.uncached + t.cached + t.output === 0) return false;
+    return this.cost() > budget;
+  }
+
+  /** Cost so far; throws when the model has no price. */
+  cost(): number {
+    const rates = modelRates(this.model ?? this.configuredModel);
+    if (!rates) throw noRatesError('Codex', this.model ?? this.configuredModel);
+    return priceTokens(rates, this.tokens);
+  }
+
+  usage(): TokenUsage {
+    return {
+      input: this.tokens.uncached,
+      output: this.tokens.output,
+      total: this.tokens.uncached + this.tokens.cached + this.tokens.output,
+      ...(this.model ? { model: this.model } : {}),
+    };
+  }
+}
+
+/** Everything one Codex call needs besides the prompt: built once, cleaned up after. */
+interface CodexRun {
+  codexOptions: CodexOptions;
+  threadOptions: ThreadOptions;
+  notes: string[];
+  cleanup: () => void;
+}
+
+function writeInstructionsFile(text: string): string {
+  const dir = join(tmpdir(), 'archon-codex-instructions');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${randomUUID()}.md`);
+  writeFileSync(path, text, { mode: 0o600 });
+  return path;
+}
+
+type McpConfigs = NonNullable<AssistantRequestOptions['mcpConfigs']>;
+
+export function mapMcpForCodex(mcp: McpConfigs): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, server] of Object.entries(mcp)) {
+    if (!MCP_NAME_RE.test(name)) {
+      throw new Error(
+        `Codex MCP server name "${name}" must use only letters, digits, "-" and "_" (it becomes a config key).`
+      );
+    }
+    if ('url' in server) {
+      if (server.type === 'sse') {
+        throw new Error(
+          `Codex does not support SSE MCP servers ("${name}"); use a streamable HTTP endpoint (type: http) or a stdio server.`
+        );
+      }
+      out[name] = {
+        url: server.url,
+        ...(server.headers && Object.keys(server.headers).length > 0
+          ? { http_headers: server.headers }
+          : {}),
+      };
+    } else {
+      out[name] = {
+        command: server.command,
+        ...(server.args ? { args: server.args } : {}),
+        ...(server.env && Object.keys(server.env).length > 0 ? { env: server.env } : {}),
+      };
+    }
+  }
+  return out;
+}
+
+function subscriptionEnv(extra: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !API_KEY_ENV.includes(k)) env[k] = v;
+  }
+  for (const [k, v] of Object.entries(extra)) {
+    if (!API_KEY_ENV.includes(k)) env[k] = v;
+  }
+  return env;
+}
+
+function webSearchAllowed(options?: AssistantRequestOptions): boolean {
+  if (options?.disallowedTools?.includes('WebSearch')) return false;
+  if (options?.tools !== undefined && !options.tools.includes('WebSearch')) return false;
+  return true;
+}
+
+/**
+ * Translate a node's options into a Codex instance and thread options, or throw a
+ * clear refusal. Refusals come first, before anything is written.
+ */
+async function buildCodexRun(
+  cwd: string,
+  model: string | undefined,
+  options?: AssistantRequestOptions
+): Promise<CodexRun> {
+  const refused = refusedClaudeOnlyOptions(options);
+  if (options?.hooks && Object.keys(options.hooks).length > 0) {
+    refused.push('in-process hooks (pass the YAML hooks as hookSpecs)');
+  }
+  const badEvents = unsupportedHookEvents('codex', options?.hookSpecs);
+  if (badEvents.length > 0) refused.push(`hook events Codex never fires: ${badEvents.join(', ')}`);
+  if (refused.length > 0) {
+    throw new Error(
+      `Codex provider cannot honour ${refused.join('; ')}. Remove them from this node or run it on Claude; Archon never falls back to an API key for a subscription provider.`
+    );
+  }
+  const sandbox = mapSandboxForCodex(options?.sandbox, cwd);
+  if (options?.maxBudgetUsd !== undefined && model && !modelRates(model)) {
+    throw noRatesError('Codex', model);
+  }
+  const mcp = options?.mcpConfigs ? mapMcpForCodex(options.mcpConfigs) : {};
+
+  const notes: string[] = [];
+  const config: Record<string, unknown> = { ...sandbox.config };
+  if (Object.keys(mcp).length > 0) config.mcp_servers = mcp;
+
+  if (options?.skills && options.skills.length > 0) {
+    const skills = await loadSkills(options.skills, cwd);
+    if (skills.systemPromptAdditions.length > 0) {
+      config.developer_instructions =
+        `Skills preloaded for this task (${options.skills.join(', ')}). Follow them when relevant.\n\n` +
+        skills.systemPromptAdditions.join('\n\n---\n\n');
+    }
+  }
+
+  let effort: ThreadOptions['modelReasoningEffort'] = options?.modelReasoningEffort;
+  if (options?.effort && CODEX_EFFORTS.has(options.effort)) {
+    effort = options.effort as ThreadOptions['modelReasoningEffort'];
+  } else if (options?.thinking?.type === 'disabled' && !options.effort) {
+    effort = 'low';
+    notes.push(
+      'thinking: disabled → Codex reasoning effort "low" (Codex models cannot turn reasoning off).'
+    );
+  }
+
+  const cleanups: (() => void)[] = [];
+  const cleanup = (): void => {
+    for (const c of cleanups.splice(0)) {
+      try {
+        c();
+      } catch (err) {
+        getLog().debug({ err }, 'codex.run_cleanup_failed');
+      }
+    }
+  };
+  try {
+    if (options?.systemPrompt) {
+      const file = writeInstructionsFile(options.systemPrompt);
+      cleanups.push(() => {
+        rmSync(file, { force: true });
+      });
+      config.model_instructions_file = file;
+    }
+    const trust = ensureCodexDispatcher();
+    const hookRun = prepareHookRun({
+      version: 1,
+      provider: 'codex',
+      cwd,
+      pathGuard: true,
+      ...(options?.tools !== undefined ? { allowedTools: options.tools } : {}),
+      ...(options?.disallowedTools !== undefined ? { deniedTools: options.disallowedTools } : {}),
+      ...(options?.hookSpecs ? { hooks: options.hookSpecs } : {}),
+    });
+    cleanups.push(hookRun.cleanup);
+
+    const codexOptions: CodexOptions = {
+      ...(Object.keys(config).length > 0 ? { config: config as CodexOptions['config'] } : {}),
+      configOverrides: [codexHookTrustOverride(trust)],
+      env: subscriptionEnv({ ...(options?.env ?? {}), ...hookRun.env }),
+    };
+    const threadOptions: ThreadOptions = {
+      workingDirectory: cwd,
+      skipGitRepoCheck: true,
+      sandboxMode: sandbox.sandboxMode,
+      networkAccessEnabled: sandbox.networkAccessEnabled,
+      approvalPolicy: 'never', // Auto-approve all operations without user confirmation
+      model,
+      modelReasoningEffort: effort,
+      webSearchMode: webSearchAllowed(options) ? options?.webSearchMode : 'disabled',
+      additionalDirectories: options?.additionalDirectories,
+    };
+    return { codexOptions, threadOptions, notes, cleanup };
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
 }
 
 /**
@@ -266,11 +528,6 @@ export class CodexClient implements IAssistantClient {
   /**
    * Send a query to Codex and stream responses.
    *
-   * Dispatch logic:
-   *   - If the request uses features the Codex SDK doesn't support natively,
-   *     route through Archon's tool loop (calling OpenAI API with the Codex model).
-   *   - Otherwise, use the native Codex SDK path.
-   *
    * @param prompt - User message or prompt
    * @param cwd - Working directory for Codex
    * @param resumeSessionId - Optional thread ID to resume
@@ -281,28 +538,52 @@ export class CodexClient implements IAssistantClient {
     resumeSessionId?: string,
     options?: AssistantRequestOptions
   ): AsyncGenerator<MessageChunk> {
-    // ── Dispatch: tool-loop fallback for unsupported features ──
-    if (needsToolLoopFallback(options)) {
-      getLog().info(
-        {
-          features: getUnsupportedFeatures(options),
-          model: options?.model,
-        },
-        'codex.tool_loop_dispatch'
-      );
-      yield* this.sendQueryViaToolLoop(prompt, cwd, options);
-      return;
-    }
-
-    getLog().debug({ model: options?.model }, 'codex.sdk_dispatch');
-
-    const codex = getCodex();
-    const threadOptions = buildThreadOptions(cwd, options);
-
     // Check if already aborted before starting
     if (options?.abortSignal?.aborted) {
       throw new Error('Query aborted');
     }
+    try {
+      yield* this.runWithModel(prompt, cwd, resumeSessionId, options, options?.model);
+    } catch (error) {
+      const fallback = options?.fallbackModel;
+      if (!(error instanceof CodexModelAccessError) || !fallback || fallback === options?.model) {
+        throw error;
+      }
+      getLog().info({ model: options?.model, fallback }, 'codex.fallback_model');
+      yield {
+        type: 'system',
+        content: `⚠️ Model "${options?.model ?? 'default'}" is not available; retrying with fallback model "${fallback}".`,
+      };
+      yield* this.runWithModel(prompt, cwd, resumeSessionId, options, fallback);
+    }
+  }
+
+  private async *runWithModel(
+    prompt: string,
+    cwd: string,
+    resumeSessionId: string | undefined,
+    options: AssistantRequestOptions | undefined,
+    model: string | undefined
+  ): AsyncGenerator<MessageChunk> {
+    const run = await buildCodexRun(cwd, model, options);
+    try {
+      for (const note of run.notes) yield { type: 'system', content: `ℹ️ ${note}` };
+      yield* this.stream(prompt, resumeSessionId, options, model, run);
+    } finally {
+      run.cleanup();
+    }
+  }
+
+  private async *stream(
+    prompt: string,
+    resumeSessionId: string | undefined,
+    options: AssistantRequestOptions | undefined,
+    model: string | undefined,
+    run: CodexRun
+  ): AsyncGenerator<MessageChunk> {
+    getLog().debug({ model }, 'codex.sdk_dispatch');
+    const codex = new Codex(run.codexOptions);
+    const threadOptions = run.threadOptions;
 
     // Track if we fell back from a failed resume (to notify user)
     let sessionResumeFailed = false;
@@ -323,21 +604,21 @@ export class CodexClient implements IAssistantClient {
         } catch (startError) {
           const err = startError as Error;
           if (isModelAccessError(err.message)) {
-            throw new Error(buildModelAccessMessage(options?.model));
+            throw new CodexModelAccessError(buildModelAccessMessage(model));
           }
           throw new Error(`Codex query failed: ${err.message}`);
         }
         sessionResumeFailed = true;
       }
     } else {
-      getLog().debug({ cwd }, 'starting_new_thread');
+      getLog().debug({ cwd: threadOptions.workingDirectory }, 'starting_new_thread');
       // NOTE: startThread is synchronous, not async
       try {
         thread = codex.startThread(threadOptions);
       } catch (error) {
         const err = error as Error;
         if (isModelAccessError(err.message)) {
-          throw new Error(buildModelAccessMessage(options?.model));
+          throw new CodexModelAccessError(buildModelAccessMessage(model));
         }
         throw new Error(`Codex query failed: ${err.message}`);
       }
@@ -353,6 +634,7 @@ export class CodexClient implements IAssistantClient {
 
     let lastTodoListSignature: string | undefined;
     let lastError: Error | undefined;
+    const budget = options?.maxBudgetUsd;
 
     for (let attempt = 0; attempt <= MAX_SUBPROCESS_RETRIES; attempt++) {
       // Check abort signal before each attempt
@@ -362,17 +644,22 @@ export class CodexClient implements IAssistantClient {
 
       // On retries, create a fresh thread (crashed thread is invalid)
       if (attempt > 0) {
-        getLog().debug({ cwd, attempt }, 'starting_new_thread');
+        getLog().debug({ cwd: threadOptions.workingDirectory, attempt }, 'starting_new_thread');
         try {
           thread = codex.startThread(threadOptions);
         } catch (startError) {
           const err = startError as Error;
           if (isModelAccessError(err.message)) {
-            throw new Error(buildModelAccessMessage(options?.model));
+            throw new CodexModelAccessError(buildModelAccessMessage(model));
           }
           throw new Error(`Codex query failed: ${err.message}`);
         }
       }
+
+      const spend = budget !== undefined ? new RolloutSpend(model) : undefined;
+      spend?.markStart(thread.id);
+      const budgetStop = new AbortController();
+      let overBudget = false;
 
       try {
         // Build per-turn options (structured output schema, abort signal)
@@ -380,8 +667,12 @@ export class CodexClient implements IAssistantClient {
         if (options?.outputFormat) {
           turnOptions.outputSchema = options.outputFormat.schema;
         }
-        if (options?.abortSignal) {
+        if (options?.abortSignal && spend) {
+          turnOptions.signal = AbortSignal.any([options.abortSignal, budgetStop.signal]);
+        } else if (options?.abortSignal) {
           turnOptions.signal = options.abortSignal;
+        } else if (spend) {
+          turnOptions.signal = budgetStop.signal;
         }
 
         // Run streamed query (this IS async)
@@ -393,6 +684,16 @@ export class CodexClient implements IAssistantClient {
           if (options?.abortSignal?.aborted) {
             getLog().info('query_aborted_between_events');
             break;
+          }
+
+          // Enforce maxBudgetUsd from the rollout's per-call token counts
+          if (spend && budget !== undefined) {
+            spend.poll(thread.id);
+            if (spend.exceeds(budget)) {
+              overBudget = true;
+              budgetStop.abort();
+              break;
+            }
           }
 
           // Log progress for item.started (visibility fix for Codex appearing to hang)
@@ -615,9 +916,18 @@ export class CodexClient implements IAssistantClient {
             break;
           }
         }
+        if (overBudget && spend && budget !== undefined) {
+          yield* budgetExceeded(spend, budget, thread.id);
+        }
         return; // Success - exit retry loop
       } catch (error) {
         const err = error as Error;
+
+        // The budget stop kills the CLI; that shows up here as an abort
+        if (overBudget && spend && budget !== undefined) {
+          yield* budgetExceeded(spend, budget, thread.id);
+          return;
+        }
 
         // Don't retry aborted queries
         if (options?.abortSignal?.aborted) {
@@ -630,9 +940,9 @@ export class CodexClient implements IAssistantClient {
           'query_error'
         );
 
-        // Model access errors are never retryable
+        // Model access errors are never retryable (fallbackModel is handled by the caller)
         if (errorClass === 'model_access') {
-          throw new Error(buildModelAccessMessage(options?.model));
+          throw new CodexModelAccessError(buildModelAccessMessage(model));
         }
 
         // Auth errors won't resolve on retry
@@ -666,105 +976,6 @@ export class CodexClient implements IAssistantClient {
   }
 
   /**
-   * Tool-loop fallback path for features the Codex SDK doesn't support natively.
-   * Calls the OpenAI chat/completions API directly with the Codex model ID.
-   */
-  private async *sendQueryViaToolLoop(
-    prompt: string,
-    cwd: string,
-    options?: AssistantRequestOptions
-  ): AsyncGenerator<MessageChunk> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    const baseUrl = openAIBaseUrl();
-    if (!apiKey && isDirectProviderUrl(`${baseUrl}/`)) {
-      throw new Error(
-        'Codex tool-loop fallback requires OPENAI_API_KEY because OPENAI_BASE_URL points straight at OpenAI. Leave OPENAI_BASE_URL unset to go through the LLM gateway, which holds the key.'
-      );
-    }
-
-    const model = options?.model ?? 'codex-mini-latest';
-
-    // ── Build messages ──
-    const messages: ChatMessage[] = [];
-    if (options?.systemPrompt) {
-      messages.push({ role: 'system', content: options.systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    // ── Resolve tools (full canonical set — filtering delegated to tool loop) ──
-    const tools = options?.tools?.length === 0 ? [] : [...toolDefinitions];
-
-    // ── MCP lifecycle: connect before loop, shutdown after ──
-    let mcpProvider: McpToolProvider | undefined;
-    if (options?.mcpConfigs && Object.keys(options.mcpConfigs).length > 0) {
-      mcpProvider = new McpToolProvider(options.mcpConfigs as Record<string, McpServerConfig>);
-      await mcpProvider.connect();
-      getLog().info(
-        { mcpToolCount: mcpProvider.getToolDefinitions().length },
-        'codex.tool_loop_mcp_connected'
-      );
-    }
-
-    // ── Load skills ──
-    let skillContext: SkillContext | undefined;
-    if (options?.skills && options.skills.length > 0) {
-      skillContext = await loadSkills(options.skills, cwd);
-      getLog().info({ skillCount: options.skills.length }, 'codex.tool_loop_skills_loaded');
-    }
-
-    // ── Context window management ──
-    const endpoint = {
-      url: `${baseUrl}/chat/completions`,
-      apiKey,
-      headers: { ...GATEWAY_CALLER_HEADERS },
-    };
-    const ctxManager = new ContextWindowManager({ model, endpoint });
-    let finalMessages = messages;
-    if (ctxManager.shouldSummarize(messages, tools)) {
-      getLog().info({ model, messageCount: messages.length }, 'codex.tool_loop_context_summarize');
-      const { messages: summarized } = await ctxManager.summarize(messages, tools);
-      finalMessages = summarized;
-    }
-
-    // ── Build tool loop config ──
-    const loopConfig: ToolLoopConfig = {
-      endpoint,
-      messages: finalMessages,
-      tools,
-      cwd,
-      model,
-      abortSignal: options?.abortSignal,
-      allowedTools: options?.tools,
-      deniedTools: options?.disallowedTools,
-      outputFormat: options?.outputFormat ? { schema: options.outputFormat.schema } : undefined,
-      outputFormatStyle: 'response_format',
-      mcpProvider,
-      skillContext,
-    };
-
-    // ── Map hooks from AssistantRequestOptions format to ToolLoopHooks ──
-    if (options?.hooks) {
-      loopConfig.hooks = options.hooks;
-    }
-
-    try {
-      // ── Emit system message tagging tool-loop path ──
-      yield {
-        type: 'system',
-        content: `[codex:tool-loop] Using Archon tool loop for features: ${getUnsupportedFeatures(options).join(', ')}`,
-      };
-
-      yield* executeToolLoop(loopConfig);
-    } finally {
-      if (mcpProvider) {
-        await mcpProvider.shutdown().catch((err: unknown) => {
-          getLog().warn({ error: (err as Error).message }, 'codex.tool_loop_mcp_shutdown_error');
-        });
-      }
-    }
-  }
-
-  /**
    * Get the assistant type identifier
    */
   getType(): string {
@@ -772,24 +983,24 @@ export class CodexClient implements IAssistantClient {
   }
 }
 
-/**
- * Returns the list of feature names that require the tool-loop fallback.
- * Used for logging/observability.
- */
-function getUnsupportedFeatures(options?: AssistantRequestOptions): string[] {
-  if (!options) return [];
-  const features: string[] = [];
-  if (options.tools !== undefined) features.push('allowed_tools');
-  if (options.disallowedTools !== undefined) features.push('denied_tools');
-  if (options.hooks) features.push('hooks');
-  if (options.mcpConfigs) features.push('mcp');
-  if (options.skills) features.push('skills');
-  if (options.systemPrompt) features.push('systemPrompt');
-  if (options.effort) features.push('effort');
-  if (options.thinking) features.push('thinking');
-  if (options.maxBudgetUsd !== undefined) features.push('maxBudgetUsd');
-  if (options.fallbackModel) features.push('fallbackModel');
-  if (options.betas) features.push('betas');
-  if (options.sandbox) features.push('sandbox');
-  return features;
+/** The result Claude's SDK gives for a spend cap: an error result the executor fails the node on. */
+function* budgetExceeded(
+  spend: RolloutSpend,
+  budget: number,
+  threadId: string | null
+): Generator<MessageChunk> {
+  const cost = spend.cost();
+  getLog().warn({ cost, budget, model: spend.model }, 'codex.max_budget_exceeded');
+  yield {
+    type: 'system',
+    content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent), over its maxBudgetUsd of $${budget.toFixed(2)}.`,
+  };
+  yield {
+    type: 'result',
+    sessionId: threadId ?? undefined,
+    tokens: spend.usage(),
+    cost,
+    isError: true,
+    errorSubtype: 'error_max_budget_usd',
+  };
 }

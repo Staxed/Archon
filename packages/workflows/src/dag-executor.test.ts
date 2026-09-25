@@ -901,48 +901,56 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     expect(hooks.PreToolUse).toHaveLength(1);
   });
 
-  it('passes hooks through to Codex sendQuery (tool-loop fallback)', async () => {
-    mockGetAssistantClientDag.mockReturnValue({
-      sendQuery: mockSendQueryDag,
-      getType: () => 'codex',
-    });
+  for (const provider of ['codex', 'grok'] as const) {
+    it(`passes the raw YAML hooks to ${provider} as hookSpecs (CLI hook dispatcher)`, async () => {
+      mockGetAssistantClientDag.mockReturnValue({
+        sendQuery: mockSendQueryDag,
+        getType: () => provider,
+      });
 
-    const mockDeps = createMockDeps();
-    const platform = createMockPlatform();
-    const workflowRun = makeWorkflowRun();
+      const mockDeps = createMockDeps();
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun();
+      const hooks = { PreToolUse: [{ matcher: 'Bash', response: { decision: 'block' } }] };
 
-    await executeDagWorkflow(
-      mockDeps,
-      platform,
-      'conv-dag',
-      testDir,
-      {
-        name: 'dag-codex-hooks',
-        nodes: [
-          {
-            id: 'review',
-            command: 'my-cmd',
-            provider: 'codex',
-            hooks: {
-              PreToolUse: [{ response: { decision: 'block' } }],
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: `dag-${provider}-hooks`,
+          nodes: [
+            {
+              id: 'review',
+              command: 'my-cmd',
+              provider,
+              hooks,
+              allowed_tools: ['Read'],
+              systemPrompt: 'be brief',
+              maxBudgetUsd: 1,
             },
-          },
-        ],
-      },
-      workflowRun,
-      'codex',
-      undefined,
-      join(testDir, 'artifacts'),
-      join(testDir, 'logs'),
-      'main',
-      'docs/',
-      { ...minimalConfig, assistant: 'codex' }
-    );
+          ],
+        },
+        workflowRun,
+        provider,
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        { ...minimalConfig, assistant: provider }
+      );
 
-    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
-    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
-    expect(optionsArg?.hooks).toBeDefined();
-  });
+      expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+      const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+      expect(optionsArg?.hookSpecs).toEqual(hooks);
+      expect(optionsArg?.hooks).toBeUndefined();
+      expect(optionsArg?.tools).toEqual(['Read']);
+      expect(optionsArg?.systemPrompt).toBe('be brief');
+      expect(optionsArg?.maxBudgetUsd).toBe(1);
+    });
+  }
 });
 
 describe('executeDagWorkflow -- bash nodes', () => {

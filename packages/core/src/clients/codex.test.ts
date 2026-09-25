@@ -39,55 +39,23 @@ mock.module('@openai/codex-sdk', () => ({
   Codex: MockCodex,
 }));
 
-// ── Tool-loop fallback mocks ──
-const mockExecuteToolLoop = mock(async function* () {
-  yield { type: 'assistant' as const, content: 'Tool loop response' };
-  yield { type: 'result' as const, sessionId: undefined, tokens: { input: 5, output: 3 } };
-});
-
-mock.module('./tool-loop', () => ({
-  executeToolLoop: mockExecuteToolLoop,
-}));
-
-const mockMcpConnect = mock(() => Promise.resolve());
-const mockMcpShutdown = mock(() => Promise.resolve());
-const mockMcpGetToolDefinitions = mock(() => []);
-const MockMcpToolProvider = mock(() => ({
-  connect: mockMcpConnect,
-  shutdown: mockMcpShutdown,
-  getToolDefinitions: mockMcpGetToolDefinitions,
-}));
-
-mock.module('./mcp-client', () => ({
-  McpToolProvider: MockMcpToolProvider,
-}));
-
 const mockLoadSkills = mock(() =>
-  Promise.resolve({ systemPromptAdditions: [], toolAllowlist: [] })
+  Promise.resolve({ systemPromptAdditions: [] as string[], toolAllowlist: [] as string[] })
 );
 
 mock.module('./skill-loader', () => ({
   loadSkills: mockLoadSkills,
 }));
 
-const mockShouldSummarize = mock(() => false);
-const mockSummarize = mock(() => Promise.resolve({ messages: [] }));
-const MockContextWindowManager = mock(() => ({
-  shouldSummarize: mockShouldSummarize,
-  summarize: mockSummarize,
-}));
-
-mock.module('./context-window', () => ({
-  ContextWindowManager: MockContextWindowManager,
-}));
-
-mock.module('./tool-definitions', () => ({
-  toolDefinitions: [
-    { type: 'function', function: { name: 'Read', description: 'Read a file', parameters: {} } },
-  ],
-}));
-
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexClient, findRolloutModel } from './codex';
@@ -1150,227 +1118,354 @@ describe('CodexClient', () => {
     });
   });
 
-  describe('dispatch logic', () => {
-    const originalEnv = process.env.OPENAI_API_KEY;
+  describe('native option mapping (subscription only, no API tool loop)', () => {
+    /** CodexOptions of the most recent `new Codex(...)`. */
+    const lastCodexOptions = (): {
+      config?: Record<string, unknown>;
+      configOverrides?: string[];
+      env?: Record<string, string>;
+    } => {
+      const calls = MockCodex.mock.calls as unknown as unknown[][];
+      return (calls[calls.length - 1]?.[0] ?? {}) as ReturnType<typeof lastCodexOptions>;
+    };
+    const lastThreadOptions = (): Record<string, unknown> => {
+      const calls = mockStartThread.mock.calls as unknown as unknown[][];
+      return (calls[calls.length - 1]?.[0] ?? {}) as Record<string, unknown>;
+    };
+    const drain = async (
+      options: Parameters<CodexClient['sendQuery']>[3],
+      cwd = '/workspace'
+    ): Promise<unknown[]> => {
+      const chunks: unknown[] = [];
+      for await (const c of client.sendQuery('test', cwd, undefined, options)) chunks.push(c);
+      return chunks;
+    };
 
     beforeEach(() => {
-      process.env.OPENAI_API_KEY = 'test-key';
-      mockExecuteToolLoop.mockClear();
-      MockMcpToolProvider.mockClear();
-      mockMcpConnect.mockClear();
-      mockMcpShutdown.mockClear();
-      mockMcpGetToolDefinitions.mockClear();
+      MockCodex.mockClear();
       mockLoadSkills.mockClear();
-      MockContextWindowManager.mockClear();
-      mockShouldSummarize.mockClear();
-      mockShouldSummarize.mockReturnValue(false);
-
-      // Reset tool loop mock
-      mockExecuteToolLoop.mockImplementation(async function* () {
-        yield { type: 'assistant' as const, content: 'Tool loop response' };
-        yield {
-          type: 'result' as const,
-          sessionId: undefined,
-          tokens: { input: 5, output: 3 },
-        };
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield { type: 'turn.completed', usage: defaultUsage };
+        })(),
       });
     });
 
     afterEach(() => {
-      if (originalEnv !== undefined) {
-        process.env.OPENAI_API_KEY = originalEnv;
-      } else {
-        delete process.env.OPENAI_API_KEY;
-      }
+      rmSync(join(codexHome, 'sessions'), { recursive: true, force: true });
     });
 
-    test('uses SDK path when no unsupported features are requested', async () => {
-      mockRunStreamed.mockResolvedValue({
-        events: (async function* () {
-          yield { type: 'turn.completed', usage: defaultUsage };
-        })(),
+    test('installs the dispatcher in $CODEX_HOME/hooks.json and trusts it for the run', async () => {
+      writeFileSync(
+        join(codexHome, 'hooks.json'),
+        JSON.stringify({
+          hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'user-hook' }] }] },
+        })
+      );
+      await drain({});
+      const doc = JSON.parse(readFileSync(join(codexHome, 'hooks.json'), 'utf8')) as {
+        hooks: Record<string, { hooks: { command: string }[] }[]>;
+      };
+      expect(doc.hooks.SessionEnd[0].hooks[0].command).toBe('user-hook');
+      expect(doc.hooks.SessionEnd[1].hooks[0].command).toContain('ARCHON_HOOK_EVENTS');
+      expect(doc.hooks.PreToolUse[0].hooks[0].command).toContain('hook-dispatcher.ts');
+      const override = lastCodexOptions().configOverrides?.[0] ?? '';
+      expect(override).toContain('hooks.state={');
+      expect(override).toContain(`${join(codexHome, 'hooks.json')}:pre_tool_use:0:0`);
+      expect(override).toContain(`${join(codexHome, 'hooks.json')}:session_end:1:0`);
+    });
+
+    test('hands the dispatcher a spec with the path guard, tool lists and node hooks', async () => {
+      let spec: Record<string, unknown> | undefined;
+      let events: string | undefined;
+      mockRunStreamed.mockImplementation(() => {
+        const env = lastCodexOptions().env ?? {};
+        spec = JSON.parse(readFileSync(env.ARCHON_HOOK_SPEC, 'utf8')) as Record<string, unknown>;
+        events = env.ARCHON_HOOK_EVENTS;
+        return Promise.resolve({
+          events: (async function* () {
+            yield { type: 'turn.completed', usage: defaultUsage };
+          })(),
+        });
       });
-
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        model: 'gpt-5.2-codex',
-        outputFormat: { type: 'json_schema', schema: { type: 'object' } },
-      })) {
-        chunks.push(chunk);
-      }
-
-      // Should use SDK path (mockRunStreamed called, not executeToolLoop)
-      expect(mockRunStreamed).toHaveBeenCalled();
-      expect(mockExecuteToolLoop).not.toHaveBeenCalled();
+      const hookSpecs = {
+        PostToolUse: [{ matcher: 'Bash', response: { systemMessage: 'ran bash' } }],
+      };
+      await drain({ tools: ['Read', 'Bash'], disallowedTools: ['WebFetch'], hookSpecs });
+      expect(spec).toEqual({
+        version: 1,
+        provider: 'codex',
+        cwd: '/workspace',
+        pathGuard: true,
+        allowedTools: ['Read', 'Bash'],
+        deniedTools: ['WebFetch'],
+        hooks: hookSpecs,
+      });
+      expect(events).toBe('PreToolUse,PostToolUse');
+      // the spec file is removed after the run
+      expect(existsSync(lastCodexOptions().env?.ARCHON_HOOK_SPEC ?? '/nope')).toBe(false);
     });
 
-    test('uses tool-loop path when allowed_tools is set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        tools: ['Read', 'Write'],
-      })) {
-        chunks.push(chunk);
+    test('never passes an OpenAI API key to the CLI', async () => {
+      const saved = process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = 'sk-test';
+      try {
+        await drain({ env: { CODEX_API_KEY: 'x', PROJECT_VAR: 'kept' } });
+      } finally {
+        if (saved === undefined) delete process.env.OPENAI_API_KEY;
+        else process.env.OPENAI_API_KEY = saved;
       }
+      const env = lastCodexOptions().env ?? {};
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.CODEX_API_KEY).toBeUndefined();
+      expect(env.PROJECT_VAR).toBe('kept');
+    });
 
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
-      // Should emit system message tagging the path
+    test('systemPrompt replaces the base instructions via model_instructions_file', async () => {
+      let content: string | undefined;
+      mockRunStreamed.mockImplementation(() => {
+        content = readFileSync(
+          lastCodexOptions().config?.model_instructions_file as string,
+          'utf8'
+        );
+        return Promise.resolve({
+          events: (async function* () {
+            yield { type: 'turn.completed', usage: defaultUsage };
+          })(),
+        });
+      });
+      await drain({ systemPrompt: 'You are PIRATEBOT.' });
+      expect(content).toBe('You are PIRATEBOT.');
+      const file = lastCodexOptions().config?.model_instructions_file as string;
+      expect(existsSync(file)).toBe(false);
+    });
+
+    test('skills are preloaded into developer_instructions', async () => {
+      mockLoadSkills.mockResolvedValueOnce({
+        systemPromptAdditions: ['# Deploy skill\nAlways run the smoke test.'],
+        toolAllowlist: [],
+      });
+      await drain({ skills: ['deploy'] });
+      expect(mockLoadSkills).toHaveBeenCalledWith(['deploy'], '/workspace');
+      const di = lastCodexOptions().config?.developer_instructions as string;
+      expect(di).toContain('(deploy)');
+      expect(di).toContain('Always run the smoke test.');
+    });
+
+    test('MCP servers map to mcp_servers config (stdio env, http headers)', async () => {
+      await drain({
+        mcpConfigs: {
+          local: { command: 'bun', args: ['srv.ts'], env: { TOKEN: 't' } },
+          remote: { type: 'http', url: 'https://mcp.example/mcp', headers: { A: 'b' } },
+        },
+      });
+      expect(lastCodexOptions().config?.mcp_servers).toEqual({
+        local: { command: 'bun', args: ['srv.ts'], env: { TOKEN: 't' } },
+        remote: { url: 'https://mcp.example/mcp', http_headers: { A: 'b' } },
+      });
+    });
+
+    test('refuses SSE MCP servers and dotted server names', async () => {
+      await expect(
+        drain({ mcpConfigs: { s: { type: 'sse', url: 'https://x/sse' } } })
+      ).rejects.toThrow('SSE');
+      await expect(drain({ mcpConfigs: { 'a.b': { command: 'x' } } })).rejects.toThrow(
+        'letters, digits'
+      );
+    });
+
+    test('effort maps to model_reasoning_effort; thinking disabled -> low with a note', async () => {
+      await drain({ effort: 'high', modelReasoningEffort: 'medium' });
+      expect(lastThreadOptions().modelReasoningEffort).toBe('high');
+      const chunks = await drain({ thinking: { type: 'disabled' } });
+      expect(lastThreadOptions().modelReasoningEffort).toBe('low');
       expect(chunks[0]).toEqual({
         type: 'system',
-        content: expect.stringContaining('codex:tool-loop'),
+        content: expect.stringContaining('cannot turn reasoning off'),
       });
     });
 
-    test('uses tool-loop path when hooks are set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        hooks: { PreToolUse: [{ hooks: [async () => undefined] }] },
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
+    test('web search is switched off when the node does not allow WebSearch', async () => {
+      await drain({ tools: ['Read'], webSearchMode: 'live' });
+      expect(lastThreadOptions().webSearchMode).toBe('disabled');
+      await drain({ disallowedTools: ['WebSearch'], webSearchMode: 'live' });
+      expect(lastThreadOptions().webSearchMode).toBe('disabled');
+      await drain({ webSearchMode: 'live' });
+      expect(lastThreadOptions().webSearchMode).toBe('live');
     });
 
-    test('uses tool-loop path when systemPrompt is set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        systemPrompt: 'You are a helpful assistant',
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
-    });
-
-    test('uses tool-loop path when denied_tools is set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        disallowedTools: ['Bash'],
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
-    });
-
-    test('uses tool-loop path when skills are set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        skills: ['my-skill'],
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
-      expect(mockLoadSkills).toHaveBeenCalledWith(['my-skill'], '/workspace');
-    });
-
-    test('uses tool-loop path when mcpConfigs are set', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        mcpConfigs: {
-          myServer: { command: 'node', args: ['server.js'] },
-        },
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(mockRunStreamed).not.toHaveBeenCalled();
-      expect(mockExecuteToolLoop).toHaveBeenCalled();
-      expect(mockMcpConnect).toHaveBeenCalled();
-      expect(mockMcpShutdown).toHaveBeenCalled();
-    });
-
-    test('system message lists unsupported features used', async () => {
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
-        systemPrompt: 'Custom prompt',
-        tools: ['Read'],
-        hooks: { PreToolUse: [{ hooks: [async () => undefined] }] },
-      })) {
-        chunks.push(chunk);
-      }
-
-      const systemMsg = chunks.find(
-        c => c.type === 'system' && 'content' in c && c.content.includes('codex:tool-loop')
-      );
-      expect(systemMsg).toBeDefined();
-      if (systemMsg && 'content' in systemMsg) {
-        expect(systemMsg.content).toContain('allowed_tools');
-        expect(systemMsg.content).toContain('hooks');
-        expect(systemMsg.content).toContain('systemPrompt');
-      }
-    });
-
-    test('throws when OPENAI_API_KEY is missing and OPENAI_BASE_URL is direct', async () => {
-      delete process.env.OPENAI_API_KEY;
-      process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
-
-      const consumeGenerator = async (): Promise<void> => {
-        for await (const _ of client.sendQuery('test', '/workspace', undefined, {
-          systemPrompt: 'Custom prompt',
-        })) {
-          // consume
-        }
-      };
-
-      try {
-        await expect(consumeGenerator()).rejects.toThrow('OPENAI_API_KEY');
-      } finally {
-        delete process.env.OPENAI_BASE_URL;
-      }
-    });
-
-    test('tool-loop path goes through the LLM gateway with no key, tagged X-Caller: archon', async () => {
-      delete process.env.OPENAI_API_KEY;
-      delete process.env.OPENAI_BASE_URL;
-      delete process.env.LLM_GATEWAY_URL;
-
-      for await (const _ of client.sendQuery('test', '/workspace', undefined, {
-        systemPrompt: 'Custom prompt',
-      })) {
-        // consume
-      }
-
-      const loopConfig = mockExecuteToolLoop.mock.calls[0][0] as {
-        endpoint: { url: string; apiKey?: string; headers?: Record<string, string> };
-      };
-      expect(loopConfig.endpoint.url).toBe(
-        'http://host.docker.internal:8093/openai/v1/chat/completions'
-      );
-      expect(loopConfig.endpoint.apiKey).toBeUndefined();
-      expect(loopConfig.endpoint.headers?.['X-Caller']).toBe('archon');
-    });
-
-    test('getType still returns codex regardless of dispatch path', () => {
-      expect(client.getType()).toBe('codex');
-    });
-
-    test('existing workflows without unsupported features run on SDK path', async () => {
-      mockRunStreamed.mockResolvedValue({
-        events: (async function* () {
-          yield {
-            type: 'item.completed',
-            item: { type: 'agent_message', text: 'Hello!' },
-          };
-          yield { type: 'turn.completed', usage: defaultUsage };
-        })(),
+    test('sandbox maps to workspace-write with writable roots and no network', async () => {
+      await drain({ sandbox: { enabled: true, filesystem: { allowWrite: ['out', '/tmp/x'] } } });
+      expect(lastThreadOptions().sandboxMode).toBe('workspace-write');
+      expect(lastThreadOptions().networkAccessEnabled).toBe(false);
+      expect(lastCodexOptions().config?.sandbox_workspace_write).toEqual({
+        writable_roots: ['/workspace/out', '/tmp/x'],
       });
+      await drain({ sandbox: { enabled: true, network: { allowedDomains: ['*'] } } });
+      expect(lastThreadOptions().networkAccessEnabled).toBe(true);
+    });
 
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace')) {
-        chunks.push(chunk);
-      }
+    test('refuses sandbox settings Codex cannot enforce', async () => {
+      await expect(
+        drain({ sandbox: { enabled: true, network: { allowedDomains: ['github.com'] } } })
+      ).rejects.toThrow('specific domains');
+      await expect(
+        drain({ sandbox: { enabled: true, filesystem: { denyRead: ['~/.ssh'] } } })
+      ).rejects.toThrow('denyRead');
+    });
 
-      // SDK path used — no tool-loop system message
-      expect(mockRunStreamed).toHaveBeenCalled();
-      expect(mockExecuteToolLoop).not.toHaveBeenCalled();
-      expect(chunks[0]).toEqual({ type: 'assistant', content: 'Hello!' });
+    test('refuses betas, in-process hooks and hook events Codex never fires', async () => {
+      await expect(drain({ betas: ['context-1m-2025-08-07'] })).rejects.toThrow('betas');
+      await expect(
+        drain({ hooks: { PreToolUse: [{ hooks: [async (): Promise<undefined> => undefined] }] } })
+      ).rejects.toThrow('in-process hooks');
+      await expect(drain({ hookSpecs: { Setup: [{ response: {} }] } })).rejects.toThrow(
+        'hook events Codex never fires: Setup'
+      );
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+    });
+
+    test('maxBudgetUsd stops the turn once the rollout spend passes the cap', async () => {
+      const rolloutDir = join(codexHome, 'sessions', '2026', '09', '25');
+      const rollout = join(rolloutDir, 'rollout-2026-09-25T12-00-00-new-thread-id.jsonl');
+      mkdirSync(rolloutDir, { recursive: true });
+      // an earlier turn of the thread: must not count
+      writeFileSync(
+        rollout,
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: { input_tokens: 9e6, cached_input_tokens: 0, output_tokens: 0 },
+            },
+          },
+        }) + '\n'
+      );
+      mockRunStreamed.mockImplementation((_p: unknown, turnOptions?: { signal?: AbortSignal }) => {
+        return Promise.resolve({
+          events: (async function* () {
+            appendFileSync(
+              rollout,
+              [
+                { type: 'turn_context', payload: { model: 'gpt-6-astra' } },
+                {
+                  type: 'event_msg',
+                  payload: {
+                    type: 'token_count',
+                    info: {
+                      last_token_usage: {
+                        input_tokens: 12000,
+                        cached_input_tokens: 2000,
+                        output_tokens: 1000,
+                      },
+                    },
+                  },
+                },
+              ]
+                .map(l => JSON.stringify(l))
+                .join('\n') + '\n'
+            );
+            yield { type: 'item.completed', item: { type: 'agent_message', text: 'working' } };
+            if (turnOptions?.signal?.aborted) throw new Error('aborted');
+            yield { type: 'turn.completed', usage: defaultUsage };
+          })(),
+        });
+      });
+      const chunks = (await drain({ model: 'gpt-6-astra', maxBudgetUsd: 0.1 })) as {
+        type: string;
+        isError?: boolean;
+        errorSubtype?: string;
+        cost?: number;
+        tokens?: unknown;
+      }[];
+      const result = chunks.find(c => c.type === 'result');
+      // 10k uncached * $10/M + 2k cached * $1/M + 1k out * $50/M = $0.152
+      expect(result?.isError).toBe(true);
+      expect(result?.errorSubtype).toBe('error_max_budget_usd');
+      expect(result?.cost).toBeCloseTo(0.152, 6);
+      expect(result?.tokens).toEqual({
+        input: 10000,
+        output: 1000,
+        total: 13000,
+        model: 'gpt-6-astra',
+      });
+    });
+
+    test('maxBudgetUsd with a model Archon has no price for is refused up front', async () => {
+      await expect(drain({ model: 'gpt-unknown', maxBudgetUsd: 1 })).rejects.toThrow(
+        'ARCHON_MODEL_RATES'
+      );
+      expect(mockRunStreamed).not.toHaveBeenCalled();
+    });
+
+    test('fallbackModel retries on a model-access error', async () => {
+      // the real text a ChatGPT login gets (archon sandbox, 2026-09-25)
+      mockRunStreamed
+        .mockRejectedValueOnce(
+          new Error("The 'gpt-x' model is not supported when using Codex with a ChatGPT account.")
+        )
+        .mockResolvedValueOnce({
+          events: (async function* () {
+            yield { type: 'turn.completed', usage: defaultUsage };
+          })(),
+        });
+      const chunks = await drain({ model: 'gpt-x', fallbackModel: 'gpt-6-astra' });
+      expect(chunks[0]).toEqual({
+        type: 'system',
+        content: expect.stringContaining('retrying with fallback model "gpt-6-astra"'),
+      });
+      expect(lastThreadOptions().model).toBe('gpt-6-astra');
+      expect(chunks[chunks.length - 1]).toMatchObject({ type: 'result' });
+    });
+
+    test('an unsupported parameter is not a model error: no fallback', async () => {
+      mockRunStreamed.mockRejectedValueOnce(
+        new Error("Unsupported value: 'none' is not supported with the 'gpt-6-astra' model.")
+      );
+      await expect(drain({ model: 'gpt-6-astra', fallbackModel: 'gpt-y' })).rejects.toThrow(
+        'Codex unknown'
+      );
+      expect(lastThreadOptions().model).toBe('gpt-6-astra');
+    });
+
+    test('maxBudgetUsd with no model named waits for the rollout to name it', async () => {
+      const rolloutDir = join(codexHome, 'sessions', '2026', '09', '25');
+      const rollout = join(rolloutDir, 'rollout-2026-09-25T12-00-00-new-thread-id.jsonl');
+      mkdirSync(rolloutDir, { recursive: true });
+      writeFileSync(rollout, '');
+      mockRunStreamed.mockImplementation(() =>
+        Promise.resolve({
+          events: (async function* () {
+            // an event before any model call: nothing to price yet, must not throw
+            yield { type: 'item.started', item: { id: 'i0', type: 'reasoning' } };
+            appendFileSync(
+              rollout,
+              JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-6-astra' } }) +
+                '\n' +
+                JSON.stringify({
+                  type: 'event_msg',
+                  payload: {
+                    type: 'token_count',
+                    info: {
+                      last_token_usage: {
+                        input_tokens: 100,
+                        cached_input_tokens: 0,
+                        output_tokens: 10,
+                      },
+                    },
+                  },
+                }) +
+                '\n'
+            );
+            yield { type: 'item.completed', item: { type: 'agent_message', text: 'ok' } };
+            yield { type: 'turn.completed', usage: defaultUsage };
+          })(),
+        })
+      );
+      const chunks = await drain({ maxBudgetUsd: 1 });
+      expect(chunks[chunks.length - 1]).toMatchObject({ type: 'result' });
+      expect((chunks[chunks.length - 1] as { isError?: boolean }).isError).toBeUndefined();
     });
   });
 });

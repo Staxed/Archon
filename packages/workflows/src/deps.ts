@@ -97,6 +97,13 @@ export interface WorkflowAssistantOptions {
     >
   >;
   /**
+   * The node's YAML hooks, unconverted, for Codex and Grok (run by Archon's CLI
+   * hook dispatcher). Claude gets `hooks` instead.
+   */
+  hookSpecs?: Partial<
+    Record<string, { matcher?: string; response: Record<string, unknown>; timeout?: number }[]>
+  >;
+  /**
    * MCP server configuration. Structural match for Record<string, McpServerConfig>.
    * Discriminated union mirrors the SDK types so that WorkflowAssistantOptions is
    * assignable to AssistantRequestOptions without casts.

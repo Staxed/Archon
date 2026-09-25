@@ -283,6 +283,14 @@ export interface AssistantRequestOptions {
     >
   >;
   /**
+   * The node's declarative YAML hooks (matcher + static response), by Claude event
+   * name. Codex and Grok run them through Archon's CLI hook dispatcher
+   * (hook-dispatcher.ts); Claude gets them as `hooks` callbacks instead.
+   */
+  hookSpecs?: Partial<
+    Record<string, { matcher?: string; response: Record<string, unknown>; timeout?: number }[]>
+  >;
+  /**
    * MCP server configuration passed to Claude Agent SDK Options.mcpServers.
    * Uses SDK type directly — @archon/core already depends on the SDK.
    * Claude only — Codex ignores this.
