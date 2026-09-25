@@ -28,12 +28,59 @@ import {
 import { createLogger } from '@archon/paths';
 import { buildCleanSubprocessEnv } from '../utils/env-allowlist';
 import { createPreToolUsePathGuardHook } from './path-guard-hook';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { join as joinPath } from 'node:path';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('client.claude');
   return cachedLog;
+}
+
+/**
+ * Resolve which Claude Code binary the SDK should drive.
+ *
+ * Left unset, the SDK spawns the `cli.js` bundled inside the installed
+ * @anthropic-ai/claude-agent-sdk package. That has two problems:
+ *
+ * 1. It pins Archon to whatever Claude Code shipped with the SDK (2.1.89 at the
+ *    time of writing) even when a much newer one is installed (2.1.241 here), so
+ *    Archon silently drives a stale agent.
+ * 2. Inside a Docker Sandboxes microVM the bundled cli.js hangs on the SDK's
+ *    stream-json handshake -- no messages, no error, no surviving child process.
+ *    The workflow sits in its first node until it is killed. The installed
+ *    binary works in the same environment, which is how this was isolated.
+ *
+ * Fail-soft by design: when no `claude` is found we return undefined and the SDK
+ * falls back to its bundled copy, so nothing changes for existing setups.
+ * ARCHON_CLAUDE_EXECUTABLE overrides the lookup.
+ */
+let cachedExecutable: string | null | undefined;
+function resolveClaudeExecutable(): string | undefined {
+  if (cachedExecutable !== undefined) return cachedExecutable ?? undefined;
+
+  const candidates: string[] = [];
+  const override = process.env.ARCHON_CLAUDE_EXECUTABLE;
+  if (override) candidates.push(override);
+  for (const dir of (process.env.PATH ?? '').split(':')) {
+    if (dir) candidates.push(joinPath(dir, 'claude'));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      cachedExecutable = candidate;
+      getLog().debug({ path: candidate }, 'claude.executable_resolved');
+      return candidate;
+    } catch {
+      // try the next candidate
+    }
+  }
+
+  cachedExecutable = null;
+  getLog().debug({}, 'claude.executable_not_found_using_sdk_bundled');
+  return undefined;
 }
 
 /**
@@ -286,8 +333,12 @@ export class ClaudeClient implements IAssistantClient {
         );
       }
 
+      const claudeExecutable = resolveClaudeExecutable();
       const options: Options = {
         cwd,
+        // Drive the INSTALLED Claude Code rather than the SDK's bundled cli.js --
+        // see resolveClaudeExecutable() for why this is not optional in a sandbox.
+        ...(claudeExecutable !== undefined ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
         env: requestOptions?.env
           ? { ...buildSubprocessEnv(), ...requestOptions.env }
           : buildSubprocessEnv(),
