@@ -7,7 +7,7 @@ import { z } from '@hono/zod-openapi';
 export const safeConfigSchema = z
   .object({
     botName: z.string(),
-    assistant: z.enum(['claude', 'codex', 'openrouter', 'llamacpp']),
+    assistant: z.enum(['claude', 'codex', 'openrouter', 'llamacpp', 'grok']),
     assistants: z.object({
       claude: z.object({ model: z.string().optional() }),
       codex: z.object({
@@ -20,6 +20,7 @@ export const safeConfigSchema = z
         model: z.string().optional(),
         endpoint: z.string().optional(),
       }),
+      grok: z.object({ model: z.string().optional() }),
     }),
     streaming: z.object({
       telegram: z.enum(['stream', 'batch']),
@@ -39,7 +40,7 @@ export const safeConfigSchema = z
 /** Body for PATCH /api/config/assistants — all fields optional (partial update). */
 export const updateAssistantConfigBodySchema = z
   .object({
-    assistant: z.enum(['claude', 'codex', 'openrouter', 'llamacpp']).optional(),
+    assistant: z.enum(['claude', 'codex', 'openrouter', 'llamacpp', 'grok']).optional(),
     claude: z
       .object({
         model: z.string(),

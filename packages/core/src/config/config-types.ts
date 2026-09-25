@@ -75,6 +75,12 @@ export interface ClaudeAssistantDefaults {
   settingSources?: ('project' | 'user')[];
 }
 
+/** Grok CLI on the SuperGrok subscription (grok login inside the sandbox; never an API key). */
+export interface GrokAssistantDefaults {
+  /** Grok model id (e.g. 'grok-4.7-build'); unset uses the CLI's default */
+  model?: string;
+}
+
 export interface OpenRouterAssistantDefaults {
   /** Model in vendor/model format (e.g., 'anthropic/claude-3-haiku', 'meta-llama/llama-4-scout') */
   model?: string;
@@ -118,6 +124,7 @@ export interface GlobalConfig {
     codex?: AssistantDefaults;
     openrouter?: OpenRouterAssistantDefaults;
     llamacpp?: LlamaCppAssistantDefaults;
+    grok?: GrokAssistantDefaults;
   };
 
   /**
@@ -182,6 +189,7 @@ export interface RepoConfig {
     codex?: AssistantDefaults;
     openrouter?: OpenRouterAssistantDefaults;
     llamacpp?: LlamaCppAssistantDefaults;
+    grok?: GrokAssistantDefaults;
   };
 
   /**
@@ -282,6 +290,7 @@ export interface MergedConfig {
     codex: AssistantDefaults;
     openrouter: OpenRouterAssistantDefaults;
     llamacpp: LlamaCppAssistantDefaults;
+    grok: GrokAssistantDefaults;
   };
   streaming: {
     telegram: 'stream' | 'batch';
@@ -345,6 +354,7 @@ export interface SafeConfig {
     codex: Pick<AssistantDefaults, 'model' | 'modelReasoningEffort' | 'webSearchMode'>;
     openrouter: Pick<OpenRouterAssistantDefaults, 'model'>;
     llamacpp: Pick<LlamaCppAssistantDefaults, 'model' | 'endpoint'>;
+    grok: Pick<GrokAssistantDefaults, 'model'>;
   };
   streaming: {
     telegram: 'stream' | 'batch';

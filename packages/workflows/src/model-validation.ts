@@ -10,6 +10,11 @@ export function isClaudeModel(model: string): boolean {
   );
 }
 
+/** Grok CLI model ids ('grok-4.7-build', 'grok-code-fast', ...) */
+export function isGrokModel(model: string): boolean {
+  return model.startsWith('grok-');
+}
+
 export function isModelCompatible(provider: ProviderType, model?: string): boolean {
   if (!model) return true;
 
@@ -25,5 +30,7 @@ export function isModelCompatible(provider: ProviderType, model?: string): boole
     case 'llamacpp':
       // Llama.cpp: accept any string (model loaded server-side); reject Claude aliases
       return !isClaudeModel(model);
+    case 'grok':
+      return isGrokModel(model);
   }
 }

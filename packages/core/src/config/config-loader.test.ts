@@ -231,6 +231,7 @@ concurrency:
         codex: {},
         openrouter: {},
         llamacpp: {},
+        grok: {},
       });
       expect(config.streaming.telegram).toBe('stream');
       expect(config.concurrency.maxConversations).toBe(10);

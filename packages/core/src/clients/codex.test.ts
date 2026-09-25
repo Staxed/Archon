@@ -87,7 +87,77 @@ mock.module('./tool-definitions', () => ({
   ],
 }));
 
-import { CodexClient } from './codex';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CodexClient, findRolloutModel } from './codex';
+
+// Keep the rollout lookup off the real ~/.codex for every test in this file.
+const codexHome = mkdtempSync(join(tmpdir(), 'codex-home-'));
+process.env.CODEX_HOME = codexHome;
+
+function writeRollout(day: string, threadId: string, lines: unknown[]): void {
+  const dir = join(codexHome, 'sessions', ...day.split('/'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, `rollout-2026-09-25T12-00-00-${threadId}.jsonl`),
+    lines.map(l => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n'
+  );
+}
+
+describe('codex usage for subscription runs', () => {
+  afterEach(() => {
+    rmSync(join(codexHome, 'sessions'), { recursive: true, force: true });
+  });
+
+  test('findRolloutModel returns the last turn_context model', () => {
+    writeRollout('2026/09/25', 'thread-a', [
+      { type: 'session_meta', payload: { id: 'thread-a' } },
+      { type: 'turn_context', payload: { model: 'gpt-5.4' } },
+      { type: 'turn_context', payload: { model: 'gpt-5.5' } },
+      '{"type":"turn_context","payload":{"mod',
+    ]);
+    expect(findRolloutModel('thread-a')).toBe('gpt-5.5');
+  });
+
+  test('findRolloutModel searches only the two newest day folders', () => {
+    writeRollout('2026/09/20', 'old-thread', [{ type: 'turn_context', payload: { model: 'm' } }]);
+    writeRollout('2026/09/24', 'x', []);
+    writeRollout('2026/10/01', 'y', []);
+    expect(findRolloutModel('old-thread')).toBeUndefined();
+  });
+
+  test('findRolloutModel is undefined when there is no sessions folder', () => {
+    expect(findRolloutModel('nope')).toBeUndefined();
+  });
+
+  test('result splits cached input out and carries the rollout model', async () => {
+    writeRollout('2026/09/25', 'new-thread-id', [
+      { type: 'turn_context', payload: { model: 'gpt-5.4' } },
+    ]);
+    mockStartThread.mockReturnValue(createMockThread('new-thread-id'));
+    mockRunStreamed.mockResolvedValue({
+      events: (async function* () {
+        yield {
+          type: 'turn.completed',
+          usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 50 },
+        };
+      })(),
+    });
+
+    const chunks = [];
+    for await (const chunk of new CodexClient({ retryBaseDelayMs: 1 }).sendQuery('p', '/w')) {
+      chunks.push(chunk);
+    }
+    expect(chunks).toEqual([
+      {
+        type: 'result',
+        sessionId: 'new-thread-id',
+        tokens: { input: 200, output: 50, total: 1050, model: 'gpt-5.4' },
+      },
+    ]);
+  });
+});
 
 describe('CodexClient', () => {
   let client: CodexClient;
@@ -135,7 +205,7 @@ describe('CodexClient', () => {
       expect(chunks[1]).toEqual({
         type: 'result',
         sessionId: 'new-thread-id',
-        tokens: { input: 10, output: 5 },
+        tokens: { input: 10, output: 5, total: 15 },
       });
     });
 
@@ -560,7 +630,7 @@ describe('CodexClient', () => {
       expect(chunks[2]).toEqual({
         type: 'result',
         sessionId: 'new-thread-id',
-        tokens: { input: 10, output: 5 },
+        tokens: { input: 10, output: 5, total: 15 },
       });
     });
 
@@ -654,7 +724,7 @@ describe('CodexClient', () => {
       expect(chunks[1]).toEqual({
         type: 'result',
         sessionId: 'fallback-thread',
-        tokens: { input: 10, output: 5 },
+        tokens: { input: 10, output: 5, total: 15 },
       });
     });
 
@@ -842,7 +912,7 @@ describe('CodexClient', () => {
       expect(chunks[0]).toEqual({
         type: 'result',
         sessionId: 'new-thread-id',
-        tokens: { input: 10, output: 5 },
+        tokens: { input: 10, output: 5, total: 15 },
       });
 
       // Error is still logged even though not sent to user
@@ -853,22 +923,50 @@ describe('CodexClient', () => {
     });
 
     test('handles turn.failed events', async () => {
-      mockRunStreamed.mockResolvedValue({
-        events: (async function* () {
-          yield { type: 'turn.failed', error: { message: 'Rate limit exceeded' } };
-        })(),
-      });
+      // a fresh stream per attempt, as the SDK gives each retry
+      mockRunStreamed.mockImplementation(() =>
+        Promise.resolve({
+          events: (async function* () {
+            yield { type: 'turn.failed', error: { message: 'Rate limit exceeded' } };
+          })(),
+        })
+      );
 
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace')) {
-        chunks.push(chunk);
-      }
+      const chunks: unknown[] = [];
+      const consume = async () => {
+        for await (const chunk of client.sendQuery('test', '/workspace')) {
+          chunks.push(chunk);
+        }
+      };
 
+      // A failed turn fails the query (retried as a rate limit, then thrown)
+      await expect(consume()).rejects.toThrow('Codex rate_limit: Rate limit exceeded');
       expect(chunks[0]).toEqual({ type: 'system', content: '❌ Turn failed: Rate limit exceeded' });
+      expect(mockRunStreamed).toHaveBeenCalledTimes(4);
       expect(mockLogger.error).toHaveBeenCalledWith(
         { errorMessage: 'Rate limit exceeded' },
         'turn_failed'
       );
+    });
+
+    test('turn.failed with a 401 (no ChatGPT login) fails at once as an auth error', async () => {
+      mockRunStreamed.mockResolvedValue({
+        events: (async function* () {
+          yield {
+            type: 'turn.failed',
+            error: { message: 'unexpected status 401 Unauthorized: Missing bearer' },
+          };
+        })(),
+      });
+
+      const consume = async () => {
+        for await (const _ of client.sendQuery('test', '/workspace')) {
+          // consume
+        }
+      };
+
+      await expect(consume()).rejects.toThrow('Codex auth error: unexpected status 401');
+      expect(mockRunStreamed).toHaveBeenCalledTimes(1);
     });
 
     test('handles turn.failed without error message', async () => {
@@ -878,11 +976,14 @@ describe('CodexClient', () => {
         })(),
       });
 
-      const chunks = [];
-      for await (const chunk of client.sendQuery('test', '/workspace')) {
-        chunks.push(chunk);
-      }
+      const chunks: unknown[] = [];
+      const consume = async () => {
+        for await (const chunk of client.sendQuery('test', '/workspace')) {
+          chunks.push(chunk);
+        }
+      };
 
+      await expect(consume()).rejects.toThrow('Codex unknown: Unknown error');
       expect(chunks[0]).toEqual({ type: 'system', content: '❌ Turn failed: Unknown error' });
       expect(mockLogger.error).toHaveBeenCalledWith(
         { errorMessage: 'Unknown error' },
@@ -973,7 +1074,7 @@ describe('CodexClient', () => {
       expect(chunks[0]).toEqual({
         type: 'result',
         sessionId: 'new-thread-id',
-        tokens: { input: 10, output: 5 },
+        tokens: { input: 10, output: 5, total: 15 },
       });
     });
 

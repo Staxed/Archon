@@ -17,7 +17,7 @@ import type {
 import { executeDagWorkflow } from './dag-executor';
 import { logWorkflowStart, logWorkflowError } from './logger';
 import { getWorkflowEventEmitter } from './event-emitter';
-import { isClaudeModel, isModelCompatible } from './model-validation';
+import { isClaudeModel, isGrokModel, isModelCompatible } from './model-validation';
 import { classifyError } from './executor-shared';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -304,6 +304,9 @@ export async function executeWorkflow(
     providerSource = 'workflow definition';
   } else if (workflow.model && isClaudeModel(workflow.model)) {
     resolvedProvider = 'claude';
+    providerSource = 'inferred from workflow model';
+  } else if (workflow.model && isGrokModel(workflow.model)) {
+    resolvedProvider = 'grok';
     providerSource = 'inferred from workflow model';
   } else if (workflow.model) {
     resolvedProvider = 'codex';

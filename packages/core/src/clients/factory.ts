@@ -9,6 +9,7 @@ import { ClaudeClient } from './claude';
 import { CodexClient } from './codex';
 import { OpenRouterClient } from './openrouter';
 import { LlamaCppClient } from './llamacpp';
+import { GrokClient } from './grok';
 import { createLogger } from '@archon/paths';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -39,9 +40,12 @@ export function getAssistantClient(type: string): IAssistantClient {
     case 'llamacpp':
       getLog().debug({ provider: 'llamacpp' }, 'client_selected');
       return new LlamaCppClient();
+    case 'grok':
+      getLog().debug({ provider: 'grok' }, 'client_selected');
+      return new GrokClient();
     default:
       throw new Error(
-        `Unknown assistant type: ${type}. Supported types: 'claude', 'codex', 'openrouter', 'llamacpp'`
+        `Unknown assistant type: ${type}. Supported types: 'claude', 'codex', 'openrouter', 'llamacpp', 'grok'`
       );
   }
 }

@@ -190,6 +190,8 @@ export interface TokenUsage {
   output: number;
   total?: number;
   cost?: number;
+  /** The model that actually ran, when the provider reports it (else the configured one is recorded) */
+  model?: string;
 }
 
 export type MessageChunk =

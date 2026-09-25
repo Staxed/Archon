@@ -180,6 +180,7 @@ function getDefaults(): MergedConfig {
       // No endpoint here: LlamaCppClient falls back to LLAMACPP_ENDPOINT, then
       // the LLM gateway (clients/llm-gateway.ts).
       llamacpp: {},
+      grok: {},
     },
     streaming: {
       telegram: 'stream',
@@ -230,7 +231,8 @@ function applyEnvOverrides(config: MergedConfig): MergedConfig {
     envAssistant === 'claude' ||
     envAssistant === 'codex' ||
     envAssistant === 'openrouter' ||
-    envAssistant === 'llamacpp'
+    envAssistant === 'llamacpp' ||
+    envAssistant === 'grok'
   ) {
     config.assistant = envAssistant;
   }
@@ -290,6 +292,7 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
       codex: { ...defaults.assistants.codex },
       openrouter: { ...defaults.assistants.openrouter },
       llamacpp: { ...defaults.assistants.llamacpp },
+      grok: { ...defaults.assistants.grok },
     },
   };
 
@@ -325,6 +328,12 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
     result.assistants.llamacpp = {
       ...result.assistants.llamacpp,
       ...global.assistants.llamacpp,
+    };
+  }
+  if (global.assistants?.grok) {
+    result.assistants.grok = {
+      ...result.assistants.grok,
+      ...global.assistants.grok,
     };
   }
 
@@ -365,6 +374,7 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
       codex: { ...merged.assistants.codex },
       openrouter: { ...merged.assistants.openrouter },
       llamacpp: { ...merged.assistants.llamacpp },
+      grok: { ...merged.assistants.grok },
     },
   };
 
@@ -395,6 +405,12 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     result.assistants.llamacpp = {
       ...result.assistants.llamacpp,
       ...repo.assistants.llamacpp,
+    };
+  }
+  if (repo.assistants?.grok) {
+    result.assistants.grok = {
+      ...result.assistants.grok,
+      ...repo.assistants.grok,
     };
   }
 
@@ -470,7 +486,7 @@ export async function loadConfig(repoPath?: string): Promise<MergedConfig> {
   config = applyEnvOverrides(config);
 
   // 5. Validate defaultAssistant value (YAML may provide arbitrary strings despite ProviderType)
-  const validProviders: readonly string[] = ['claude', 'codex', 'openrouter', 'llamacpp'];
+  const validProviders: readonly string[] = ['claude', 'codex', 'openrouter', 'llamacpp', 'grok'];
   if (!validProviders.includes(config.assistant)) {
     const msg = `Invalid defaultAssistant value '${config.assistant}'. Must be one of: ${validProviders.join(', ')}`;
     getLog().error({ assistant: config.assistant }, 'config.invalid_default_assistant');
@@ -524,6 +540,7 @@ export async function updateGlobalConfig(updates: Partial<GlobalConfig>): Promis
         codex: { ...current.assistants?.codex, ...updates.assistants.codex },
         openrouter: { ...current.assistants?.openrouter, ...updates.assistants.openrouter },
         llamacpp: { ...current.assistants?.llamacpp, ...updates.assistants.llamacpp },
+        grok: { ...current.assistants?.grok, ...updates.assistants.grok },
       };
     }
 
@@ -580,6 +597,9 @@ export function toSafeConfig(config: MergedConfig): SafeConfig {
       llamacpp: {
         model: config.assistants.llamacpp.model,
         endpoint: config.assistants.llamacpp.endpoint,
+      },
+      grok: {
+        model: config.assistants.grok.model,
       },
     },
     streaming: {

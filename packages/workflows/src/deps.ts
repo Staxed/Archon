@@ -26,6 +26,8 @@ export interface WorkflowTokenUsage {
   output: number;
   total?: number;
   cost?: number;
+  /** The model that actually ran, when the provider reports it */
+  model?: string;
 }
 
 export type WorkflowMessageChunk =
@@ -290,6 +292,9 @@ export interface WorkflowConfig {
     llamacpp: {
       model?: string;
       endpoint?: string;
+    };
+    grok: {
+      model?: string;
     };
   };
 }

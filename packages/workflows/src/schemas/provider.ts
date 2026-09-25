@@ -4,6 +4,6 @@
  */
 import { z } from '@hono/zod-openapi';
 
-export const providerSchema = z.enum(['claude', 'codex', 'openrouter', 'llamacpp']);
+export const providerSchema = z.enum(['claude', 'codex', 'openrouter', 'llamacpp', 'grok']);
 
 export type ProviderType = z.infer<typeof providerSchema>;

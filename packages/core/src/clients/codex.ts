@@ -24,6 +24,9 @@ import {
   type MessageChunk,
   type TokenUsage,
 } from '../types';
+import { readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createLogger } from '@archon/paths';
 import { executeToolLoop, type ChatMessage, type ToolLoopConfig } from './tool-loop';
 import { toolDefinitions } from './tool-definitions';
@@ -170,15 +173,83 @@ function classifyCodexError(
   return 'unknown';
 }
 
-function extractUsageFromCodexEvent(event: TurnCompletedEvent): TokenUsage {
+/**
+ * OpenAI counts cached tokens INSIDE input_tokens. Archon's usage rows follow the
+ * Claude shape (input excludes cache), so `input` is the uncached part and `total`
+ * keeps everything, cached included: total - input - output = cached input. The SDK
+ * path runs on the ChatGPT subscription and reports no cost; Dashed prices it from
+ * these tokens and the model.
+ */
+function extractUsageFromCodexEvent(
+  event: TurnCompletedEvent,
+  threadId?: string | null
+): TokenUsage {
   if (!event.usage) {
     getLog().warn({ eventType: event.type }, 'codex.usage_null_on_turn_completed');
     return { input: 0, output: 0 };
   }
+  const cached = event.usage.cached_input_tokens ?? 0;
+  const model = threadId ? findRolloutModel(threadId) : undefined;
   return {
-    input: event.usage.input_tokens,
+    input: Math.max(event.usage.input_tokens - cached, 0),
     output: event.usage.output_tokens,
+    total: event.usage.input_tokens + event.usage.output_tokens,
+    ...(model ? { model } : {}),
   };
+}
+
+/**
+ * The model Codex actually ran, read from the thread's rollout file. The SDK's
+ * events never name it, and with no `model` configured Codex picks its own default,
+ * which Archon would otherwise record as 'default'. The rollout is
+ * $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl (dated by local
+ * time when the thread started); each turn writes a `turn_context` record carrying
+ * the model. Only the two most recent day folders are searched, so a thread resumed
+ * days later falls back to the configured model. Never throws.
+ */
+export function findRolloutModel(threadId: string, codexHome?: string): string | undefined {
+  const sessions = join(
+    codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+    'sessions'
+  );
+  try {
+    const days: string[] = [];
+    const newest = (dir: string): string[] =>
+      readdirSync(dir)
+        .filter(n => /^\d+$/.test(n))
+        .sort()
+        .reverse();
+    for (const y of newest(sessions)) {
+      for (const m of newest(join(sessions, y))) {
+        for (const d of newest(join(sessions, y, m))) {
+          days.push(join(sessions, y, m, d));
+          if (days.length >= 2) break;
+        }
+        if (days.length >= 2) break;
+      }
+      if (days.length >= 2) break;
+    }
+    for (const day of days) {
+      const file = readdirSync(day).find(n => n.endsWith(`-${threadId}.jsonl`));
+      if (!file) continue;
+      let model: string | undefined;
+      for (const line of readFileSync(join(day, file), 'utf8').split('\n')) {
+        if (!line.includes('"turn_context"')) continue;
+        try {
+          const rec = JSON.parse(line) as { type?: string; payload?: { model?: unknown } };
+          if (rec.type === 'turn_context' && typeof rec.payload?.model === 'string') {
+            model = rec.payload.model;
+          }
+        } catch {
+          // a partly written last line; the earlier turn_context still counts
+        }
+      }
+      return model;
+    }
+  } catch (err) {
+    getLog().debug({ err, threadId }, 'codex.rollout_model_lookup_failed');
+  }
+  return undefined;
 }
 
 /**
@@ -352,7 +423,11 @@ export class CodexClient implements IAssistantClient {
               type: 'system',
               content: `❌ Turn failed: ${errorMessage}`,
             };
-            break;
+            // Throw so the failure is classified below (auth, rate limit, ...) and the
+            // node FAILS. Ending quietly here made a run with no ChatGPT login (every
+            // request 401) finish as "completed" with a zero usage row, which would
+            // hide an expired subscription login.
+            throw new Error(errorMessage);
           }
 
           // Handle item.completed events - map to MessageChunk types
@@ -529,7 +604,7 @@ export class CodexClient implements IAssistantClient {
           if (event.type === 'turn.completed') {
             getLog().debug('turn_completed');
             // Yield result with thread ID for persistence
-            const usage = extractUsageFromCodexEvent(event);
+            const usage = extractUsageFromCodexEvent(event, thread.id);
             yield {
               type: 'result',
               sessionId: thread.id ?? undefined,

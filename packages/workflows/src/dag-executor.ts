@@ -45,7 +45,7 @@ import { formatToolCall } from './utils/tool-formatter';
 import { createLogger } from '@archon/paths';
 import { getWorkflowEventEmitter } from './event-emitter';
 import { evaluateCondition } from './condition-evaluator';
-import { isClaudeModel, isModelCompatible } from './model-validation';
+import { isClaudeModel, isGrokModel, isModelCompatible } from './model-validation';
 import {
   logNodeStart,
   logNodeComplete,
@@ -407,6 +407,8 @@ async function resolveNodeProviderAndModel(
     provider = node.provider;
   } else if (node.model && isClaudeModel(node.model)) {
     provider = 'claude';
+  } else if (node.model && isGrokModel(node.model)) {
+    provider = 'grok';
   } else if (node.model?.includes('/')) {
     // vendor/model format (e.g., "anthropic/claude-3-haiku") → infer openrouter
     provider = 'openrouter';
@@ -481,8 +483,10 @@ async function resolveNodeProviderAndModel(
     const sandbox = node.sandbox ?? workflowLevelOptions.sandbox;
     if (sandbox !== undefined) codexOptions.sandbox = sandbox;
     options = codexOptions;
-  } else if (provider === 'openrouter' || provider === 'llamacpp') {
-    // OpenRouter / Llama.cpp: all features flow through the tool loop
+  } else if (provider === 'openrouter' || provider === 'llamacpp' || provider === 'grok') {
+    // OpenRouter / Llama.cpp: all features flow through the tool loop.
+    // Grok: the same full option set; GrokClient maps each onto the grok CLI's own
+    // flags or refuses the node (it never falls back to an API).
     const toolLoopOptions: WorkflowAssistantOptions = {};
     if (model) toolLoopOptions.model = model;
     if (node.output_format) {
@@ -1289,7 +1293,7 @@ async function executeNodeInternal(
         workflow_run_id: workflowRun.id,
         node_id: node.id,
         provider,
-        model: nodeOptions?.model ?? 'default',
+        model: nodeTokens?.model ?? nodeOptions?.model ?? 'default',
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         total_tokens: nodeTokens?.total ?? inputTokens + outputTokens,
@@ -1870,7 +1874,7 @@ async function executeLoopNode(
                 workflow_run_id: workflowRun.id,
                 node_id: node.id,
                 provider: workflowProvider,
-                model: resolvedOptions?.model ?? workflowModel ?? 'default',
+                model: msg.tokens?.model ?? resolvedOptions?.model ?? workflowModel ?? 'default',
                 input_tokens: iterInput,
                 output_tokens: iterOutput,
                 total_tokens: msg.tokens?.total ?? iterInput + iterOutput,
@@ -2619,6 +2623,8 @@ export async function executeDagWorkflow(
               loopProvider = node.provider;
             } else if (node.model && isClaudeModel(node.model)) {
               loopProvider = 'claude';
+            } else if (node.model && isGrokModel(node.model)) {
+              loopProvider = 'grok';
             } else if (node.model) {
               loopProvider = 'codex';
             } else {
