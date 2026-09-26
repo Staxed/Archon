@@ -211,6 +211,10 @@ interface Word {
   text: string;
   /** Contains an unquoted * ? [ */
   glob: boolean;
+  /** An expansion in it could not be resolved. */
+  unknown?: boolean;
+  /** [text, glob] per loop value, when a loop variable is in it. */
+  alts?: [string, boolean][];
 }
 
 interface Command {
@@ -228,17 +232,35 @@ class ParseError extends Error {}
 const OPS = ['&&', '||', '|&', ';;', ';', '|', '&', '(', ')', '\n'];
 const VAR = /[A-Za-z_][A-Za-z0-9_]*/y;
 const REDIRECT = /(\d*|&)(>>|>\||>&|<<<|<<-|<<|<&|<>|>|<)/y;
+const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+/** Loop variables are marked with a private-use character while a word is read. */
+const LOOP_REF = /\uE000([A-Za-z_][A-Za-z0-9_]*)\uE000/;
+/** Reserved words that introduce a command without being one: `do rm -rf x` runs rm. */
+const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{']);
+const DECLARE = new Set(['export', 'local', 'declare', 'readonly', 'typeset']);
+const MAX_ALTS = 64;
 
 function newCommand(sep = ''): Command {
   return { words: [], redirects: [], heredocs: [], sep, subs: [] };
 }
 
-/** A small POSIX-shell reader. It never executes anything. */
+/**
+ * A small POSIX-shell reader. It never executes anything.
+ *
+ * Variables are followed in order: `NAME=value` (alone or after export/local/...)
+ * sets NAME for the commands after it, `for NAME in a b` gives NAME each listed
+ * value, and `read NAME` makes it unknown. A word holding an expansion that cannot
+ * be resolved is marked `unknown`, so a delete of it can be judged as "anything".
+ */
 class Lexer {
   private i = 0;
   private readonly cmds: Command[] = [];
   private cur: Command = newCommand();
   private pendingHeredocs: [string, boolean, Command][] = [];
+  private readonly loops = new Map<string, [string, boolean][]>();
+  private readonly unknownNames = new Set<string>();
+  private unk = false;
 
   constructor(
     private readonly s: string,
@@ -267,8 +289,52 @@ class Lexer {
   }
 
   private end(op: string): void {
-    if (this.cur.words.length > 0 || this.cur.redirects.length > 0) this.cmds.push(this.cur);
+    if (this.cur.words.length > 0 || this.cur.redirects.length > 0) {
+      this.bind(this.cur.words);
+      this.cmds.push(this.cur);
+    }
     this.cur = newCommand(op);
+  }
+
+  private setVar(name: string, value: string, unknown: boolean): void {
+    this.loops.delete(name);
+    this.env[name] = value;
+    if (unknown) this.unknownNames.add(name);
+    else this.unknownNames.delete(name);
+  }
+
+  /** Record what a finished command does to variables used after it. */
+  private bind(all: Word[]): void {
+    let k = 0;
+    while (k < all.length && KEYWORDS.has(all[k].text)) k++;
+    let words = all.slice(k);
+    if (words.length === 0) return;
+    const head = words[0].text;
+    if ((head === 'for' || head === 'select') && words.length >= 2 && NAME.test(words[1].text)) {
+      const name = words[1].text;
+      const values = words.length >= 3 && words[2].text === 'in' ? words.slice(3) : [];
+      if (values.length > 0 && !values.some(w => w.unknown || w.alts)) {
+        this.setVar(name, '', false);
+        this.loops.set(
+          name,
+          values.slice(0, MAX_ALTS).map(w => [w.text, w.glob] as [string, boolean])
+        );
+      } else {
+        this.setVar(name, '', true);
+      }
+      return;
+    }
+    if (head === 'read') {
+      for (const w of words.slice(1)) if (NAME.test(w.text)) this.setVar(w.text, '', true);
+      return;
+    }
+    if (DECLARE.has(head)) words = words.slice(1).filter(w => !w.text.startsWith('-'));
+    if (words.length > 0 && words.every(w => ASSIGN.test(w.text))) {
+      for (const w of words) {
+        const m = ASSIGN.exec(w.text);
+        if (m) this.setVar(m[1], m[2], Boolean(w.unknown || w.alts));
+      }
+    }
   }
 
   private operator(): boolean {
@@ -326,6 +392,7 @@ class Lexer {
     const out: string[] = [];
     let glob = false;
     let started = false;
+    this.unk = false;
     if (s.startsWith('~', this.i)) {
       const j = this.i + 1;
       if (j === s.length || '/ \t\n;&|)'.includes(s[j])) {
@@ -373,7 +440,30 @@ class Lexer {
         this.i++;
       }
     }
-    return started ? { text: out.join(''), glob } : undefined;
+    if (!started) return undefined;
+    const text = out.join('');
+    if (!text.includes('\uE000')) return { text, glob, unknown: this.unk };
+    // A loop variable: one alternative per combination of its listed values.
+    const parts = text.split(LOOP_REF);
+    let alts: [string, boolean][] = [['', glob]];
+    parts.forEach((part, k) => {
+      if (k % 2 === 0) {
+        alts = alts.map(([t, g]) => [t + part, g] as [string, boolean]);
+      } else {
+        const vals = this.loops.get(part) ?? [['', false]];
+        alts = alts
+          .flatMap(([t, g]) => vals.map(([v, vg]) => [t + v, g || vg] as [string, boolean]))
+          .slice(0, MAX_ALTS);
+      }
+    });
+    return { text: alts[0][0], glob: alts[0][1], unknown: this.unk, alts };
+  }
+
+  private variable(name: string): string {
+    if (this.loops.has(name)) return `\uE000${name}\uE000`;
+    const own = Object.hasOwn(this.env, name);
+    if (!own || this.unknownNames.has(name)) this.unk = true;
+    return own ? this.env[name] : '';
   }
 
   private expansion(): string {
@@ -419,20 +509,25 @@ class Lexer {
       const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(inner);
       const name = m ? m[0] : '';
       const rest = inner.slice(name.length);
-      let val = this.env[name] ?? '';
-      if (!val && (rest.startsWith(':-') || rest.startsWith(':='))) val = rest.slice(2);
-      else if (!val && (rest.startsWith('-') || rest.startsWith('='))) val = rest.slice(1);
+      if (this.loops.has(name)) return this.variable(name);
+      const own = Object.hasOwn(this.env, name);
+      const known = own && !this.unknownNames.has(name);
+      const val = own ? this.env[name] : '';
+      if (!val && (rest.startsWith(':-') || rest.startsWith(':='))) return rest.slice(2);
+      if (!val && (rest.startsWith('-') || rest.startsWith('='))) return rest.slice(1);
+      if (!known) this.unk = true;
       return val;
     }
     VAR.lastIndex = this.i + 1;
     const m = VAR.exec(s);
     if (m) {
       this.i = VAR.lastIndex;
-      return this.env[m[0]] ?? '';
+      return this.variable(m[0]);
     }
     this.i++;
     if (this.i < s.length && '@*#?$!-0123456789'.includes(s[this.i])) {
       this.i++;
+      this.unk = true;
       return '';
     }
     return '$';
@@ -441,6 +536,8 @@ class Lexer {
   private substitute(body: string): string {
     this.cur.subs.push(body);
     if (body.trim() === 'pwd') return this.env.PWD ?? '';
+    if (body.trim().split(' ')[0] === 'mktemp') return '/tmp/guard-mktemp'; // always a fresh temp path
+    this.unk = true;
     return '';
   }
 }
@@ -501,7 +598,21 @@ export class Checker {
   }
 
   private targetHits(w: Word, cwd: string): string | undefined {
-    if (w.text === '') return undefined;
+    if (w.alts) {
+      for (const [text, glob] of w.alts) {
+        const hit = this.targetHits({ text, glob, unknown: w.unknown }, cwd);
+        if (hit) return hit;
+      }
+      return undefined;
+    }
+    if (w.text === '') {
+      // A target that is nothing but an unresolved variable could be any name
+      // here, so it is refused where a name here would be protected.
+      if (w.unknown && this.r.protectedChildren(cwd).length > 0) {
+        return joinPath(cwd, '<a variable the guard cannot resolve>');
+      }
+      return undefined;
+    }
     if (!w.glob) {
       const p = this.abs(w.text, cwd);
       return this.r.hits(p) ? p : undefined;
@@ -540,7 +651,7 @@ export class Checker {
     // Peel prefixes: assignments, sudo, env, timeout, xargs, ...
     while (i < words.length) {
       const name = basename(words[i].text);
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/s.test(words[i].text)) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/s.test(words[i].text) || KEYWORDS.has(words[i].text)) {
         i++;
       } else if (name === 'sudo') {
         i++;
