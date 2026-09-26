@@ -1,4 +1,12 @@
 import { execFileAsync } from '@archon/git';
+import { createLogger } from '@archon/paths';
+import { checkCommand } from '../destructive-guard';
+
+let cachedLog: ReturnType<typeof createLogger> | undefined;
+function getLog(): ReturnType<typeof createLogger> {
+  if (!cachedLog) cachedLog = createLogger('client.tools.bash');
+  return cachedLog;
+}
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 120 seconds
 const MAX_TIMEOUT_MS = 600_000; // 600 seconds
@@ -14,6 +22,15 @@ export async function bashTool(params: Record<string, unknown>, cwd: string): Pr
   const command = params.command;
   if (typeof command !== 'string' || command.length === 0) {
     throw new Error('Bash: command is required and must be a non-empty string.');
+  }
+
+  // Refuse commands that destroy what no git remote brings back (a project, the
+  // projects folder, system roots, Docker volumes). Every tool-loop provider runs
+  // shell commands through here, whether or not it passes PreToolUse hooks.
+  const violation = checkCommand(command, cwd);
+  if (violation) {
+    getLog().warn({ command, cwd, rule: violation.rule }, 'bash.destructive_command_blocked');
+    throw new Error(`Bash: ${violation.message()}`);
   }
 
   let timeoutMs = DEFAULT_TIMEOUT_MS;

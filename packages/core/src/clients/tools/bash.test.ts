@@ -15,6 +15,13 @@ afterAll(async () => {
 });
 
 describe('bashTool', () => {
+  test('refuses a destructive command before running it', async () => {
+    // `true ||` means the docker part could never run even if the guard let it through.
+    await expect(
+      bashTool({ command: 'true || docker volume rm zz-guard-test' }, tempDir)
+    ).rejects.toThrow('destructive-command guard');
+  });
+
   test('executes a simple command and returns stdout', async () => {
     const result = await bashTool({ command: 'echo hello world' }, tempDir);
     expect(result.trim()).toBe('hello world');

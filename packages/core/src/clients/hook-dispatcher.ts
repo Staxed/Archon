@@ -17,8 +17,9 @@
  * `hookSpecificOutput.permissionDecision: "deny"` blocks the call in both.
  *
  * For PreToolUse the dispatcher applies, in order: the path guard (no file writes
- * outside the worktree, as path-guard-hook.ts does for Claude), the node's tool
- * allow/deny list, then the node's static hook responses by matcher. Every other
+ * outside the worktree, as path-guard-hook.ts does for Claude), the destructive-command
+ * guard on shell calls (destructive-guard.ts), the node's tool allow/deny list, then
+ * the node's static hook responses by matcher. Every other
  * event only replays the node's static responses. A PreToolUse that cannot read
  * its spec DENIES (fail closed); both CLIs treat a crashed hook as "allow".
  *
@@ -26,6 +27,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { validatePath } from './tools/path-validation';
+import { checkCommand, shellQuote } from './destructive-guard';
 
 export const HOOK_SPEC_ENV = 'ARCHON_HOOK_SPEC';
 export const HOOK_EVENTS_ENV = 'ARCHON_HOOK_EVENTS';
@@ -169,6 +171,30 @@ export function toolView(
   return { names, writes: isWrite && path ? [path] : [], mcp: false };
 }
 
+/** The shell command a Bash-like call would run: a string, or Codex's argv array. */
+export function shellCommand(toolInput: unknown): string | undefined {
+  if (!toolInput || typeof toolInput !== 'object') return undefined;
+  const input = toolInput as Record<string, unknown>;
+  const raw = input.command ?? input.cmd;
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw) && raw.every((a): a is string => typeof a === 'string')) {
+    // ['bash', '-lc', 'script'] -> a line the guard parses back into the same argv
+    return raw.map(shellQuote).join(' ');
+  }
+  return undefined;
+}
+
+/** The directory a shell call runs in: its own workdir/cwd, else the hook's, else the node's. */
+function shellCwd(input: HookInput, fallback: string): string {
+  const toolInput = (
+    input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {}
+  ) as Record<string, unknown>;
+  const base = str(input.cwd) ?? fallback;
+  const own = str(toolInput.workdir) ?? str(toolInput.cwd);
+  if (!own) return base;
+  return own.startsWith('/') ? own : `${base.replace(/\/+$/, '')}/${own}`;
+}
+
 /** Claude-style tool pattern: exact name, or a trailing `*` glob (`mcp__github__*`). */
 function toolPatternMatches(pattern: string, name: string): boolean {
   if (pattern === '*' || pattern === name) return true;
@@ -237,6 +263,13 @@ export function dispatchHook(
               `this run. Re-issue the call with a path inside ${spec.cwd}.`
           );
         }
+      }
+    }
+    if (view.names.includes('Bash')) {
+      const command = shellCommand(input.tool_input);
+      if (command) {
+        const violation = checkCommand(command, shellCwd(input, spec.cwd));
+        if (violation) return denyOutput(violation.message());
       }
     }
     const denied = spec.deniedTools ?? [];

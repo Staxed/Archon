@@ -28,6 +28,7 @@ import {
 import { createLogger } from '@archon/paths';
 import { buildCleanSubprocessEnv } from '../utils/env-allowlist';
 import { createPreToolUsePathGuardHook } from './path-guard-hook';
+import { createPreToolUseDestructiveGuardHook } from './destructive-guard-hook';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { join as joinPath } from 'node:path';
 
@@ -409,6 +410,9 @@ export class ClaudeClient implements IAssistantClient {
           PreToolUse: [
             ...((requestOptions?.hooks?.PreToolUse ?? []) as HookCallbackMatcher[]),
             { hooks: [createPreToolUsePathGuardHook(cwd)] },
+            // Destructive-command guard for the SDK's own Bash tool (a project, the
+            // projects folder, system roots, Docker volumes). destructive-guard.ts.
+            { matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] },
           ],
           PostToolUse: [
             ...((requestOptions?.hooks?.PostToolUse ?? []) as HookCallbackMatcher[]),

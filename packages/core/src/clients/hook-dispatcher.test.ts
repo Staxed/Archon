@@ -183,6 +183,54 @@ describe('dispatchHook: PreToolUse', () => {
   });
 });
 
+describe('dispatchHook: destructive-command guard', () => {
+  const pre = (tool_name: string, tool_input: unknown) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name,
+    tool_input,
+  });
+
+  test('denies a destructive Codex shell call, string or argv', () => {
+    const out = dispatchHook(
+      codex(),
+      'PreToolUse',
+      pre('Bash', { command: 'docker volume rm pgdata' })
+    );
+    expect(decision(out)).toBe('deny');
+    expect(JSON.stringify(out)).toContain('destructive-command guard');
+    const argv = dispatchHook(
+      codex(),
+      'PreToolUse',
+      pre('exec_command', { command: ['bash', '-lc', 'rm -rf /etc'] })
+    );
+    expect(decision(argv)).toBe('deny');
+  });
+
+  test('denies a destructive Grok terminal call', () => {
+    const out = dispatchHook(
+      grok(),
+      'PreToolUse',
+      pre('run_terminal_command', { command: 'sudo rm -rf /' })
+    );
+    expect(decision(out)).toBe('deny');
+  });
+
+  test('allows ordinary shell calls', () => {
+    for (const command of ['rm -rf node_modules', 'docker compose down', 'git status']) {
+      expect(dispatchHook(codex(), 'PreToolUse', pre('Bash', { command }))).toBeUndefined();
+    }
+  });
+
+  test("resolves relative paths against the call's workdir", () => {
+    const out = dispatchHook(
+      codex(),
+      'PreToolUse',
+      pre('Bash', { command: 'rm -rf etc', workdir: '/' })
+    );
+    expect(decision(out)).toBe('deny');
+  });
+});
+
 describe('dispatchHook: node hooks', () => {
   test('returns the static response of a matching hook, by Claude tool name', () => {
     const response = {
