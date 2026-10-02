@@ -15933,6 +15933,31 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     expect(capped?.data?.error).toBe("Node 'capped' exceeded cost cap of $2.50.");
   });
 
+  it('confines AI node writes to cwd plus the run engine dirs (writableRoots)', async () => {
+    mockSendQueryDag.mockImplementation(async function* () {
+      yield { type: 'assistant', content: 'done' };
+      yield { type: 'result', sessionId: 'sid1' };
+    });
+
+    await executeDagWorkflow(
+      dagOptions({
+        deps: createMockDeps(createMockStore()),
+        platform: createMockPlatform(),
+        cwd: testDir,
+        workflow: {
+          name: 'writable-roots-test',
+          nodes: [{ id: 'a', kind: 'agent', source: { kind: 'inline', prompt: 'work' } }],
+        },
+        workflowRun: makeWorkflowRun(),
+      })
+    );
+
+    const options = mockSendQueryDag.mock.calls[0][3] as { writableRoots?: string[] };
+    expect(options.writableRoots).toBeDefined();
+    expect(options.writableRoots).toHaveLength(3);
+    expect(options.writableRoots?.every(r => isAbsolute(r))).toBe(true);
+  });
+
   it('error message shows a sub-cent cost cap instead of $0.00', async () => {
     let callCount = 0;
     mockSendQueryDag.mockImplementation(async function* () {

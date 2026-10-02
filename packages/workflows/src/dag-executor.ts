@@ -2270,9 +2270,13 @@ async function executeNodeInternal(
   // Request a fork when resuming. Exact-fork callers gate on sessionFork first;
   // legacy resume-only providers may continue the source session in place.
   const shouldForkSession = resumeSessionId !== undefined;
+  // Writes belong in the worktree or the run's engine dirs: the provider layer
+  // prefixes a cwd notice for every provider and Claude enforces it (path guard).
+  const writableRoots = checkoutSnapshotExcludes(artifactsDir, stateDir, logDir);
   const nodeOptionsWithAbort: SendQueryOptions | undefined = {
     ...nodeOptions,
     abortSignal: nodeAbortController.signal,
+    writableRoots,
     ...(shouldForkSession ? { forkSession: true } : {}),
   };
   let nodeIdleTimedOut = false;
@@ -6112,9 +6116,11 @@ async function executeLoopNode(
               ? basePrompt
               : `${basePrompt}\n\n---\n\nYour previous response did not match the required output schema:\n${reaskErrors.map(e => `- ${e}`).join('\n')}\n\nRespond again with output that satisfies the schema exactly.`;
 
+          const writableRoots = checkoutSnapshotExcludes(artifactsDir, stateDir, logDir);
           const iterationOptions: SendQueryOptions | undefined = {
             ...resolvedOptions,
             abortSignal: iterationAbortController.signal,
+            writableRoots,
           };
 
           // Reask attempts start a FRESH session (mirrors runStreamPass in

@@ -50,6 +50,7 @@ import { CLAUDE_CAPABILITIES } from './capabilities';
 import { buildContainerSpawn } from './container-spawn';
 import { resolveClaudeBinaryPath, pathKind } from './binary-resolver';
 import { buildArchonMcpServer, ARCHON_TOOL_SERVER } from './native-tools';
+import { createPreToolUsePathGuardHook } from './path-guard-hook';
 import {
   SessionSpendLedger,
   spendSince,
@@ -875,7 +876,20 @@ function buildBaseClaudeOptions(
     // enables (`hook_progress`) falls through — it is only emitted for
     // async hooks, which Archon does not register today.
     includeHookEvents: true,
-    hooks: buildToolCaptureHooks(toolResultQueue),
+    hooks: {
+      ...buildToolCaptureHooks(toolResultQueue),
+      // Workflow nodes confine Write/Edit/MultiEdit/NotebookEdit to cwd plus the
+      // run's engine dirs, so a leaked absolute path (e.g. from `git worktree
+      // list`) cannot steer writes into the source repo. Host runs only: inside
+      // a container the paths are the container's and the container is the wall.
+      ...(requestOptions?.writableRoots !== undefined && containerExecContext === undefined
+        ? {
+            PreToolUse: [
+              { hooks: [createPreToolUsePathGuardHook(cwd, requestOptions.writableRoots)] },
+            ],
+          }
+        : {}),
+    },
     stderr: (data: string): void => {
       const output = data.trim();
       if (!output) return;

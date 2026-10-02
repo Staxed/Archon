@@ -524,6 +524,13 @@ export interface AgentRequestOptions {
   /** When false, skip writing session transcript to disk. */
   persistSession?: boolean;
   /**
+   * Confine file-writing tools to `cwd` plus these absolute roots (a workflow
+   * run's artifacts, state and log dirs). Absent means unconfined. Enforced by
+   * the Claude provider's PreToolUse path guard on host runs; other providers
+   * and container runs ignore it (the prompt carries a cwd notice regardless).
+   */
+  writableRoots?: readonly string[];
+  /**
    * In-process tools the model may call this turn. Defined once by the caller
    * (e.g. core's manage_run) and adapted per provider — Claude wraps each via
    * `createSdkMcpServer`/`tool()`, Pi via `customTools`. Providers without an

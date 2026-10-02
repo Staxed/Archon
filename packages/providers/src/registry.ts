@@ -23,6 +23,7 @@ import { registerCopilotProvider } from './community/copilot/registration';
 import { registerOpencodeProvider } from './community/opencode/registration';
 import { registerPiProvider } from './community/pi/registration';
 import { InvalidProviderRunConfigError, UnknownProviderError } from './errors';
+import { withCwdNotice } from './shared/cwd-notice';
 import { createLogger } from '@archon/paths';
 import { EFFORT_LADDER } from '@archon/paths/effort';
 
@@ -64,7 +65,8 @@ export function getAgentProvider(id: string): IAgentProvider {
     throw new UnknownProviderError(id, [...registry.keys()]);
   }
   getLog().debug({ provider: id }, 'provider_selected');
-  return entry.factory();
+  // Workflow nodes (requests carrying writableRoots) get a cwd notice on every provider.
+  return withCwdNotice(entry.factory());
 }
 
 /**
