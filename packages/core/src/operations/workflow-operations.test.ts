@@ -60,8 +60,11 @@ const mockResolveAndCancelApprovalGate = mock<typeof WorkflowDb.resolveAndCancel
   Promise.resolve({ resolved: true })
 );
 
+const mockFailWorkflowRun = mock<typeof WorkflowDb.failWorkflowRun>(() => Promise.resolve());
+
 mock.module('../db/workflows', () => ({
   getWorkflowRun: mockGetWorkflowRun,
+  failWorkflowRun: mockFailWorkflowRun,
   listDashboardRuns: mockListDashboardRuns,
   updateWorkflowRun: mockUpdateWorkflowRun,
   cancelWorkflowRun: mockCancelWorkflowRun,
@@ -1610,6 +1613,66 @@ describe('resumeWorkflow', () => {
     await expect(resumeWorkflow('run-1')).rejects.toThrow(
       "Cannot resume run with status 'completed'"
     );
+  });
+
+  describe('a running run whose owner is gone', () => {
+    const thisOwner = (): Record<string, unknown> => ({
+      execution_owner: { host: hostname(), pid: 999_999, uid: process.getuid?.() },
+    });
+
+    beforeEach(() => {
+      mockFailWorkflowRun.mockClear();
+    });
+
+    test('is marked failed and returned when this host and user own it and nothing answers', async () => {
+      const runId = `resume-lost-${crypto.randomUUID()}`;
+      mockGetWorkflowRun
+        .mockResolvedValueOnce(
+          makePausedRun({ id: runId, status: 'running', metadata: thisOwner() })
+        )
+        .mockResolvedValueOnce(
+          makePausedRun({ id: runId, status: 'failed', metadata: thisOwner() })
+        );
+
+      const run = await resumeWorkflow(runId);
+
+      expect(run.status).toBe('failed');
+      expect(mockFailWorkflowRun).toHaveBeenCalledWith(runId, expect.stringContaining('is gone'));
+    });
+
+    test('is refused while its owner endpoint answers', async () => {
+      const runId = `resume-live-${crypto.randomUUID()}`;
+      const owner = await startRunLiveOwner(runId);
+      try {
+        mockGetWorkflowRun.mockResolvedValueOnce(
+          makePausedRun({ id: runId, status: 'running', metadata: thisOwner() })
+        );
+
+        await expect(resumeWorkflow(runId)).rejects.toThrow('its owner is live');
+        expect(mockFailWorkflowRun).not.toHaveBeenCalled();
+      } finally {
+        await owner.close();
+      }
+    });
+
+    test('is refused when another host recorded the owner', async () => {
+      mockGetWorkflowRun.mockResolvedValueOnce(
+        makePausedRun({
+          status: 'running',
+          metadata: { execution_owner: { host: 'some-other-host', pid: 42 } },
+        })
+      );
+
+      await expect(resumeWorkflow('run-1')).rejects.toThrow('another host or user');
+      expect(mockFailWorkflowRun).not.toHaveBeenCalled();
+    });
+
+    test('is refused when no owner was recorded', async () => {
+      mockGetWorkflowRun.mockResolvedValueOnce(makePausedRun({ status: 'running', metadata: {} }));
+
+      await expect(resumeWorkflow('run-1')).rejects.toThrow("status 'running'");
+      expect(mockFailWorkflowRun).not.toHaveBeenCalled();
+    });
   });
 
   test('throws wrapped message and logs when DB throws', async () => {

@@ -229,6 +229,23 @@ describe('archon-paths', () => {
       expect(getArchonHome()).toBe('/.archon');
     });
 
+    test('returns ARCHON_DOCKER_HOME in Docker, and ignores ARCHON_HOME there', () => {
+      expect(
+        getArchonHome({
+          ARCHON_DOCKER: 'true',
+          ARCHON_DOCKER_HOME: '/home/me/.archon',
+          ARCHON_HOME: '/elsewhere',
+        })
+      ).toBe('/home/me/.archon');
+      expect(getArchonHome({ ARCHON_DOCKER: 'true', ARCHON_HOME: '/elsewhere' })).toBe('/.archon');
+    });
+
+    test('rejects a relative ARCHON_DOCKER_HOME', () => {
+      expect(() =>
+        getArchonHome({ ARCHON_DOCKER: 'true', ARCHON_DOCKER_HOME: 'rel/.archon' })
+      ).toThrow('must be an absolute path');
+    });
+
     test('returns ARCHON_HOME when set (local)', () => {
       delete process.env.WORKSPACE_PATH;
       delete process.env.ARCHON_DOCKER;

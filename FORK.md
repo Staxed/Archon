@@ -22,6 +22,13 @@ deployment of it needs.
 - **Sub-cent cost caps** show as `$0.001`, not `$0.00`.
 - **Short run ids on Postgres:** the id-prefix lookup (`workflow get|resume|abandon
 <short-id>`, chat `/workflow` commands) casts the uuid to text before `LIKE`.
+- **Resume after a lost owner:** `resume` on a `running` run whose recorded owner is
+  this host and user, with nothing answering at its live-owner endpoint, marks it
+  `failed` and resumes it. An owner recorded on another host or user is refused
+  (use `abandon`).
+- **`ARCHON_DOCKER_HOME`:** an absolute path that replaces `/.archon` as the home in
+  Docker, so a container sharing a database with a host-side Archon records the same
+  paths. `ARCHON_HOME` is still ignored in Docker.
 - **Retired fork code:** the fork's knowledge base, its own OpenRouter and
   llama.cpp clients and its own tool loop are gone. Gateway models run through
   Pi, and project knowledge lives in Stixed project cards.

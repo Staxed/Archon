@@ -150,11 +150,22 @@ export function getWSLDistroName(): string | undefined {
 
 /**
  * Get the Archon home directory
- * - Docker: /.archon
+ * - Docker: /.archon (or ARCHON_DOCKER_HOME, an absolute path)
  * - Local: ~/.archon (or ARCHON_HOME env var)
+ *
+ * Fork: ARCHON_DOCKER_HOME lets a container record the same paths as a host-side
+ * Archon sharing its database, by mounting the home at the host's path. ARCHON_HOME
+ * stays ignored in Docker, since a shared .env often carries the host's value.
  */
 export function getArchonHome(env: NodeJS.ProcessEnv = process.env): string {
   if (isDocker(env)) {
+    const dockerHome = env.ARCHON_DOCKER_HOME;
+    if (dockerHome) {
+      if (!isAbsolute(dockerHome)) {
+        throw new Error(`ARCHON_DOCKER_HOME must be an absolute path, got "${dockerHome}".`);
+      }
+      return dockerHome;
+    }
     return '/.archon';
   }
 

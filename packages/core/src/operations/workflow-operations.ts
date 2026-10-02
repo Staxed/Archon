@@ -543,13 +543,40 @@ export async function getWorkflowStatus(options?: {
  * Does NOT execute the workflow — callers decide whether to run.
  */
 export async function resumeWorkflow(runId: string): Promise<WorkflowRun> {
-  const run = await getRunOrThrow(runId, 'operations.workflow_resume_lookup_failed');
+  let run = await getRunOrThrow(runId, 'operations.workflow_resume_lookup_failed');
+  if (run.status === 'running' && (await isRunOwnerProvablyLost(run))) {
+    // Fork: a run whose owner died without recording a terminal status (SIGKILL, a VM or
+    // host restart) becomes resumable. Only the owner's own host and user can prove it.
+    const owner = readExecutionOwner(run.metadata);
+    await workflowDb.failWorkflowRun(
+      run.id,
+      `Execution owner (host ${owner?.host ?? '?'}, pid ${String(owner?.pid ?? '?')}) is gone; marked failed to resume.`
+    );
+    getLog().info({ runId: run.id, owner }, 'operations.workflow_resume_owner_lost_failed');
+    run = await getRunOrThrow(run.id, 'operations.workflow_resume_lookup_failed');
+  }
   if (!RESUMABLE_WORKFLOW_STATUSES.includes(run.status)) {
     throw new Error(
-      `Cannot resume run with status '${run.status}'. Only failed or paused runs can be resumed.`
+      run.status === 'running'
+        ? "Cannot resume run with status 'running': its owner is live, or ran on another host or user. " +
+            'Use abandon if it is dead.'
+        : `Cannot resume run with status '${run.status}'. Only failed or paused runs can be resumed.`
     );
   }
   return run;
+}
+
+/**
+ * True only when the run's recorded execution owner is this host and user and nothing
+ * answers at its live-owner endpoint. The endpoint is local to a host and user, so a
+ * silent endpoint proves nothing about an owner recorded anywhere else.
+ */
+async function isRunOwnerProvablyLost(run: WorkflowRun): Promise<boolean> {
+  const owner = readExecutionOwner(run.metadata);
+  if (owner?.host !== hostname()) return false;
+  const uid = process.getuid?.();
+  if (owner.uid !== undefined && owner.uid !== uid) return false;
+  return !(await isRunOwnerAnswering(run.id));
 }
 
 /**
