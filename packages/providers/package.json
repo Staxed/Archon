@@ -83,6 +83,9 @@
       "src/shared/destructive-guard.test.ts"
     ],
     [
+      "src/shared/subscription-env.test.ts"
+    ],
+    [
       "src/codex/binary-resolver.test.ts"
     ],
     [
