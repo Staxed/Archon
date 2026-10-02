@@ -281,6 +281,17 @@ describe('registry', () => {
       expect(isRegisteredProvider('opencode')).toBe(true);
       expect(isRegisteredProvider('pi')).toBe(true);
       expect(isRegisteredProvider('copilot')).toBe(true);
+      expect(isRegisteredProvider('grok')).toBe(true);
+    });
+
+    test('registers grok as a subscription-only community provider', () => {
+      registerCommunityProviders();
+      const grok = getRegisteredProviders().find(p => p.id === 'grok');
+      expect(grok?.builtIn).toBe(false);
+      expect(grok?.credentials).toEqual({
+        kind: 'static',
+        specs: [{ vendor: 'xai', displayName: 'xAI (SuperGrok)', kinds: ['subscription'] }],
+      });
     });
 
     test('is idempotent', () => {
