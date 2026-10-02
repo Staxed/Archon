@@ -10,7 +10,9 @@ deployment of it needs.
   subscription logins (OAuth); Archon never falls back to a provider API key.
 - **Grok provider:** a Grok CLI provider alongside Claude and Codex.
 - **Destructive-command guard:** refuses destructive commands from agent nodes
-  (ported on a separate branch).
+  (below).
+- **Repo env limits:** a repo's config cannot set CLI homes or `ARCHON_*` names
+  (below).
 - **Pi gateway-only:** the Pi provider may only call the LLM gateway (below).
 - **Inner agents stay inside their cwd:** workflow nodes get a cwd notice, and
   Claude's Write/Edit tools are denied outside the worktree and the run's
@@ -30,16 +32,25 @@ provider is locked to that gateway.
 
 ### How it works
 
-- `assistants.pi.gatewayOnly` (in `.archon/config.yaml`) defaults to `true` in this
-  fork. It can be set in config files but not relaxed per run.
+- `assistants.pi.gatewayOnly` defaults to `true` in this fork. Only the
+  install-level config (`~/.archon/config.yaml`) can set it to `false`: a repo's
+  `.archon/config.yaml` that does is ignored with a warning, and a run cannot
+  change it.
+- `ARCHON_LLM_GATEWAY_URL` and `ARCHON_PI_MODELS_PATH` are read from Archon's own
+  process environment (the deployment), never from a request's env, which carries
+  the project's `env:`. A repo's `env:` and `assistants.pi.env` cannot set any
+  `ARCHON_*` name (see "Repo env" below).
 - With it on, a Pi node's model must be `gateway-<name>/<model-id>`. Built-in Pi
   vendors (`openrouter`, `xai`, `openai`, `google`, `anthropic`, …) are refused
   before any credential is read. `~/.pi/agent/auth.json`, `ARCHON_PI_AUTH_PATH`
   and vendor API-key env vars are not consulted: Pi gets an empty credential store.
 - The provider must be defined in the gateway models file. Its `baseUrl` (and any
-  per-model `baseUrl`) must sit under `$ARCHON_LLM_GATEWAY_URL`. Its `apiKey` and
-  headers must be literals (no `${VAR}` or `!command`), and it must send
-  `X-Caller`.
+  per-model `baseUrl`) must sit under `$ARCHON_LLM_GATEWAY_URL`. Its `apiKey`
+  (and any per-model `apiKey`) must be the placeholder `gateway`, or a `${VAR}`
+  that is not a vendor key name (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, Pi's vendor
+  variables): a literal may be a real key, and Pi reads a bare variable name as a
+  reference. Headers must be literals (no `${VAR}` or `!command`), and it must
+  send `X-Caller`.
 - Pi substitutes `${VAR}` in `apiKey`/`headers` only, never in `baseUrl`, so Archon
   replaces `${ARCHON_LLM_GATEWAY_URL}` itself and hands Pi a per-call models.json
   holding only the selected provider. One tracked file therefore serves the host
@@ -99,3 +110,55 @@ On the `ai-stack` Docker network the gateway is also reachable as
 
 To run Pi against a direct vendor anyway (not on this host), set
 `assistants.pi.gatewayOnly: false` in the install-level config.
+
+### Residual: Pi's own tools
+
+Pi's bash/read tools run in the Archon server process's environment, and Archon
+has no hook point on them (the destructive-command guard does not cover Pi
+either; its nodes say so). A Pi node can therefore read whatever that environment
+holds. Accepted: the deployment holds no provider keys (the gateway does).
+
+## Repo env
+
+A repo's `.archon/config.yaml` `env:` reaches every provider's subprocess, so it
+may not set the names that decide where the subscription CLIs keep their logins
+and Archon's hooks, or any Archon setting: `HOME`, `CODEX_HOME`, `GROK_HOME`,
+`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR` and every `ARCHON_*` name. They are
+dropped with a warning (`config.repo_env_forbidden_keys_ignored`); set them in the
+deployment instead. Codex and Grok also run with `CODEX_HOME` / `GROK_HOME`
+forced to the home Archon installed its hook dispatcher in.
+
+The subscription CLIs' env never carries an API key, a base-URL override, the
+switches that move Claude Code onto Bedrock, Vertex or Foundry, those clouds'
+credentials (`AWS_*` keys and profile, `GOOGLE_APPLICATION_CREDENTIALS`,
+`AZURE_*KEY`) or any `*_API_KEY` name (`shared/subscription-env.ts`).
+
+Residual: Claude nodes load the repo's `.claude/settings.json` (setting source
+`project`, needed for CLAUDE.md), and its `env` or `apiKeyHelper` could still
+move Claude Code off the subscription. The SDK cannot drop only those keys from
+one source; its parent-supplied managed settings are filtered to restrictive keys
+and are dropped when the host has managed settings of its own, so this is left to
+the host's managed Claude settings.
+
+## Destructive-command guard
+
+`packages/providers/src/shared/destructive-guard.ts` is a port of Stixed's Python
+guard and shares its rules file and test list. Where it is stricter:
+
+- A command it cannot parse is searched as raw text and refused when it holds a
+  command the rules cover (`unparsed-destructive`, "rewrite it more simply"). A
+  fault in the guard refuses the command.
+- A recursive delete (`rm -r`, an unfiltered `find -delete`, `git clean -x`) of a
+  path, or from a `cd`, holding an expansion it cannot resolve is refused
+  (`unresolved-path`, "write the path out literally"), unless the path ends in a
+  build folder (`node_modules`, `dist`, `.venv`, `build` ...). `$TMPDIR`, `$TMP`,
+  `$TEMP` and `mktemp` count as temp paths. The shared case
+  `while read f; do rm -rf "$f"; done` is refused here on purpose. `mv` of an
+  unresolved source is not refused (a move is undoable, and `mv "$f" ...` is too
+  common).
+- Codex and Grok get the rules file the Archon server resolved through the hook
+  spec, not their own env. A node hook that rewrites a call (`updatedInput`) has
+  the rewritten call checked again, on every provider with hooks.
+
+Still not covered: a script written to a file and then run, and shells fed by
+anything other than echo/printf, a heredoc or a here-string (`curl ... | sh`).
