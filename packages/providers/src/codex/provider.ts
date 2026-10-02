@@ -207,7 +207,10 @@ function prepareCodexRun(
     sandbox,
     config,
     configOverrides: [codexHookTrustOverride(trust, home)],
-    hookEnv: hookRun.env,
+    // CODEX_HOME is forced to the home the dispatcher was installed in, so the
+    // CLI cannot be pointed (by a HOME in the project env, say) at a home
+    // without Archon's hooks.
+    hookEnv: { ...hookRun.env, CODEX_HOME: home },
     ...(budget !== undefined ? { budget } : {}),
     codexHome: home,
     warnings,

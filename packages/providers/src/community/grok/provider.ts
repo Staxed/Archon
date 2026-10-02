@@ -485,7 +485,8 @@ export class GrokProvider implements IAgentProvider {
           content: `⚠️ Grok could not preload missing skills: ${skills.missing.join(', ')}. Expected a directory with SKILL.md under .agents/skills/ or .claude/skills/ (project or home).`,
         };
       }
-      ensureGrokDispatcher();
+      const hooksHome = grokHome();
+      ensureGrokDispatcher(hooksHome);
       const hookRun = prepareHookRun({
         version: 1,
         provider: 'grok',
@@ -497,7 +498,12 @@ export class GrokProvider implements IAgentProvider {
       });
       cleanups.push(hookRun.cleanup);
       // Subscription only: no API key or base URL ever reaches the CLI.
-      const env = buildSubscriptionEnv(process.env, options?.env, hookRun.env);
+      // GROK_HOME is forced to the home the dispatcher was installed in, so a
+      // HOME or GROK_HOME in the project env cannot hand the CLI a home without
+      // Archon's hooks.
+      const env = buildSubscriptionEnv(process.env, options?.env, hookRun.env, {
+        GROK_HOME: hooksHome,
+      });
 
       const fallback = options?.fallbackModel ?? nodeConfig?.fallbackModel;
       try {

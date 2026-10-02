@@ -640,6 +640,52 @@ function sanitizeAgentPromptAppend(raw: unknown, source: string): string | undef
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Env names a repo's `.archon/config.yaml` may not set (fork policy, FORK.md).
+ * They decide where the subscription CLIs keep their logins and the hooks that
+ * carry Archon's guards (HOME, CODEX_HOME, GROK_HOME, CLAUDE_CONFIG_DIR,
+ * PI_CODING_AGENT_DIR), and every ARCHON_* setting (the guard's rules, hook
+ * specs, the Pi gateway URL and models file). Those belong to the deployment; a
+ * repo setting one could redirect or switch off a guard.
+ */
+export const REPO_FORBIDDEN_ENV_KEYS: readonly string[] = [
+  'HOME',
+  'CODEX_HOME',
+  'GROK_HOME',
+  'CLAUDE_CONFIG_DIR',
+  'PI_CODING_AGENT_DIR',
+];
+
+export function isRepoForbiddenEnvKey(key: string): boolean {
+  return key.startsWith('ARCHON_') || REPO_FORBIDDEN_ENV_KEYS.includes(key);
+}
+
+function withoutForbiddenEnv(env: Record<string, string>, where: string): Record<string, string> {
+  const dropped = Object.keys(env).filter(isRepoForbiddenEnvKey);
+  if (dropped.length === 0) return env;
+  getLog().warn({ where, dropped }, 'config.repo_env_forbidden_keys_ignored');
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !isRepoForbiddenEnvKey(k)));
+}
+
+/**
+ * The repo's assistant defaults with the settings only the deployment may
+ * decide removed: Pi's gateway lock cannot be switched off by a repo, and Pi's
+ * process-env settings cannot set the forbidden names above.
+ */
+function sanitizeRepoAssistants(assistants: RepoConfig['assistants']): RepoConfig['assistants'] {
+  const pi = assistants?.pi as Record<string, unknown> | undefined;
+  if (!assistants || !pi) return assistants;
+  const safe: Record<string, unknown> = { ...pi };
+  if (safe.gatewayOnly === false) {
+    getLog().warn({}, 'config.repo_pi_gateway_only_relax_ignored');
+    delete safe.gatewayOnly;
+  }
+  if (safe.env && typeof safe.env === 'object' && !Array.isArray(safe.env)) {
+    safe.env = withoutForbiddenEnv(safe.env as Record<string, string>, 'assistants.pi.env');
+  }
+  return { ...assistants, pi: safe } as RepoConfig['assistants'];
+}
+
 function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): MergedConfig {
   const result: MergedConfig = {
     ...defaults,
@@ -722,7 +768,10 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
     }
   }
 
-  result.assistants = mergeAssistantDefaults(result.assistants, repo.assistants);
+  result.assistants = mergeAssistantDefaults(
+    result.assistants,
+    sanitizeRepoAssistants(repo.assistants)
+  );
 
   result.aliases = mergeAliases(result.aliases, repo.aliases);
   result.tiers = mergeTiers(result.tiers, repo.tiers);
@@ -776,8 +825,9 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
   if (repoAppend !== undefined) result.agentPromptAppend = repoAppend;
 
   // Propagate per-project env vars from repo config
+  // (never the names only the deployment may set: see REPO_FORBIDDEN_ENV_KEYS)
   if (repo.env) {
-    result.envVars = { ...result.envVars, ...repo.env };
+    result.envVars = { ...result.envVars, ...withoutForbiddenEnv(repo.env, 'env') };
   }
 
   // Container backend settings — repo overrides global per-field.

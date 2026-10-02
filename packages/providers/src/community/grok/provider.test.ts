@@ -214,6 +214,15 @@ describe('GrokProvider: subscription only', () => {
       }
     }
   });
+
+  test('GROK_HOME is the home the hooks were installed in, whatever the project env says', async () => {
+    const { spawner, calls } = fakeSpawner([{ lines: [END] }]);
+    await collect(new GrokProvider({ spawner }), {
+      env: { GROK_HOME: '/tmp/elsewhere', HOME: '/tmp/elsewhere' },
+    });
+    expect(calls[0].env.GROK_HOME).toBe(grokHome);
+    expect(existsSync(join(grokHome, 'hooks', 'archon-dispatcher.json'))).toBe(true);
+  });
 });
 
 describe('GrokProvider: node options', () => {

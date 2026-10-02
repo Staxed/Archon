@@ -141,6 +141,11 @@ describe('Codex hooks and tool lists go through the CLI hook dispatcher', () => 
     expect(existsSync(opts.env.ARCHON_HOOK_SPEC)).toBe(false);
   });
 
+  test('CODEX_HOME is the home the hooks were installed in, even with a project HOME', async () => {
+    await run({ nodeConfig: { nodeId: 'n' }, env: { HOME: '/tmp/elsewhere' } });
+    expect(codexOptions().env.CODEX_HOME).toBe(codexHome);
+  });
+
   test('a node that denies WebSearch gets web search disabled', async () => {
     await run({ nodeConfig: { nodeId: 'n', denied_tools: ['WebSearch'] } });
     expect(mockStartThread.mock.calls[0][0]).toMatchObject({ webSearchMode: 'disabled' });
