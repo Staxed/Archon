@@ -20,6 +20,8 @@ deployment of it needs.
 - **Missing MCP config on a `when:`-gated node** is a validation warning, not an
   error.
 - **Sub-cent cost caps** show as `$0.001`, not `$0.00`.
+- **Short run ids on Postgres:** the id-prefix lookup (`workflow get|resume|abandon
+<short-id>`, chat `/workflow` commands) casts the uuid to text before `LIKE`.
 - **Retired fork code:** the fork's knowledge base, its own OpenRouter and
   llama.cpp clients and its own tool loop are gone. Gateway models run through
   Pi, and project knowledge lives in Stixed project cards.

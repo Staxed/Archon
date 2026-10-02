@@ -51,6 +51,7 @@ import {
   findAdoptingRuns,
   deleteOldWorkflowRuns,
   deleteWorkflowRun,
+  findWorkflowRunsByIdPrefix,
   WorkflowNotResumableError,
 } from './workflows';
 
@@ -405,6 +406,24 @@ describe('workflows database', () => {
       await expect(getWorkflowRunStatus('test-id')).rejects.toThrow(
         'Failed to get workflow run status: Connection refused'
       );
+    });
+  });
+
+  describe('findWorkflowRunsByIdPrefix', () => {
+    test('casts the uuid id to text so LIKE works on Postgres', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+      await findWorkflowRunsByIdPrefix('cfb409c9', 'codebase-1');
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT * FROM remote_agent_workflow_runs WHERE codebase_id = $1 AND CAST(id AS TEXT) LIKE $2 LIMIT 2',
+        ['codebase-1', 'cfb409c9%']
+      );
+    });
+
+    test('rejects a prefix outside the uuid charset without querying', async () => {
+      expect(await findWorkflowRunsByIdPrefix('ab%', 'codebase-1')).toEqual([]);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 
