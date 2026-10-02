@@ -6,10 +6,13 @@ import { trackTempRoots } from '@archon/paths/test-utils';
 import {
   Checker,
   DEFAULT_RULES,
+  HARD_STOP,
+  ROOT_OWNED_RULES_PATH,
   RULES_ENV,
   Rules,
   checkCommand,
   resetDestructiveGuardCache,
+  resolveRulesPath,
   type DestructiveRulesFile,
 } from './destructive-guard';
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
@@ -81,15 +84,11 @@ describe('Archon regressions (destructive-guard.regressions.json)', () => {
   const regressions = JSON.parse(
     readFileSync(new URL('./destructive-guard.regressions.json', import.meta.url), 'utf8')
   ) as Cases;
-  // Stixed's rules when present; otherwise the same paths inline, so the cases
+  // Stixed's rules when present; otherwise the built-in copy of them, so the cases
   // run on a machine without Stixed too.
   const rules: DestructiveRulesFile = existsSync(SHARED_RULES_PATH)
     ? (JSON.parse(readFileSync(SHARED_RULES_PATH, 'utf8')) as DestructiveRulesFile)
-    : {
-        protected_paths: ['/etc', '/usr', '/boot', '/var/lib/docker', '~', '/mnt/volumes/projects'],
-        project_parent: '/mnt/volumes/projects',
-        rules: DEFAULT_RULES.rules,
-      };
+    : DEFAULT_RULES;
   const checker = new Checker(new Rules(rules, '/home/staxed'));
 
   it('blocks every block case with the expected rule', () => {
@@ -122,12 +121,24 @@ describe('Archon regressions (destructive-guard.regressions.json)', () => {
   });
 });
 
-describe('default rules (no rules file configured)', () => {
+describe('default rules (no rules file, or the root-owned copy missing)', () => {
   const checker = new Checker(new Rules(DEFAULT_RULES, '/home/u'));
 
   it('blocks system roots and home', () => {
     for (const cmd of ['rm -rf /', 'rm -rf ~', 'sudo rm -rf /etc', 'docker volume prune -f']) {
       expect(checker.check(cmd, '/work')).toBeDefined();
+    }
+  });
+
+  it('is as strict as the shared rules: projects, the vault and Archon home', () => {
+    for (const cmd of [
+      'rm -rf /mnt/volumes/projects/Dashed',
+      'rm -rf /mnt/volumes/projects/stixed/SecondBrain/Memory/knowledge/concepts',
+      'rm -rf /home/staxed/.archon/worktrees',
+      'rm -rf ~/.archon',
+      'git -C /mnt/volumes/projects/Dashed clean -fdx',
+    ]) {
+      expect(checker.check(cmd, '/work')?.rule).toBeDefined();
     }
   });
 
@@ -137,9 +148,35 @@ describe('default rules (no rules file configured)', () => {
       'git clean -fdx',
       'docker compose down',
       'grep -r "rm -rf /" .',
+      'rm -rf /home/staxed/.archon/workspaces/Staxed/stixed/worktrees/archon/fix-x',
     ]) {
       expect(checker.check(cmd, '/work/repo')).toBeUndefined();
     }
+  });
+
+  it.skipIf(!existsSync(SHARED_RULES_PATH))("matches Stixed's rules file", () => {
+    const shared = JSON.parse(readFileSync(SHARED_RULES_PATH, 'utf8')) as DestructiveRulesFile;
+    expect(DEFAULT_RULES.protected_paths).toEqual(shared.protected_paths);
+    expect(DEFAULT_RULES.project_parent).toEqual(shared.project_parent);
+    expect(DEFAULT_RULES.protected_children_of).toEqual(shared.protected_children_of);
+    expect(DEFAULT_RULES.vaults).toEqual(shared.vaults);
+    expect(DEFAULT_RULES.rules).toEqual(shared.rules.map(r => ({ id: r.id, instead: r.instead })));
+  });
+});
+
+describe('floor messages', () => {
+  const checker = new Checker(new Rules(DEFAULT_RULES, '/home/staxed'));
+
+  it('a floor block is a hard stop: ask the user, do not find another way', () => {
+    const v = checker.check('docker volume rm pgdata', '/tmp');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(v?.message()).toContain('without -v is a different command and is fine');
+  });
+
+  it("the guard's own cannot-decide refusals still ask for a clearer command", () => {
+    const v = checker.check('rm -rf "$ROOT/x"', '/tmp/work');
+    expect(v?.rule).toBe('unresolved-path');
+    expect(v?.message()).not.toContain(HARD_STOP);
   });
 });
 
@@ -253,6 +290,38 @@ describe('checkCommand rules resolution', () => {
       'recursive-delete'
     );
   });
+
+  it('prefers the configured file, then the root-owned copy, then the built-in rules', () => {
+    const dir = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-rules-')));
+    const rootOwned = join(dir, 'destructive_rules.json');
+    writeFileSync(rootOwned, JSON.stringify(DEFAULT_RULES));
+    expect(resolveRulesPath({ [RULES_ENV]: '/x/rules.json' }, rootOwned)).toBe('/x/rules.json');
+    expect(resolveRulesPath({}, rootOwned)).toBe(rootOwned);
+    // Missing (the Archon VM): no path, so the built-in strict rules apply.
+    expect(resolveRulesPath({}, join(dir, 'missing.json'))).toBeUndefined();
+    expect(
+      checkCommand('rm -rf /mnt/volumes/projects/Dashed', '/tmp', { rulesPath: null })?.rule
+    ).toBe('recursive-delete');
+  });
+
+  it('never reads the agent-writable <ARCHON_HOME>/destructive-rules.json', () => {
+    expect(resolveRulesPath({ ARCHON_HOME: '/tmp/anything' }, '/nonexistent/rules.json')).toBe(
+      undefined
+    );
+  });
+
+  it.skipIf(!existsSync(ROOT_OWNED_RULES_PATH))(
+    "reads Stixed's root-owned copy on this host",
+    () => {
+      delete process.env[RULES_ENV];
+      resetDestructiveGuardCache();
+      expect(resolveRulesPath()).toBe(ROOT_OWNED_RULES_PATH);
+      expect(checkCommand('rm -rf /mnt/volumes/projects/Dashed', '/tmp')?.rule).toBe(
+        'recursive-delete'
+      );
+      expect(checkCommand('rm -rf node_modules', '/mnt/volumes/projects/Dashed')).toBeUndefined();
+    }
+  );
 
   it.skipIf(!existsSync(SHARED_RULES_PATH))('uses the configured rules file', () => {
     process.env[RULES_ENV] = SHARED_RULES_PATH;

@@ -11,18 +11,27 @@
  * covered: their workflow nodes say so in a system message (GUARD_GAP_NOTICE).
  *
  * The rules are data. Resolution order:
- *   1. ARCHON_DESTRUCTIVE_RULES, a path to a rules JSON file;
- *   2. <ARCHON_HOME>/destructive-rules.json, if present;
- *   3. DEFAULT_RULES below (system roots only).
+ *   1. ARCHON_DESTRUCTIVE_RULES, a path to a rules JSON file (the deployment's own
+ *      environment; a repo's `env:` cannot set ARCHON_* names);
+ *   2. ROOT_OWNED_RULES_PATH, Stixed's root-owned promoted copy, if present (the host
+ *      reads it directly; the container mounts it read-only at the same path);
+ *   3. DEFAULT_RULES below: a built-in copy of the same strict rules, so a missing
+ *      file never loosens the guard (the Archon VM has no root-owned copy).
  * A configured file that cannot be read or parsed makes every check refuse: a guard
- * that cannot decide must not wave a command through.
+ * that cannot decide must not wave a command through. The agent-writable
+ * `<ARCHON_HOME>/destructive-rules.json` is no longer read.
  *
  * This is a TypeScript port of a Python guard that shares the same rules file and the
- * same test list (destructive_cases.json); both must pass every case. It reads command
+ * same test list (destructive_cases.json); both must pass every case. It is the
+ * deterministic floor: catastrophic cases only, and a block is a HARD STOP whose
+ * message tells the agent to ask the user, not to find another way. It reads command
  * TEXT, parsed the way a shell would, so quoted text (`grep "rm -rf /"`, commit
- * messages, heredoc bodies) is never mistaken for a command, while `sudo`, `bash -c`,
- * `$(...)` and `cd a && rm -rf b` are seen through. Threat model: mistakes, not a
- * hostile agent -- writing a script and running it gets past any text check.
+ * messages, quoted heredoc bodies) is never mistaken for a command, while `sudo`,
+ * `bash -c`, `$(...)`, process substitution, `cd a && rm -rf b`, a script fed to a
+ * shell on stdin (`bash -euo pipefail <<EOF`, `printf ... | sh`) and a script written
+ * and run in the same command (`cat > x.sh <<EOF ... EOF; bash x.sh`) are seen
+ * through. Threat model: mistakes, not a hostile agent. A script already on disk is
+ * not read.
  *
  * Where this port is stricter than the Python guard (security review 2026-10):
  * - a command it cannot parse is searched as raw text, and refused when it holds a
@@ -34,47 +43,108 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { getArchonHome } from '@archon/paths/archon-paths';
 
 export const RULES_ENV = 'ARCHON_DESTRUCTIVE_RULES';
-export const RULES_FILE_NAME = 'destructive-rules.json';
+/** Stixed's promoted, root-owned copy of the shared rules (changes only through its promote step). */
+export const ROOT_OWNED_RULES_PATH = '/usr/local/lib/stixed/.claude/scripts/destructive_rules.json';
 
 /** The rules file's shape (only the fields the guard reads). */
 export interface DestructiveRulesFile {
   protected_paths: string[];
   project_parent?: string | null;
   protected_children_of?: string[];
+  /** Notes folders not in git: a find deleting their .md notes is refused. */
+  vaults?: string[];
   rules: { id: string; instead: string }[];
 }
 
-/** Used when no rules file is configured: system roots and the home folder only. */
+/**
+ * Used when no rules file is configured or the root-owned one is missing: the same
+ * strict rules as Stixed's destructive_rules.json (a test keeps them in step), so a
+ * missing file never loosens the guard.
+ */
 export const DEFAULT_RULES: DestructiveRulesFile = {
-  protected_paths: ['/etc', '/usr', '/boot', '/var/lib/docker', '~'],
-  project_parent: null,
+  protected_paths: [
+    '/etc',
+    '/usr',
+    '/boot',
+    '/var/lib/docker',
+    '~',
+    '/mnt/volumes/projects',
+    '/mnt/volumes/projects/stixed/SecondBrain',
+    '/mnt/volumes/projects/stixed/SecondBrain/Memory',
+    '/app/SecondBrain',
+    '/app/SecondBrain/Memory',
+    '/mnt/volumes/projects/stixed/SecondBrain/Memory/knowledge/concepts',
+    '/mnt/volumes/projects/stixed/SecondBrain/Memory/knowledge/connections',
+    '/mnt/volumes/projects/stixed/SecondBrain/Memory/knowledge/qa',
+    '/app/SecondBrain/Memory/knowledge/concepts',
+    '/app/SecondBrain/Memory/knowledge/connections',
+    '/app/SecondBrain/Memory/knowledge/qa',
+    '~/.archon',
+    '~/.archon/workspaces',
+    '~/.archon/worktrees',
+    '~/.archon/sessions',
+    '/home/staxed/.archon',
+    '/home/staxed/.archon/workspaces',
+    '/home/staxed/.archon/worktrees',
+    '/home/staxed/.archon/sessions',
+    '/.archon',
+    '/.archon/workspaces',
+    '/.archon/worktrees',
+    '/.archon/sessions',
+  ],
+  project_parent: '/mnt/volumes/projects',
+  protected_children_of: [
+    '/mnt/volumes/projects/stixed/SecondBrain/Memory',
+    '/app/SecondBrain/Memory',
+  ],
+  vaults: ['/mnt/volumes/projects/stixed/SecondBrain', '/app/SecondBrain'],
   rules: [
-    { id: 'recursive-delete', instead: 'Delete the specific subfolder you meant, not its parent.' },
-    { id: 'move-protected', instead: 'Ask the user to move it.' },
+    {
+      id: 'recursive-delete',
+      instead:
+        "Removing a project, the vault, Archon's home or a system folder is the user's to do. If you meant only a narrower path inside a project (node_modules, dist, .venv), that is a different command and is fine.",
+    },
+    {
+      id: 'move-protected',
+      instead: "Moving or renaming a project, the vault or a system folder is the user's to do.",
+    },
     { id: 'disk-wipe', instead: "Disk and partition work is the user's to do by hand." },
     {
       id: 'docker-volume-delete',
-      instead: 'Use `docker compose down` without -v; volumes hold databases.',
+      instead:
+        "Volumes hold databases, so deleting one is the user's to do. `docker compose down` without -v is a different command and is fine.",
     },
     {
       id: 'git-wipe',
-      instead: 'Remove the specific ignored folder you meant, or use git clean -fd.',
+      instead:
+        "Wiping a project's ignored data is the user's to do. git clean -fd (without -x), or removing the one ignored folder you meant (rm -rf dist .venv), is a different command and is fine.",
     },
   ],
 };
 
+/** What a floor block tells the agent: stop and ask, never route around it. */
+export const HARD_STOP =
+  'HARD STOP: do not look for another way to do this (a different command, a script, another tool or another agent). Stop and ask the user.';
+
 export class Violation {
+  /**
+   * `hard`: a rule from the rules file (the catastrophic floor), whose message is a
+   * hard stop. The guard's own "cannot decide" refusals (unresolved-path,
+   * unparsed-destructive, rules-unreadable, guard-error) ask for a clearer command.
+   */
   constructor(
     readonly rule: string,
     readonly reason: string,
-    readonly instead: string
+    readonly instead: string,
+    readonly hard = false
   ) {}
 
   message(): string {
+    if (this.hard) {
+      return `Blocked by the destructive-command guard (${this.rule}): ${this.reason}. ${HARD_STOP} ${this.instead}`;
+    }
     return `Blocked by the destructive-command guard (${this.rule}): ${this.reason}. Instead: ${this.instead}`;
   }
 }
@@ -143,22 +213,42 @@ export function shellQuote(s: string): string {
 
 // ---------------------------------------------------------------- rules
 
+/** `~` and `~/...` in a rules path are the running user's home. */
+function expandHome(path: string, home: string): string {
+  if (path === '~') return home;
+  if (path.startsWith('~/')) return home.replace(/\/+$/, '') + path.slice(1);
+  return path;
+}
+
+function unique(paths: string[]): string[] {
+  return [...new Set(paths)];
+}
+
 export class Rules {
   readonly home: string;
   readonly protectedPaths: string[];
   readonly projectParent: string | null;
   readonly childrenOf: string[];
-  /** Protected paths outside the projects folder, plus the projects folder itself. */
+  readonly vaults: string[];
+  /**
+   * Protected paths outside the projects folder and the home folder, plus those two
+   * themselves: a find starting above one is refused whatever its filter.
+   */
   readonly system: string[];
   private readonly instead: Map<string, string>;
 
   constructor(data: DestructiveRulesFile, home: string = homedir()) {
     this.home = home;
-    this.protectedPaths = data.protected_paths.map(p => normPath(p === '~' ? home : p));
+    const resolve = (p: string): string => normPath(expandHome(p, home));
+    this.protectedPaths = unique(data.protected_paths.map(resolve));
     this.projectParent = data.project_parent ? normPath(data.project_parent) : null;
-    this.childrenOf = (data.protected_children_of ?? []).map(normPath);
+    this.childrenOf = unique((data.protected_children_of ?? []).map(resolve));
+    this.vaults = unique((data.vaults ?? []).map(resolve));
     const pp = this.projectParent;
-    this.system = this.protectedPaths.filter(p => !pp || !p.startsWith(pp + '/'));
+    const homePrefix = normPath(home).replace(/\/+$/, '') + '/';
+    this.system = this.protectedPaths.filter(
+      p => (!pp || !p.startsWith(pp + '/')) && !p.startsWith(homePrefix)
+    );
     this.instead = new Map(data.rules.map(r => [r.id, r.instead]));
   }
 
@@ -211,7 +301,7 @@ export class Rules {
   }
 
   violation(rule: string, reason: string): Violation {
-    return new Violation(rule, reason, this.instead.get(rule) ?? 'ask the user');
+    return new Violation(rule, reason, this.instead.get(rule) ?? 'ask the user', true);
   }
 }
 
@@ -229,11 +319,12 @@ interface Word {
 
 interface Command {
   words: Word[];
-  redirects: [string, string][];
+  /** [op, target, fd]: fd is '' (default), a number, or '&' (stdout and stderr). */
+  redirects: [string, string, string][];
   heredocs: string[];
   /** The operator that preceded this command. */
   sep: string;
-  /** $(...) and backtick bodies. */
+  /** $(...), backtick and <(...) bodies, and those run inside an unquoted heredoc. */
   subs: string[];
 }
 
@@ -406,6 +497,124 @@ function newCommand(sep = ''): Command {
   return { words: [], redirects: [], heredocs: [], sep, subs: [] };
 }
 
+/** The $(...) and `...` bodies an UNQUOTED heredoc runs while it is expanded. */
+function bodySubstitutions(body: string): string[] {
+  const subs: string[] = [];
+  let j = 0;
+  try {
+    while (j < body.length) {
+      const c = body[j];
+      if (c === '\\') j += 2;
+      else if (body.startsWith('$(', j) && !body.startsWith('$((', j)) {
+        const end = scanSubstitution(body, j + 2);
+        subs.push(body.slice(j + 2, end));
+        j = end + 1;
+      } else if (c === '`') {
+        const end = skipBacktick(body, j);
+        subs.push(body.slice(j + 1, end - 1));
+        j = end;
+      } else j++;
+    }
+  } catch (err) {
+    // The shell rejects this expansion too; what was found is still checked.
+    if (!(err instanceof ParseError)) throw err;
+  }
+  return subs;
+}
+
+/** Decode the backslash escape at s[j] (\n, \x2f, \057 ...): [text, next index]. */
+function decodeEscape(s: string, j: number): [string, number] {
+  const simple: Record<string, string> = {
+    n: '\n',
+    t: '\t',
+    r: '\r',
+    a: '\x07',
+    b: '\b',
+    e: '\x1b',
+    E: '\x1b',
+    f: '\f',
+    v: '\v',
+    '\\': '\\',
+    "'": "'",
+    '"': '"',
+  };
+  const n = s[j + 1] ?? '';
+  if (n in simple) return [simple[n], j + 2];
+  let m: RegExpExecArray | null;
+  if ((m = /^x([0-9a-fA-F]{1,2})/.exec(s.slice(j + 1)))) {
+    return [String.fromCharCode(parseInt(m[1], 16)), j + 1 + m[0].length];
+  }
+  if ((m = /^0?([0-7]{1,3})/.exec(s.slice(j + 1)))) {
+    return [String.fromCharCode(parseInt(m[1], 8) & 0xff), j + 1 + m[0].length];
+  }
+  return [n, j + 2];
+}
+
+function unescapeText(text: string): string {
+  const out: string[] = [];
+  let j = 0;
+  while (j < text.length) {
+    if (text[j] === '\\' && j + 1 < text.length) {
+      const [piece, next] = decodeEscape(text, j);
+      out.push(piece);
+      j = next;
+    } else out.push(text[j++]);
+  }
+  return out.join('');
+}
+
+/** What `echo` prints (escapes read, as sh's echo does: the safe side for a check). */
+function echoText(args: string[]): string {
+  let newline = true;
+  let escapes = true;
+  while (args.length > 0 && /^-[neE]+$/.test(args[0])) {
+    if (args[0].includes('n')) newline = false;
+    escapes = !args[0].includes('E');
+    args = args.slice(1);
+  }
+  const text = args.join(' ');
+  return (escapes ? unescapeText(text) : text) + (newline ? '\n' : '');
+}
+
+/** What `printf` prints: the format filled from the arguments, repeated while they last. */
+function printfText(args: string[]): string {
+  if (args[0] === '--') args = args.slice(1);
+  if (args.length === 0 || args[0] === '-v') return '';
+  const fmt = args[0];
+  let rest = args.slice(1);
+  const out: string[] = [];
+  for (;;) {
+    let used = 0;
+    let j = 0;
+    while (j < fmt.length) {
+      const c = fmt[j];
+      if (c === '\\' && j + 1 < fmt.length) {
+        const [piece, next] = decodeEscape(fmt, j);
+        out.push(piece);
+        j = next;
+      } else if (c === '%' && j + 1 < fmt.length) {
+        const m = /^%[-+ #0]*\d*(?:\.\d*)?([a-zA-Z%])/.exec(fmt.slice(j));
+        if (!m) {
+          out.push(c);
+          j++;
+          continue;
+        }
+        j += m[0].length;
+        if (m[1] === '%') {
+          out.push('%');
+          continue;
+        }
+        const arg = used < rest.length ? rest[used] : '';
+        used++;
+        out.push(m[1] === 'b' ? unescapeText(arg) : arg);
+      } else out.push(fmt[j++]);
+    }
+    rest = rest.slice(used);
+    if (rest.length === 0 || used === 0) break;
+  }
+  return out.join('');
+}
+
 /**
  * A small POSIX-shell reader. It never executes anything.
  *
@@ -418,7 +627,8 @@ class Lexer {
   private i = 0;
   private readonly cmds: Command[] = [];
   private cur: Command = newCommand();
-  private pendingHeredocs: [string, boolean, Command][] = [];
+  /** [delimiter, strip tabs, command, delimiter quoted] */
+  private pendingHeredocs: [string, boolean, Command, boolean][] = [];
   private readonly loops = new Map<string, [string, boolean][]>();
   private readonly unknownNames = new Set<string>();
   private unk = false;
@@ -467,6 +677,8 @@ class Lexer {
       else if (c === '\\' && s.startsWith('\\\n', this.i)) this.i += 2;
       else if (c === '#') {
         while (this.i < s.length && s[this.i] !== '\n') this.i++;
+      } else if (s.startsWith('<(', this.i) || s.startsWith('>(', this.i)) {
+        this.cur.words.push({ text: this.processSubstitution(), glob: false });
       } else if (this.redirect()) {
         // consumed
       } else if (this.operator()) {
@@ -478,6 +690,14 @@ class Lexer {
     }
     this.end('');
     return this.cmds;
+  }
+
+  /** <(cmd) / >(cmd): the body runs; the word is a /dev/fd path. */
+  private processSubstitution(): string {
+    const end = scanSubstitution(this.s, this.i + 2);
+    this.cur.subs.push(this.s.slice(this.i + 2, end));
+    this.i = end + 1;
+    return '/dev/fd/63';
   }
 
   private end(op: string): void {
@@ -546,25 +766,32 @@ class Lexer {
     REDIRECT.lastIndex = this.i;
     const m = REDIRECT.exec(this.s);
     if (!m) return false;
+    const fd = m[1];
     const op = m[2];
     this.i = REDIRECT.lastIndex;
     while (this.i < this.s.length && (this.s[this.i] === ' ' || this.s[this.i] === '\t')) this.i++;
     if (op === '<<' || op === '<<-') {
+      const start = this.i;
       const w = this.word();
-      this.pendingHeredocs.push([w ? w.text : '', op === '<<-', this.cur]);
+      const quoted = /['"\\]/.test(this.s.slice(start, this.i));
+      this.pendingHeredocs.push([w ? w.text : '', op === '<<-', this.cur, quoted]);
+      return true;
+    }
+    if (this.s.startsWith('<(', this.i) || this.s.startsWith('>(', this.i)) {
+      this.cur.redirects.push([op, this.processSubstitution(), fd]);
       return true;
     }
     const w = this.word();
     if (!w) throw new ParseError('redirect without target');
     if ((op === '>&' || op === '<&') && /^(\d+|-)$/.test(w.text)) return true;
-    this.cur.redirects.push([op, w.text]);
+    this.cur.redirects.push([op, w.text, fd]);
     return true;
   }
 
   private readHeredocs(): void {
     const lines = this.s.slice(this.i).split('\n');
     let consumed = 0;
-    for (const [delim, stripTabs, cmd] of this.pendingHeredocs) {
+    for (const [delim, stripTabs, cmd, quoted] of this.pendingHeredocs) {
       const body: string[] = [];
       while (consumed < lines.length) {
         const line = lines[consumed];
@@ -572,7 +799,10 @@ class Lexer {
         if ((stripTabs ? line.replace(/^\t+/, '') : line) === delim) break;
         body.push(line);
       }
-      cmd.heredocs.push(body.join('\n'));
+      const text = body.join('\n');
+      cmd.heredocs.push(text);
+      // An unquoted heredoc runs its $(...) and `...` while it is expanded.
+      if (!quoted) cmd.subs.push(...bodySubstitutions(text));
     }
     this.pendingHeredocs = [];
     const skip = lines.slice(0, consumed).reduce((n, l) => n + l.length + 1, 0);
@@ -817,13 +1047,150 @@ const FIND_FILTERS = new Set([
   '-regex',
   '-iregex',
 ]);
+const FIND_PATH_FILTERS = new Set(['-path', '-ipath', '-wholename', '-iwholename']);
+const FIND_EXEC = ['-exec', '-execdir', '-ok', '-okdir'];
+const MATCH_ALL_REGEX = new Set(['.*', '^.*', '.*$', '^.*$', '.+', '^.+$']);
+const STDOUT_FDS = new Set(['', '1', '&']);
+/** rsync options that take the next word as their value (when not written --opt=value). */
+const RSYNC_ARG = new Set([
+  '-e',
+  '--rsh',
+  '-f',
+  '--filter',
+  '--exclude',
+  '--include',
+  '--exclude-from',
+  '--include-from',
+  '--files-from',
+  '--password-file',
+  '--log-file',
+  '--log-file-format',
+  '--partial-dir',
+  '-T',
+  '--temp-dir',
+  '--compare-dest',
+  '--copy-dest',
+  '--link-dest',
+  '--backup-dir',
+  '--suffix',
+  '--chmod',
+  '--chown',
+  '--usermap',
+  '--groupmap',
+  '--rsync-path',
+  '--timeout',
+  '--contimeout',
+  '--port',
+  '--sockopts',
+  '--out-format',
+  '--max-size',
+  '--min-size',
+  '--max-delete',
+  '--max-alloc',
+  '--bwlimit',
+  '-M',
+  '--remote-option',
+  '--info',
+  '--debug',
+  '--iconv',
+  '--checksum-choice',
+  '--cc',
+  '--compress-choice',
+  '--zc',
+  '--compress-level',
+  '--zl',
+  '--skip-compress',
+  '--modify-window',
+  '-@',
+  '-B',
+  '--block-size',
+  '--protocol',
+  '--outbuf',
+  '--stop-after',
+  '--stop-at',
+  '--write-batch',
+  '--read-batch',
+  '--only-write-batch',
+  '--address',
+  '--copy-as',
+]);
+const RSYNC_SHORT_ARG = 'efTM@B';
+
+/** Scripts a command line wrote so far: absolute path -> content (undefined: unknown). */
+type Files = Map<string, string | undefined>;
 
 type Outcome = [Violation | undefined, string | undefined];
+type FindFilter = [kind: string, pattern: string, negated: boolean];
+
+function writeFile(files: Files, path: string, text: string | undefined, append: boolean): void {
+  if (append) {
+    // An unknown append leaves the known part, which still runs.
+    if (text !== undefined) files.set(path, (files.get(path) ?? '') + text);
+  } else files.set(path, text);
+}
+
+function matchesAll([kind, pattern]: FindFilter, roots: string[]): boolean {
+  if (kind === '-regex' || kind === '-iregex') return MATCH_ALL_REGEX.has(pattern);
+  if (pattern.replace(/\*/g, '') === '') return true;
+  if (FIND_PATH_FILTERS.has(kind)) {
+    for (const root of roots) {
+      const base = root.replace(/\/+$/, '') || '/';
+      if (
+        pattern.startsWith(base) &&
+        pattern.slice(base.length).replace(/^\/+/, '').replace(/\*/g, '') === ''
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Whether some string the glob `pattern` matches ends with `suffix`. */
+function globCanEndWith(pattern: string, suffix: string): boolean {
+  const toks: [string, string][] = [];
+  let j = 0;
+  while (j < pattern.length) {
+    const c = pattern[j];
+    if (c === '\\' && j + 1 < pattern.length) {
+      toks.push(['lit', pattern[j + 1]]);
+      j += 2;
+    } else if (c === '*') {
+      toks.push(['star', '']);
+      j++;
+    } else if (c === '?') {
+      toks.push(['any', '']);
+      j++;
+    } else if (c === '[' && pattern.indexOf(']', j + 2) > 0) {
+      const end = pattern.indexOf(']', j + 2);
+      toks.push(['class', pattern.slice(j, end + 1)]);
+      j = end + 1;
+    } else {
+      toks.push(['lit', c]);
+      j++;
+    }
+  }
+  let t = toks.length - 1;
+  for (let k = suffix.length - 1; k >= 0; k--, t--) {
+    if (t < 0) return false;
+    const [kind, val] = toks[t];
+    if (kind === 'star') return true;
+    const ch = suffix[k];
+    const ok =
+      kind === 'any' || (kind === 'class' ? fnmatch(ch, val) : kind === 'lit' && val === ch);
+    if (!ok) return false;
+  }
+  return true;
+}
 
 export class Checker {
   constructor(private readonly r: Rules) {}
 
-  check(cmd: string, cwd: string, depth = 0): Violation | undefined {
+  /**
+   * `files` holds the scripts this command line has written so far, so running one
+   * (`bash x.sh`, `./x.sh`, `source x.sh`) is checked like a heredoc.
+   */
+  check(cmd: string, cwd: string, depth = 0, files: Files = new Map()): Violation | undefined {
     if (cmd.trim() === '') return undefined;
     if (depth > MAX_DEPTH) return rawScan(cmd, `nested more than ${MAX_DEPTH} levels deep`);
     const env: Record<string, string> = { ...TEMP_ENV, HOME: this.r.home, PWD: cwd };
@@ -835,19 +1202,23 @@ export class Checker {
       throw err;
     }
     let prev: Command | undefined;
+    let prevOut: string | undefined;
     for (const c of cmds) {
       env.PWD = cwd;
       for (const body of c.subs) {
-        const v = this.check(body, cwd, depth + 1);
+        const v = this.check(body, cwd, depth + 1, files);
         if (v) return v;
       }
       for (const [op, target] of c.redirects) {
-        if (['>', '>>', '>|', '<>'].includes(op) && DEVICE.test(target)) {
+        if (['>', '>>', '>|', '<>', '>&'].includes(op) && DEVICE.test(target)) {
           return this.r.violation('disk-wipe', `writes to the disk device ${target}`);
         }
       }
-      const [v, newCwd] = this.command(c.words, c, prev, cwd, depth);
+      const piped = c.sep === '|' || c.sep === '|&';
+      const stdin = piped ? prevOut : undefined;
+      const [v, newCwd] = this.command(c.words, c, prev, cwd, depth, files, stdin);
       if (v) return v;
+      prevOut = this.output(c, stdin, cwd, files);
       if (newCwd !== undefined) cwd = newCwd;
       prev = c;
     }
@@ -939,11 +1310,79 @@ export class Checker {
     c: Command,
     prev: Command | undefined,
     cwd: string,
-    depth: number
+    depth: number,
+    files: Files,
+    stdin: string | undefined
   ): Outcome {
+    const peeled = this.peel(words, cwd);
+    cwd = peeled.cwd;
+    if (peeled.split !== undefined) {
+      const i = peeled.split;
+      const rest = words
+        .slice(i + 2)
+        .map(w => shellQuote(w.text))
+        .join(' ');
+      return [this.check(`${words[i + 1].text} ${rest}`, cwd, depth + 1, files), undefined];
+    }
+    const xargs = peeled.xargs;
+    const rest = words.slice(peeled.i);
+    if (rest.length === 0) return [undefined, undefined];
+    const name = basename(rest[0].text);
+    const args = rest.slice(1);
+
+    if (name === 'cd' || name === 'pushd') {
+      const dirs = args.filter(w => !/^-[LPe@]+$/.test(w.text));
+      if (dirs.length === 0) return [undefined, this.r.home];
+      if (dirs[0].text === '-') return [undefined, UNRESOLVED_CWD];
+      return [undefined, this.chdir(dirs[0], cwd)];
+    }
+    if (name === 'popd') return [undefined, UNRESOLVED_CWD];
+    if (rest[0].text.includes('/')) {
+      // ./x.sh, /tmp/x.sh: a script this command line wrote
+      const v = this.runFile(rest[0], cwd, depth, files);
+      if (v) return [v, undefined];
+    }
+    if (SHELLS.has(name)) return [this.shell(args, c, cwd, depth, files, stdin), undefined];
+    if (name === 'source' || name === '.') {
+      return [args.length > 0 ? this.runFile(args[0], cwd, depth, files) : undefined, undefined];
+    }
+    if (name === 'eval') {
+      return [this.check(args.map(w => w.text).join(' '), cwd, depth + 1, files), undefined];
+    }
+    if (name === 'rm') {
+      const upstream = c.sep === '|' || c.sep === '|&' ? prev : undefined;
+      return [this.rm(args, cwd, xargs, upstream), undefined];
+    }
+    if (name === 'mv') return [this.mv(args, cwd), undefined];
+    if (name === 'find') return [this.find(args, cwd), undefined];
+    if (name === 'rsync') return [this.rsync(args, cwd), undefined];
+    if (
+      ['dd', 'shred', 'wipefs', 'blkdiscard', 'sgdisk', 'mke2fs', 'mkswap'].includes(name) ||
+      name.startsWith('mkfs')
+    ) {
+      return [this.disk(name, args), undefined];
+    }
+    if (name === 'docker' || name === 'docker-compose' || name === 'podman') {
+      return [this.docker(name, args), undefined];
+    }
+    if (name === 'stixctl' && args.length > 0 && args[0].text === 'compose') {
+      return [this.compose(args.slice(2)), undefined];
+    }
+    if (name === 'git') return [this.git(args, cwd), undefined];
+    return [undefined, undefined];
+  }
+
+  /**
+   * Skip what runs a command without being it: assignments, sudo/doas, env, nohup,
+   * timeout, xargs, busybox ... `split` is the index of an `env -S` whose string is the
+   * command.
+   */
+  private peel(
+    words: Word[],
+    cwd: string
+  ): { i: number; xargs: boolean; cwd: string; split?: number } {
     let xargs = false;
     let i = 0;
-    // Peel prefixes: assignments, sudo, env, timeout, xargs, ...
     while (i < words.length) {
       const name = basename(words[i].text);
       if (/^[A-Za-z_][A-Za-z0-9_]*=/s.test(words[i].text) || KEYWORDS.has(words[i].text)) {
@@ -965,11 +1404,7 @@ export class Checker {
             cwd = this.chdir(words[i + 1], cwd);
             i += 2;
           } else if ((t === '-S' || t === '--split-string') && i + 1 < words.length) {
-            const rest = words
-              .slice(i + 2)
-              .map(w => shellQuote(w.text))
-              .join(' ');
-            return [this.check(`${words[i + 1].text} ${rest}`, cwd, depth + 1), undefined];
+            return { i, xargs, cwd, split: i };
           } else if (t.startsWith('-') || t.includes('=')) i++;
           else peeled = true;
         }
@@ -992,85 +1427,129 @@ export class Checker {
             ? 2
             : 1;
         }
+      } else if (name === 'busybox' && i + 1 < words.length) {
+        i++;
       } else break;
     }
-    const rest = words.slice(i);
-    if (rest.length === 0) return [undefined, undefined];
-    const name = basename(rest[0].text);
-    const args = rest.slice(1);
+    return { i, xargs, cwd };
+  }
 
-    if (name === 'cd' || name === 'pushd') {
-      const dirs = args.filter(w => !/^-[LPe@]+$/.test(w.text));
-      if (dirs.length === 0) return [undefined, this.r.home];
-      if (dirs[0].text === '-') return [undefined, UNRESOLVED_CWD];
-      return [undefined, this.chdir(dirs[0], cwd)];
-    }
-    if (name === 'popd') return [undefined, UNRESOLVED_CWD];
-    if (SHELLS.has(name)) return [this.shell(args, c, prev, cwd, depth), undefined];
-    if (name === 'eval') {
-      return [this.check(args.map(w => w.text).join(' '), cwd, depth + 1), undefined];
-    }
-    if (name === 'rm') {
-      const upstream = c.sep === '|' || c.sep === '|&' ? prev : undefined;
-      return [this.rm(args, cwd, xargs, upstream), undefined];
-    }
-    if (name === 'mv') return [this.mv(args, cwd), undefined];
-    if (name === 'find') return [this.find(args, cwd), undefined];
-    if (
-      ['dd', 'shred', 'wipefs', 'blkdiscard', 'sgdisk', 'mke2fs', 'mkswap'].includes(name) ||
-      name.startsWith('mkfs')
-    ) {
-      return [this.disk(name, args), undefined];
-    }
-    if (name === 'docker' || name === 'docker-compose' || name === 'podman') {
-      return [this.docker(name, args), undefined];
-    }
-    if (name === 'stixctl' && args.length > 0 && args[0].text === 'compose') {
-      return [this.compose(args.slice(2)), undefined];
-    }
-    if (name === 'git') return [this.git(args, cwd), undefined];
-    if (name === 'busybox' && args.length > 0) {
-      return this.command(args, c, prev, cwd, depth);
-    }
-    return [undefined, undefined];
+  private runFile(w: Word, cwd: string, depth: number, files: Files): Violation | undefined {
+    const content = files.get(this.abs(w.text, cwd));
+    return content ? this.check(content, cwd, depth + 1, files) : undefined;
   }
 
   private shell(
     args: Word[],
     c: Command,
-    prev: Command | undefined,
     cwd: string,
-    depth: number
+    depth: number,
+    files: Files,
+    stdin: string | undefined
   ): Violation | undefined {
-    for (let k = 0; k < args.length; k++) {
+    let k = 0;
+    let stdinMode = false;
+    while (k < args.length) {
       const t = args[k].text;
-      if (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('c')) {
-        return k + 1 < args.length ? this.check(args[k + 1].text, cwd, depth + 1) : undefined;
+      if (
+        t === '--command' ||
+        t === '-command' ||
+        (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('c'))
+      ) {
+        return k + 1 < args.length
+          ? this.check(args[k + 1].text, cwd, depth + 1, files)
+          : undefined;
       }
-      if (t === '--command' || t === '-command') {
-        return k + 1 < args.length ? this.check(args[k + 1].text, cwd, depth + 1) : undefined;
+      if (t === '--') {
+        k++;
+        break;
       }
-      if (!t.startsWith('-')) return undefined; // running a script file
+      if (t.startsWith('--')) {
+        k += t === '--rcfile' || t === '--init-file' ? 2 : 1;
+        continue;
+      }
+      if ((t.startsWith('-') || t.startsWith('+')) && t.length > 1) {
+        if (t.startsWith('-') && t.slice(1).includes('s')) stdinMode = true;
+        // -o pipefail, -euo pipefail, +O opt: the option name is the next word
+        k += /[oO]/.test(t.slice(1)) ? 2 : 1;
+        continue;
+      }
+      break;
     }
-    // The script comes on stdin: a heredoc, a here-string, or a pipe from echo/printf/cat.
-    const scripts = [...c.heredocs, ...c.redirects.filter(([op]) => op === '<<<').map(r => r[1])];
-    if (prev && (c.sep === '|' || c.sep === '|&')) {
-      const head = prev.words.findIndex(w => !KEYWORDS.has(w.text));
-      const feeder = head >= 0 ? basename(prev.words[head].text) : '';
-      const fed = prev.words.slice(head + 1).filter(w => !/^-[neE]+$/.test(w.text));
-      if (feeder === 'echo' || feeder === 'printf') {
-        scripts.push(fed.map(w => w.text).join(' '), ...fed.map(w => w.text));
+    if (k < args.length && !stdinMode) return this.runFile(args[k], cwd, depth, files); // bash x.sh
+    // The script comes on stdin: a heredoc, a here-string, `< file` or a pipe.
+    const scripts = [...c.heredocs];
+    for (const [op, target] of c.redirects) {
+      if (op === '<<<') scripts.push(target);
+      else if (op === '<') {
+        const content = files.get(this.abs(target, cwd));
+        if (content) scripts.push(content);
       }
-      scripts.push(
-        ...prev.heredocs,
-        ...prev.redirects.filter(([op]) => op === '<<<').map(r => r[1])
-      );
     }
+    if (stdin) scripts.push(stdin);
     for (const body of scripts) {
-      const v = this.check(body.replace(/\\n/g, '\n'), cwd, depth + 1);
+      const v = this.check(body.replace(/\\n/g, '\n'), cwd, depth + 1, files);
       if (v) return v;
     }
     return undefined;
+  }
+
+  private stdinText(
+    c: Command,
+    stdin: string | undefined,
+    cwd: string,
+    files: Files
+  ): string | undefined {
+    if (c.heredocs.length > 0) return c.heredocs[c.heredocs.length - 1] + '\n';
+    for (const [op, target] of [...c.redirects].reverse()) {
+      if (op === '<<<') return target + '\n';
+      if (op === '<') return files.get(this.abs(target, cwd));
+    }
+    return stdin;
+  }
+
+  /**
+   * What `c` prints, when it is plain text the guard can know (cat of a heredoc or of
+   * a file written earlier, echo, printf, tee). Records the files its redirections and
+   * `tee` write, so a later `bash file` is checked.
+   */
+  private output(
+    c: Command,
+    stdin: string | undefined,
+    cwd: string,
+    files: Files
+  ): string | undefined {
+    const peeled = this.peel(c.words, cwd);
+    const words = peeled.split === undefined ? c.words.slice(peeled.i) : [];
+    const name = words.length > 0 ? basename(words[0].text) : '';
+    const args = words.slice(1);
+    let text: string | undefined;
+    if (name === 'cat') {
+      const operands = args.filter(a => a.text === '-' || !a.text.startsWith('-'));
+      if (operands.length === 0) text = this.stdinText(c, stdin, cwd, files);
+      else {
+        const parts = operands.map(a =>
+          a.text === '-' ? this.stdinText(c, stdin, cwd, files) : files.get(this.abs(a.text, cwd))
+        );
+        text = parts.some(p => p === undefined) ? undefined : parts.join('');
+      }
+    } else if (name === 'echo') text = echoText(args.map(a => a.text));
+    else if (name === 'printf') text = printfText(args.map(a => a.text));
+    else if (name === 'tee') {
+      text = this.stdinText(c, stdin, cwd, files);
+      const append = args.some(a => a.text === '-a' || a.text === '--append');
+      for (const a of args) {
+        if (!a.text.startsWith('-')) writeFile(files, this.abs(a.text, cwd), text, append);
+      }
+    }
+    let piped = text;
+    for (const [op, target, fd] of c.redirects) {
+      if (STDOUT_FDS.has(fd) && ['>', '>|', '>>', '>&'].includes(op)) {
+        writeFile(files, this.abs(target, cwd), text, op === '>>');
+        piped = undefined;
+      }
+    }
+    return piped;
   }
 
   private rm(
@@ -1153,21 +1632,42 @@ export class Checker {
       deleting =
         texts.includes('-delete') ||
         texts.some(
-          (t, k) =>
-            ['-exec', '-execdir', '-ok', '-okdir'].includes(t) &&
-            k + 1 < texts.length &&
-            basename(texts[k + 1]) === 'rm'
+          (t, k) => FIND_EXEC.includes(t) && k + 1 < texts.length && basename(texts[k + 1]) === 'rm'
         );
     }
     if (!deleting) return undefined;
-    const filtered = texts.some(t => FIND_FILTERS.has(t));
     const searched: Word[] = roots.length > 0 ? roots : [{ text: '.', glob: false }];
+    // A filter narrows the delete only when it is not negated and does not match
+    // everything (`-name '*'`, `-path './*'`, `-regex '.*'`).
+    const filters: FindFilter[] = [];
+    texts.forEach((t, k) => {
+      if (FIND_FILTERS.has(t) && k + 1 < texts.length) {
+        filters.push([t, texts[k + 1], k > 0 && (texts[k - 1] === '!' || texts[k - 1] === '-not')]);
+      }
+    });
+    const narrowing = filters.filter(
+      f =>
+        !f[2] &&
+        !matchesAll(
+          f,
+          searched.map(w => w.text)
+        )
+    );
+    const filtered = narrowing.length > 0;
+    const anyBranch = texts.includes('-o') || texts.includes('-or');
     for (const w of searched) {
       const p = this.abs(w.text, cwd);
       if (this.r.aboveSystem(p) || (this.r.hits(p) && !filtered)) {
         return this.r.violation(
           'recursive-delete',
-          `find would delete under ${p}` + (filtered ? '' : ' with no -name/-path filter')
+          `find would delete under ${p}` +
+            (filtered ? '' : ' with no -name/-path filter that narrows it')
+        );
+      }
+      if (this.r.hits(p) && this.deletesNotes(p, w.text, narrowing, anyBranch)) {
+        return this.r.violation(
+          'recursive-delete',
+          `find would delete the vault's notes under ${p} (its filter matches *.md files; the vault is not in git)`
         );
       }
     }
@@ -1175,6 +1675,97 @@ export class Checker {
       for (const w of searched) {
         const v = this.unresolvedDelete(w, cwd, 'find would delete everything under');
         if (v) return v;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * A find rooted at, in or above a vault whose filters can match its notes
+   * (`-name '*.md'`, `-name '2026-*.md'`, `-iname '*.MD'`).
+   */
+  private deletesNotes(
+    p: string,
+    rootText: string,
+    narrowing: FindFilter[],
+    anyBranch: boolean
+  ): boolean {
+    const printed: string[] = []; // the vault's path as this find prints it
+    const base = rootText.replace(/\/+$/, '') || '/';
+    for (const v of this.r.vaults) {
+      const pre = p.replace(/\/+$/, '');
+      if (v === p || v.startsWith(pre + '/')) {
+        const rel = v.slice(pre.length).replace(/^\/+/, '');
+        printed.push(rel ? `${base.replace(/\/+$/, '')}/${rel}` : base);
+      } else if (p.startsWith(v + '/')) printed.push(base);
+    }
+    if (printed.length === 0 || narrowing.length === 0) return false;
+    const can = ([kind, pattern]: FindFilter): boolean => {
+      if (kind === '-regex' || kind === '-iregex') return true; // cannot tell; the user's to run
+      if (!/[*?[]/.test(pattern)) return false; // one named file, not the notes
+      const folded = kind.startsWith('-i');
+      const pat = folded ? pattern.toLowerCase() : pattern;
+      if (FIND_PATH_FILTERS.has(kind)) {
+        const literal = pat.split(/[*?[]/)[0];
+        const fits = printed.some(x => {
+          const y = folded ? x.toLowerCase() : x;
+          return literal.startsWith(y) || y.startsWith(literal);
+        });
+        if (!fits) return false;
+      }
+      return globCanEndWith(pat, '.md');
+    };
+    const results = narrowing.map(can);
+    return anyBranch ? results.some(Boolean) : results.every(Boolean);
+  }
+
+  private rsync(args: Word[], cwd: string): Violation | undefined {
+    let deleting = false;
+    let opts = true;
+    const paths: Word[] = [];
+    for (let k = 0; k < args.length; k++) {
+      const t = args[k].text;
+      if (opts && t === '--') opts = false;
+      else if (opts && t.startsWith('--')) {
+        const opt = t.split('=')[0];
+        if (opt.startsWith('--del')) deleting = true; // --del, --delete, --delete-after, ...
+        if (!t.includes('=') && RSYNC_ARG.has(opt)) k++;
+      } else if (opts && t.startsWith('-') && t.length > 1) {
+        for (let n = 1; n < t.length; n++) {
+          if (RSYNC_SHORT_ARG.includes(t[n])) {
+            if (n === t.length - 1) k++; // its value is the next word
+            break;
+          }
+        }
+      } else paths.push(args[k]);
+    }
+    if (!deleting || paths.length < 2) return undefined;
+    const dest = paths[paths.length - 1];
+    if (/^[^/]*:/.test(dest.text) || dest.text.startsWith('rsync://')) return undefined; // remote
+    for (const src of paths.slice(0, -1)) {
+      const s = src.text;
+      // `src/` (or `.`) syncs the folder's contents into dest itself; `src` syncs into
+      // dest/src, and only that folder is pruned.
+      const contents =
+        s === '' ||
+        s.endsWith('/') ||
+        s === '.' ||
+        s === '..' ||
+        s.endsWith('/.') ||
+        s.endsWith('/..');
+      const eff: Word = contents
+        ? dest
+        : {
+            text: `${dest.text.replace(/\/+$/, '')}/${basename(s.replace(/\/+$/, ''))}`,
+            glob: src.glob || dest.glob,
+            unknown: dest.unknown || src.unknown,
+          };
+      const hit = this.targetHits(eff, cwd);
+      if (hit) {
+        return this.r.violation(
+          'recursive-delete',
+          `rsync --delete into ${hit} deletes everything there that the source lacks`
+        );
       }
     }
     return undefined;
@@ -1281,12 +1872,13 @@ export class Checker {
 
 /** Where the rules come from; see the file header for the order. */
 export function resolveRulesPath(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  rootOwned: string = ROOT_OWNED_RULES_PATH
 ): string | undefined {
   const configured = env[RULES_ENV];
   if (configured) return configured;
-  const candidate = join(getArchonHome(), RULES_FILE_NAME);
-  return existsSync(candidate) ? candidate : undefined;
+  // Missing (the VM, or a container without the mount): the built-in strict rules.
+  return existsSync(rootOwned) ? rootOwned : undefined;
 }
 
 let cached: { key: string; checker: Checker } | undefined;
@@ -1318,7 +1910,7 @@ function loadChecker(path: string | undefined): Checker | Violation {
     return new Violation(
       'rules-unreadable',
       `the rules file ${path} could not be loaded (${(err as Error).message}), so no shell command is allowed`,
-      `fix or remove ${path} (${RULES_ENV} or ${RULES_FILE_NAME} in the Archon home)`
+      `fix ${path} (named by ${RULES_ENV}, or Stixed's promoted copy at ${ROOT_OWNED_RULES_PATH})`
     );
   }
 }

@@ -1,18 +1,40 @@
 {
-  "_comment": "Archon-side regressions for the destructive-command guard (security review, 2026-10). Same shape as Stixed's destructive_cases.json; run with Stixed's rules file and home /home/staxed.",
+  "_comment": "Archon-side regressions for the destructive-command guard (security review, 2026-10). Same shape as Stixed's destructive_cases.json; run with Stixed's rules file and home /home/staxed. Jev guard layer Phase 2 (2026-10): scripts fed to or written for a shell, unquoted heredoc and process substitutions, find filters that match everything or the vault's notes, rsync --delete, the knowledge tree and Archon's home.",
   "default_cwd": "/mnt/volumes/projects/stixed",
   "block": [
     {
       "cmd": "git commit -m \"$(cat <<'EOF'\nDon't break\nEOF\n)\" && rm -rf ~",
       "rule": "recursive-delete"
     },
-    { "cmd": "x=$(cat <<EOF\nit's here\nEOF\n); rm -rf ~", "rule": "recursive-delete" },
-    { "cmd": "cat <<'EOF' > notes.txt\nDon't stop\nEOF\nrm -rf ~", "rule": "recursive-delete" },
-    { "cmd": "echo \"unbalanced && rm -rf ~", "rule": "unparsed-destructive" },
-    { "cmd": "find . -delete 'oops", "rule": "unparsed-destructive" },
-    { "cmd": "git clean -fdx \"oops", "rule": "unparsed-destructive" },
-    { "cmd": "rm -rf \"$ROOT/stixed\"", "rule": "unresolved-path" },
-    { "cmd": "rm -rf \"$1\"", "cwd": "/tmp/work", "rule": "unresolved-path" },
+    {
+      "cmd": "x=$(cat <<EOF\nit's here\nEOF\n); rm -rf ~",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "cat <<'EOF' > notes.txt\nDon't stop\nEOF\nrm -rf ~",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "echo \"unbalanced && rm -rf ~",
+      "rule": "unparsed-destructive"
+    },
+    {
+      "cmd": "find . -delete 'oops",
+      "rule": "unparsed-destructive"
+    },
+    {
+      "cmd": "git clean -fdx \"oops",
+      "rule": "unparsed-destructive"
+    },
+    {
+      "cmd": "rm -rf \"$ROOT/stixed\"",
+      "rule": "unresolved-path"
+    },
+    {
+      "cmd": "rm -rf \"$1\"",
+      "cwd": "/tmp/work",
+      "rule": "unresolved-path"
+    },
     {
       "cmd": "for f in $(cat list.txt); do rm -rf \"$f\"; done",
       "cwd": "/tmp/work",
@@ -22,32 +44,156 @@
       "cmd": "cd \"$(git rev-parse --show-toplevel)/..\" && rm -rf stixed",
       "rule": "unresolved-path"
     },
-    { "cmd": "cd - && rm -rf stixed", "rule": "unresolved-path" },
-    { "cmd": "cd \"$X\" && git clean -fdx", "rule": "unresolved-path" },
-    { "cmd": "git -C \"$X\" clean -fdx", "rule": "unresolved-path" },
-    { "cmd": "find \"$DIR\" -delete", "cwd": "/tmp/work", "rule": "unresolved-path" },
-    { "cmd": "rm -rf \"${A:-${HOME}}\"", "rule": "recursive-delete" },
-    { "cmd": "rm -rf \"${A:-$HOME}/\"", "rule": "recursive-delete" },
-    { "cmd": "doas rm -rf /etc", "rule": "recursive-delete" },
-    { "cmd": "busybox rm -rf /etc", "rule": "recursive-delete" },
-    { "cmd": "fish -c 'rm -rf ~'", "rule": "recursive-delete" },
-    { "cmd": "rm -rf $'/etc'", "rule": "recursive-delete" },
-    { "cmd": "rm -rf $'\\x2fetc'", "rule": "recursive-delete" },
-    { "cmd": "printf 'rm -rf ~\\n' | bash", "rule": "recursive-delete" },
-    { "cmd": "echo \"rm -rf /etc\" | sh", "rule": "recursive-delete" },
-    { "cmd": "bash <<< \"rm -rf ~\"", "rule": "recursive-delete" }
+    {
+      "cmd": "cd - && rm -rf stixed",
+      "rule": "unresolved-path"
+    },
+    {
+      "cmd": "cd \"$X\" && git clean -fdx",
+      "rule": "unresolved-path"
+    },
+    {
+      "cmd": "git -C \"$X\" clean -fdx",
+      "rule": "unresolved-path"
+    },
+    {
+      "cmd": "find \"$DIR\" -delete",
+      "cwd": "/tmp/work",
+      "rule": "unresolved-path"
+    },
+    {
+      "cmd": "rm -rf \"${A:-${HOME}}\"",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -rf \"${A:-$HOME}/\"",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "doas rm -rf /etc",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "busybox rm -rf /etc",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "fish -c 'rm -rf ~'",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -rf $'/etc'",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -rf $'\\x2fetc'",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "printf 'rm -rf ~\\n' | bash",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "echo \"rm -rf /etc\" | sh",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "bash <<< \"rm -rf ~\"",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "bash -euo pipefail <<'EOF'\nrm -rf ~\nEOF",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "cat > x.sh <<'EOF'\nrm -rf ~\nEOF\nbash x.sh",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "printf 'rm -rf ~\\n' > x.sh && sh x.sh",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "cat > x.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x x.sh && ./x.sh",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "cat > notes.txt <<EOF\nnow: $(rm -rf ~)\nEOF",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "diff <(ls a) <(ls b); rm -rf ~",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "find /mnt/volumes/projects/chat -name '*' -exec rm -rf {} +",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "find SecondBrain/Memory -name '*.md' -delete",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -rf SecondBrain/Memory/knowledge/concepts",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rsync -a --delete /tmp/empty/ /mnt/volumes/projects/chat/",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -rf ~/.archon",
+      "rule": "recursive-delete"
+    }
   ],
   "allow": [
-    { "cmd": "git commit -m \"$(cat <<'EOF'\nDon't break the build\nEOF\n)\"" },
-    { "cmd": "x=$(cat <<EOF\nit's fine (really\nEOF\n); printf '%s' \"$x\"" },
-    { "cmd": "echo \"unbalanced" },
-    { "cmd": "rm -rf \"$TMPDIR/x\"" },
-    { "cmd": "rm -rf \"${TMPDIR:-/tmp}/x\"" },
-    { "cmd": "cd \"$(git rev-parse --show-toplevel)\" && rm -rf node_modules dist" },
-    { "cmd": "rm -rf \"$PKG/node_modules\"" },
-    { "cmd": "find \"$DIR\" -name '*.pyc' -delete" },
-    { "cmd": "echo 'rm -rf ~' > notes.txt" },
-    { "cmd": "printf 'hello\\n' | bash" },
-    { "cmd": "rm -rf $'build'" }
+    {
+      "cmd": "git commit -m \"$(cat <<'EOF'\nDon't break the build\nEOF\n)\""
+    },
+    {
+      "cmd": "x=$(cat <<EOF\nit's fine (really\nEOF\n); printf '%s' \"$x\""
+    },
+    {
+      "cmd": "echo \"unbalanced"
+    },
+    {
+      "cmd": "rm -rf \"$TMPDIR/x\""
+    },
+    {
+      "cmd": "rm -rf \"${TMPDIR:-/tmp}/x\""
+    },
+    {
+      "cmd": "cd \"$(git rev-parse --show-toplevel)\" && rm -rf node_modules dist"
+    },
+    {
+      "cmd": "rm -rf \"$PKG/node_modules\""
+    },
+    {
+      "cmd": "find \"$DIR\" -name '*.pyc' -delete"
+    },
+    {
+      "cmd": "echo 'rm -rf ~' > notes.txt"
+    },
+    {
+      "cmd": "printf 'hello\\n' | bash"
+    },
+    {
+      "cmd": "rm -rf $'build'"
+    },
+    {
+      "cmd": "cat > setup.sh <<'EOF'\nset -e\nrm -rf dist\nEOF\nbash setup.sh"
+    },
+    {
+      "cmd": "rsync -a --delete dist/ /mnt/volumes/projects/Dashed/dist/"
+    },
+    {
+      "cmd": "diff <(ls a) <(ls b) && rm -rf node_modules"
+    },
+    {
+      "cmd": "rm -rf SecondBrain/Memory/knowledge/concepts/dev/some-article.md"
+    },
+    {
+      "cmd": "rm -rf ~/.archon/workspaces/Staxed/stixed/worktrees/archon/fix-x"
+    }
   ]
 }
