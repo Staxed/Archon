@@ -12,6 +12,9 @@ import {
   type HookRunSpec,
 } from './hook-dispatcher';
 import { dispatcherCommand } from './install';
+import { trackTempRoots } from '@archon/paths/test-utils';
+
+const trackTempRoot = trackTempRoots();
 
 const cwd = '/work/tree';
 const codex = (over: Partial<HookRunSpec> = {}): HookRunSpec => ({
@@ -233,32 +236,28 @@ describe('dispatchHook: destructive-command guard', () => {
   });
 
   test('uses the rules file pinned in the spec, not the CLI environment', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dispatch-rules-'));
-    try {
-      const rulesPath = join(dir, 'rules.json');
-      writeFileSync(
-        rulesPath,
-        JSON.stringify({
-          protected_paths: ['/srv/data'],
-          rules: [{ id: 'recursive-delete', instead: 'no' }],
-        })
-      );
-      const out = dispatchHook(
-        codex({ rulesPath }),
-        'PreToolUse',
-        pre('Bash', { command: 'rm -rf /srv/data' })
-      );
-      expect(decision(out)).toBe('deny');
-      // null pins the built-in defaults: /srv/data is not protected there
-      const dflt = dispatchHook(
-        codex({ rulesPath: null }),
-        'PreToolUse',
-        pre('Bash', { command: 'rm -rf /srv/data' })
-      );
-      expect(dflt).toBeUndefined();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = trackTempRoot(mkdtempSync(join(tmpdir(), 'dispatch-rules-')));
+    const rulesPath = join(dir, 'rules.json');
+    writeFileSync(
+      rulesPath,
+      JSON.stringify({
+        protected_paths: ['/srv/data'],
+        rules: [{ id: 'recursive-delete', instead: 'no' }],
+      })
+    );
+    const out = dispatchHook(
+      codex({ rulesPath }),
+      'PreToolUse',
+      pre('Bash', { command: 'rm -rf /srv/data' })
+    );
+    expect(decision(out)).toBe('deny');
+    // null pins the built-in defaults: /srv/data is not protected there
+    const dflt = dispatchHook(
+      codex({ rulesPath: null }),
+      'PreToolUse',
+      pre('Bash', { command: 'rm -rf /srv/data' })
+    );
+    expect(dflt).toBeUndefined();
   });
 
   test('judges the command a node hook rewrote it to (updatedInput)', () => {

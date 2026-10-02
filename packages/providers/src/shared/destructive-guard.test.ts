@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { trackTempRoots } from '@archon/paths/test-utils';
 import {
   Checker,
   DEFAULT_RULES,
@@ -27,6 +28,7 @@ const CASES_PATH = process.env.ARCHON_DESTRUCTIVE_CASES ?? `${STIXED}/destructiv
 const SHARED_RULES_PATH =
   process.env.ARCHON_DESTRUCTIVE_RULES_TEST ?? `${STIXED}/destructive_rules.json`;
 const haveShared = existsSync(CASES_PATH) && existsSync(SHARED_RULES_PATH);
+const trackTempRoot = trackTempRoots();
 
 /**
  * Shared cases this guard deliberately decides differently from the Python guard,
@@ -238,22 +240,18 @@ describe('checkCommand rules resolution', () => {
   });
 
   it('reloads an edited rules file and retries one that failed to load', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'guard-rules-'));
-    try {
-      const path = join(dir, 'rules.json');
-      writeFileSync(path, '{ not json');
-      expect(checkCommand('ls', '/tmp', { rulesPath: path })?.rule).toBe('rules-unreadable');
-      writeFileSync(path, JSON.stringify(DEFAULT_RULES));
-      expect(checkCommand('ls', '/tmp', { rulesPath: path })).toBeUndefined();
-      expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })).toBeUndefined();
-      writeFileSync(path, JSON.stringify({ ...DEFAULT_RULES, protected_paths: ['/srv/data'] }));
-      utimesSync(path, new Date(), new Date(Date.now() + 5000));
-      expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })?.rule).toBe(
-        'recursive-delete'
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-rules-')));
+    const path = join(dir, 'rules.json');
+    writeFileSync(path, '{ not json');
+    expect(checkCommand('ls', '/tmp', { rulesPath: path })?.rule).toBe('rules-unreadable');
+    writeFileSync(path, JSON.stringify(DEFAULT_RULES));
+    expect(checkCommand('ls', '/tmp', { rulesPath: path })).toBeUndefined();
+    expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })).toBeUndefined();
+    writeFileSync(path, JSON.stringify({ ...DEFAULT_RULES, protected_paths: ['/srv/data'] }));
+    utimesSync(path, new Date(), new Date(Date.now() + 5000));
+    expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })?.rule).toBe(
+      'recursive-delete'
+    );
   });
 
   it.skipIf(!existsSync(SHARED_RULES_PATH))('uses the configured rules file', () => {
