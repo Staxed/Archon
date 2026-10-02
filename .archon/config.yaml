@@ -1,5 +1,6 @@
 worktree:
-  baseBranch: dev
+  # The Staxed fork integrates on main (upstream uses dev).
+  baseBranch: main
   # `git worktree add` carries tracked files only, so every gitignored runtime file is
   # absent from a fresh worktree. Agents work inside worktrees, so without this they
   # cannot start the server, run integration tests, or reproduce anything that reads
