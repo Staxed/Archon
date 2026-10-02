@@ -23,8 +23,16 @@
  * messages, heredoc bodies) is never mistaken for a command, while `sudo`, `bash -c`,
  * `$(...)` and `cd a && rm -rf b` are seen through. Threat model: mistakes, not a
  * hostile agent -- writing a script and running it gets past any text check.
+ *
+ * Where this port is stricter than the Python guard (security review 2026-10):
+ * - a command it cannot parse is searched as raw text, and refused when it holds a
+ *   command the rules cover (`unparsed-destructive`); the guard throwing refuses too;
+ * - a recursive delete (rm -r, unfiltered find -delete, git clean -x) of a path, or
+ *   from a `cd`, that holds an expansion it cannot resolve is refused
+ *   (`unresolved-path`), unless the path ends in a build folder (node_modules,
+ *   dist, .venv ...). $TMPDIR/$TMP/$TEMP and mktemp resolve to a temp path.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getArchonHome } from '@archon/paths/archon-paths';
@@ -243,6 +251,157 @@ const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', 
 const DECLARE = new Set(['export', 'local', 'declare', 'readonly', 'typeset']);
 const MAX_ALTS = 64;
 
+/** Index just past the closing quote of the '...' starting at `i`. */
+function skipSingle(s: string, i: number): number {
+  const end = s.indexOf("'", i + 1);
+  if (end < 0) throw new ParseError("unbalanced '");
+  return end + 1;
+}
+
+/** Index just past the closing backtick of the `...` starting at `i`. */
+function skipBacktick(s: string, i: number): number {
+  for (let j = i + 1; j < s.length; j++) {
+    if (s[j] === '\\') j++;
+    else if (s[j] === '`') return j + 1;
+  }
+  throw new ParseError('unbalanced `');
+}
+
+/** Index just past the closing quote of the "..." starting at `i`; `$(...)` inside is followed. */
+function skipDouble(s: string, i: number): number {
+  for (let j = i + 1; j < s.length; j++) {
+    const c = s[j];
+    if (c === '\\') j++;
+    else if (c === '"') return j + 1;
+    else if (c === '`') j = skipBacktick(s, j) - 1;
+    else if (c === '$' && s[j + 1] === '(') j = scanSubstitution(s, j + 2);
+  }
+  throw new ParseError('unbalanced "');
+}
+
+/**
+ * Index of the `)` closing a `$(` whose body starts at `start`. Read the way a
+ * shell reads it: quotes, escapes, comments, nested `$(...)` and heredoc bodies
+ * (which are text, so an apostrophe in one is not an open quote).
+ */
+function scanSubstitution(s: string, start: number): number {
+  let depth = 0;
+  const heredocs: [string, boolean][] = [];
+  let j = start;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === '\\') j += 2;
+    else if (c === "'") j = skipSingle(s, j);
+    else if (c === '"') j = skipDouble(s, j);
+    else if (c === '`') j = skipBacktick(s, j);
+    else if (c === '$' && s[j + 1] === "'") j = skipAnsiC(s, j + 1)[1];
+    else if (c === '#' && (j === start || /[\s;&|(]/.test(s[j - 1]))) {
+      while (j < s.length && s[j] !== '\n') j++;
+    } else if (c === '<' && s.startsWith('<<', j) && s[j + 2] !== '<') {
+      j += 2;
+      const strip = s[j] === '-';
+      if (strip) j++;
+      while (s[j] === ' ' || s[j] === '\t') j++;
+      let delim = '';
+      while (j < s.length && !' \t\n;&|()<>'.includes(s[j])) {
+        if (s[j] === "'" || s[j] === '"') {
+          const end = s.indexOf(s[j], j + 1);
+          if (end < 0) throw new ParseError('unbalanced heredoc delimiter');
+          delim += s.slice(j + 1, end);
+          j = end + 1;
+        } else if (s[j] === '\\') {
+          delim += s[j + 1] ?? '';
+          j += 2;
+        } else delim += s[j++];
+      }
+      heredocs.push([delim, strip]);
+    } else if (c === '\n' && heredocs.length > 0) {
+      j++;
+      for (const [delim, strip] of heredocs.splice(0)) {
+        for (;;) {
+          if (j >= s.length) throw new ParseError('unterminated heredoc');
+          let end = s.indexOf('\n', j);
+          if (end < 0) end = s.length;
+          const line = s.slice(j, end);
+          j = end + 1;
+          if ((strip ? line.replace(/^\t+/, '') : line) === delim) break;
+        }
+      }
+    } else if (c === '(') {
+      depth++;
+      j++;
+    } else if (c === ')') {
+      if (depth === 0) return j;
+      depth--;
+      j++;
+    } else j++;
+  }
+  throw new ParseError('unbalanced $(');
+}
+
+/** Index of the `}` closing a `${` whose body starts at `start` (nesting and quotes followed). */
+function scanBrace(s: string, start: number): number {
+  let depth = 0;
+  let j = start;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === '\\') j += 2;
+    else if (c === "'") j = skipSingle(s, j);
+    else if (c === '"') j = skipDouble(s, j);
+    else if (c === '`') j = skipBacktick(s, j);
+    else if (c === '$' && s[j + 1] === '(') j = scanSubstitution(s, j + 2) + 1;
+    else if (c === '$' && s[j + 1] === '{') {
+      depth++;
+      j += 2;
+    } else if (c === '}') {
+      if (depth === 0) return j;
+      depth--;
+      j++;
+    } else j++;
+  }
+  throw new ParseError('unbalanced ${');
+}
+
+/** Read a $'...' word starting at the quote `i`: [decoded text, index past the closing quote]. */
+function skipAnsiC(s: string, i: number): [string, number] {
+  const out: string[] = [];
+  const simple: Record<string, string> = {
+    n: '\n',
+    t: '\t',
+    r: '\r',
+    a: '\x07',
+    b: '\b',
+    e: '\x1b',
+    E: '\x1b',
+    f: '\f',
+    v: '\v',
+  };
+  for (let j = i + 1; j < s.length; j++) {
+    const c = s[j];
+    if (c === "'") return [out.join(''), j + 1];
+    if (c !== '\\') {
+      out.push(c);
+      continue;
+    }
+    const n = s[j + 1] ?? '';
+    let m: RegExpExecArray | null;
+    if (n in simple) {
+      out.push(simple[n]);
+      j++;
+    } else if ((m = /^x([0-9a-fA-F]{1,2})/.exec(s.slice(j + 1)))) {
+      out.push(String.fromCharCode(parseInt(m[1], 16)));
+      j += m[0].length;
+    } else if ((m = /^[0-7]{1,3}/.exec(s.slice(j + 1)))) {
+      out.push(String.fromCharCode(parseInt(m[0], 8)));
+      j += m[0].length;
+    } else {
+      out.push(n);
+      j++;
+    }
+  }
+  throw new ParseError("unbalanced $'");
+}
+
 function newCommand(sep = ''): Command {
   return { words: [], redirects: [], heredocs: [], sep, subs: [] };
 }
@@ -265,9 +424,40 @@ class Lexer {
   private unk = false;
 
   constructor(
-    private readonly s: string,
+    private s: string,
     private readonly env: Record<string, string>
   ) {}
+
+  /** Expand the text of a ${A:-text} operand (quotes removed, expansions followed). */
+  private expandText(text: string): string {
+    const saved: [string, number] = [this.s, this.i];
+    this.s = text;
+    this.i = 0;
+    const out: string[] = [];
+    try {
+      while (this.i < this.s.length) {
+        const c = this.s[this.i];
+        if (c === '\\') {
+          out.push(this.s[this.i + 1] ?? '');
+          this.i += 2;
+        } else if (c === "'") {
+          const end = skipSingle(this.s, this.i);
+          out.push(this.s.slice(this.i + 1, end - 1));
+          this.i = end;
+        } else if (c === '"') {
+          this.i++;
+        } else if (c === '$' || c === '`') {
+          out.push(this.expansion());
+        } else {
+          out.push(c);
+          this.i++;
+        }
+      }
+    } finally {
+      [this.s, this.i] = saved;
+    }
+    return out.join('');
+  }
 
   run(): Command[] {
     const s = this.s;
@@ -434,6 +624,13 @@ class Lexer {
             this.i++;
           }
         }
+      } else if (c === '$' && s[this.i + 1] === "'") {
+        // $'...' (ANSI-C quoting): `rm -rf $'/etc'` is `rm -rf /etc`
+        const [text, next] = skipAnsiC(s, this.i + 1);
+        out.push(text);
+        this.i = next;
+      } else if (c === '$' && s[this.i + 1] === '"') {
+        this.i++; // $"..." (locale quoting) reads as "..."
       } else if (c === '$' || c === '`') {
         out.push(this.expansion());
       } else {
@@ -484,28 +681,13 @@ class Lexer {
       return '0';
     }
     if (s.startsWith('$(', this.i)) {
-      let depth = 0;
-      let j = this.i + 1;
-      let inS = false;
-      let inD = false;
-      for (; j < s.length; j++) {
-        const c = s[j];
-        if (c === "'" && !inD) inS = !inS;
-        else if (c === '"' && !inS) inD = !inD;
-        else if (!inS && c === '(') depth++;
-        else if (!inS && c === ')') {
-          depth--;
-          if (depth === 0) break;
-        }
-      }
-      if (j >= s.length) throw new ParseError('unbalanced $(');
+      const j = scanSubstitution(s, this.i + 2);
       const body = s.slice(this.i + 2, j);
       this.i = j + 1;
       return this.substitute(body);
     }
     if (s.startsWith('${', this.i)) {
-      const end = s.indexOf('}', this.i);
-      if (end < 0) throw new ParseError('unbalanced ${');
+      const end = scanBrace(s, this.i + 2);
       const inner = s.slice(this.i + 2, end);
       this.i = end + 1;
       const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(inner);
@@ -515,8 +697,17 @@ class Lexer {
       const own = Object.hasOwn(this.env, name);
       const known = own && !this.unknownNames.has(name);
       const val = own ? this.env[name] : '';
-      if (!val && (rest.startsWith(':-') || rest.startsWith(':='))) return rest.slice(2);
-      if (!val && (rest.startsWith('-') || rest.startsWith('='))) return rest.slice(1);
+      // ${A:-default}: when A is unset the default is used, and it may hold
+      // expansions of its own (${A:-${HOME}}); when A's value is unknown, it is
+      // either A or the default, so the word is unknown.
+      const op = /^(:?[-=])/.exec(rest);
+      if (op && name) {
+        const fallback = this.expandText(rest.slice(op[1].length));
+        // An unset name may still be set in the environment the shell runs in.
+        if (!known) this.unk = true;
+        if (!own) return fallback;
+        return val || (op[1].startsWith(':') ? fallback : val);
+      }
       if (!known) this.unk = true;
       return val;
     }
@@ -546,7 +737,74 @@ class Lexer {
 
 // ---------------------------------------------------------------- checks
 
-const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh']);
+const MAX_DEPTH = 8;
+/** Marks a directory the guard could not resolve (`cd "$X"`); never a real path. */
+const UNRESOLVED = '\uE001';
+const UNRESOLVED_CWD = `/${UNRESOLVED}unresolved`;
+/**
+ * Temp-dir variables resolve to a temp path, so `rm -rf "$TMPDIR/x"` is judged as
+ * a temp folder rather than as an unresolved path.
+ */
+const TEMP_ENV: Record<string, string> = {
+  TMPDIR: '/tmp/guard-tmpdir',
+  TMP: '/tmp/guard-tmpdir',
+  TEMP: '/tmp/guard-tmpdir',
+};
+/** Folder names a recursive delete may target even through an unresolved path. */
+const DISPOSABLE = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  '.venv',
+  'venv',
+  'target',
+  'coverage',
+  '.next',
+  '.nuxt',
+  '.turbo',
+  '.cache',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.parcel-cache',
+]);
+
+/**
+ * Used when the command cannot be parsed (or nests too deep): the raw text is
+ * searched for the commands the rules cover. A match is refused, since the guard
+ * cannot tell whether it runs; anything else is allowed (the shell would most
+ * likely reject a command this guard cannot read).
+ */
+const RAW_DESTRUCTIVE: [RegExp, string][] = [
+  [/\brm\b[^;&|\n]*\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?=\s|$)/, 'a recursive rm'],
+  [/\bfind\b[^\n]*\s(?:-delete\b|-(?:exec|execdir|ok|okdir)\s+\S*\brm\b)/, 'a find that deletes'],
+  [/\bgit\b[^\n]*\bclean\b[^;&|\n]*\s-[a-zA-Z]*[xXf]/, 'git clean'],
+  [/\b(?:mkfs[.\w]*|wipefs|blkdiscard|shred|sgdisk)\b/, 'a disk tool'],
+  [/\bdd\b[^\n]*\bof=\/dev\//, 'dd onto a device'],
+  [
+    />\s*\/dev\/(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|mapper\/|disk\/)/,
+    'a write to a disk device',
+  ],
+  [/\bvolume\s+(?:rm|remove|prune)\b/, 'a docker volume delete'],
+  [/\bdown\b[^;&|\n]*\s(?:-[a-zA-Z]*v[a-zA-Z]*|--volumes)(?=\s|$)/, 'compose down -v'],
+  [/\bsystem\s+prune\b[^\n]*--volumes/, 'docker system prune --volumes'],
+];
+
+function rawScan(cmd: string, why: string): Violation | undefined {
+  for (const [re, what] of RAW_DESTRUCTIVE) {
+    if (re.test(cmd)) {
+      return new Violation(
+        'unparsed-destructive',
+        `the guard could not parse this command (${why}) and it contains ${what}`,
+        'Rewrite it more simply: balanced quotes, no heredoc inside $(...), one destructive command per call (write long text such as a commit message to a file first).'
+      );
+    }
+  }
+  return undefined;
+}
 const DEVICE =
   /^\/dev\/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|md\d|dm-\d|loop\d|mapper\/|disk\/)/;
 const FIND_FILTERS = new Set([
@@ -566,13 +824,14 @@ export class Checker {
   constructor(private readonly r: Rules) {}
 
   check(cmd: string, cwd: string, depth = 0): Violation | undefined {
-    if (depth > 8 || cmd.trim() === '') return undefined;
-    const env: Record<string, string> = { HOME: this.r.home, PWD: cwd };
+    if (cmd.trim() === '') return undefined;
+    if (depth > MAX_DEPTH) return rawScan(cmd, `nested more than ${MAX_DEPTH} levels deep`);
+    const env: Record<string, string> = { ...TEMP_ENV, HOME: this.r.home, PWD: cwd };
     let cmds: Command[];
     try {
       cmds = new Lexer(cmd, env).run();
     } catch (err) {
-      if (err instanceof ParseError) return undefined;
+      if (err instanceof ParseError) return rawScan(cmd, err.message);
       throw err;
     }
     let prev: Command | undefined;
@@ -596,7 +855,41 @@ export class Checker {
   }
 
   private abs(path: string, cwd: string): string {
-    return normPath(path.startsWith('/') ? path : joinPath(cwd, path));
+    if (path.startsWith('/')) return normPath(path);
+    // Relative to a directory the guard could not resolve: keep the marker, never
+    // let `..` normalise it away.
+    if (cwd.includes(UNRESOLVED)) return `${UNRESOLVED_CWD}/${path}`;
+    return normPath(joinPath(cwd, path));
+  }
+
+  /** The directory a `cd`-like word leads to; a word the guard cannot resolve gives UNRESOLVED_CWD. */
+  private chdir(w: Word, cwd: string): string {
+    if (w.unknown || w.alts) return UNRESOLVED_CWD;
+    return this.abs(w.text, cwd);
+  }
+
+  /** A path holding an expansion the guard could not resolve (target or effective cwd). */
+  private unresolved(w: Word, cwd: string): boolean {
+    if (w.unknown || w.text.includes(UNRESOLVED)) return true;
+    return !w.text.startsWith('/') && cwd.includes(UNRESOLVED);
+  }
+
+  /**
+   * Refuse a recursive delete of a path the guard cannot resolve, unless its last
+   * component is plainly a disposable build folder (node_modules, dist, .venv ...).
+   */
+  private unresolvedDelete(w: Word, cwd: string, what: string): Violation | undefined {
+    if (!this.unresolved(w, cwd)) return undefined;
+    const name = basename(w.text.replace(/\/+$/, ''));
+    if (!w.glob && !w.alts && DISPOSABLE.has(name) && !w.text.split('/').includes('..')) {
+      return undefined;
+    }
+    const shown = w.text.includes(UNRESOLVED) || w.text === '' ? 'an unresolved path' : w.text;
+    return new Violation(
+      'unresolved-path',
+      `${what} ${shown}, which holds a variable, $(...) or cd the guard cannot resolve (it could be any folder, a project included)`,
+      'Write the path out literally: resolve the variable first (printf \'%s\\n\' "$X"), then run the delete on the printed path. Temp dirs ($TMPDIR, mktemp) and build folders (node_modules, dist, .venv, build) are fine as they are.'
+    );
   }
 
   private targetHits(w: Word, cwd: string): string | undefined {
@@ -655,7 +948,7 @@ export class Checker {
       const name = basename(words[i].text);
       if (/^[A-Za-z_][A-Za-z0-9_]*=/s.test(words[i].text) || KEYWORDS.has(words[i].text)) {
         i++;
-      } else if (name === 'sudo') {
+      } else if (name === 'sudo' || name === 'doas') {
         i++;
         while (i < words.length && words[i].text.startsWith('-')) {
           const opt = words[i].text;
@@ -669,7 +962,7 @@ export class Checker {
           const t = words[i].text;
           if (t === '-u' || t === '--unset') i += 2;
           else if ((t === '-C' || t === '--chdir') && i + 1 < words.length) {
-            cwd = this.abs(words[i + 1].text, cwd);
+            cwd = this.chdir(words[i + 1], cwd);
             i += 2;
           } else if ((t === '-S' || t === '--split-string') && i + 1 < words.length) {
             const rest = words
@@ -707,11 +1000,13 @@ export class Checker {
     const args = rest.slice(1);
 
     if (name === 'cd' || name === 'pushd') {
-      if (args.length === 0) return [undefined, this.r.home];
-      if (args[0].text === '-') return [undefined, undefined];
-      return [undefined, this.abs(args[0].text, cwd)];
+      const dirs = args.filter(w => !/^-[LPe@]+$/.test(w.text));
+      if (dirs.length === 0) return [undefined, this.r.home];
+      if (dirs[0].text === '-') return [undefined, UNRESOLVED_CWD];
+      return [undefined, this.chdir(dirs[0], cwd)];
     }
-    if (SHELLS.has(name)) return [this.shell(args, c, cwd, depth), undefined];
+    if (name === 'popd') return [undefined, UNRESOLVED_CWD];
+    if (SHELLS.has(name)) return [this.shell(args, c, prev, cwd, depth), undefined];
     if (name === 'eval') {
       return [this.check(args.map(w => w.text).join(' '), cwd, depth + 1), undefined];
     }
@@ -734,20 +1029,45 @@ export class Checker {
       return [this.compose(args.slice(2)), undefined];
     }
     if (name === 'git') return [this.git(args, cwd), undefined];
+    if (name === 'busybox' && args.length > 0) {
+      return this.command(args, c, prev, cwd, depth);
+    }
     return [undefined, undefined];
   }
 
-  private shell(args: Word[], c: Command, cwd: string, depth: number): Violation | undefined {
+  private shell(
+    args: Word[],
+    c: Command,
+    prev: Command | undefined,
+    cwd: string,
+    depth: number
+  ): Violation | undefined {
     for (let k = 0; k < args.length; k++) {
       const t = args[k].text;
       if (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('c')) {
         return k + 1 < args.length ? this.check(args[k + 1].text, cwd, depth + 1) : undefined;
       }
+      if (t === '--command' || t === '-command') {
+        return k + 1 < args.length ? this.check(args[k + 1].text, cwd, depth + 1) : undefined;
+      }
       if (!t.startsWith('-')) return undefined; // running a script file
     }
-    for (const body of c.heredocs) {
-      // bash <<EOF ... EOF: the body is the script
-      const v = this.check(body, cwd, depth + 1);
+    // The script comes on stdin: a heredoc, a here-string, or a pipe from echo/printf/cat.
+    const scripts = [...c.heredocs, ...c.redirects.filter(([op]) => op === '<<<').map(r => r[1])];
+    if (prev && (c.sep === '|' || c.sep === '|&')) {
+      const head = prev.words.findIndex(w => !KEYWORDS.has(w.text));
+      const feeder = head >= 0 ? basename(prev.words[head].text) : '';
+      const fed = prev.words.slice(head + 1).filter(w => !/^-[neE]+$/.test(w.text));
+      if (feeder === 'echo' || feeder === 'printf') {
+        scripts.push(fed.map(w => w.text).join(' '), ...fed.map(w => w.text));
+      }
+      scripts.push(
+        ...prev.heredocs,
+        ...prev.redirects.filter(([op]) => op === '<<<').map(r => r[1])
+      );
+    }
+    for (const body of scripts) {
+      const v = this.check(body.replace(/\\n/g, '\n'), cwd, depth + 1);
       if (v) return v;
     }
     return undefined;
@@ -773,6 +1093,10 @@ export class Checker {
     for (const w of targets) {
       const hit = this.targetHits(w, cwd);
       if (hit) return this.r.violation('recursive-delete', `rm -r would delete ${hit}`);
+    }
+    for (const w of targets) {
+      const v = this.unresolvedDelete(w, cwd, 'rm -r would delete');
+      if (v) return v;
     }
     if (xargs) {
       const upstream = prev ? prev.words : [];
@@ -837,13 +1161,20 @@ export class Checker {
     }
     if (!deleting) return undefined;
     const filtered = texts.some(t => FIND_FILTERS.has(t));
-    for (const w of roots.length > 0 ? roots : [{ text: '.', glob: false }]) {
+    const searched: Word[] = roots.length > 0 ? roots : [{ text: '.', glob: false }];
+    for (const w of searched) {
       const p = this.abs(w.text, cwd);
       if (this.r.aboveSystem(p) || (this.r.hits(p) && !filtered)) {
         return this.r.violation(
           'recursive-delete',
           `find would delete under ${p}` + (filtered ? '' : ' with no -name/-path filter')
         );
+      }
+    }
+    if (!filtered) {
+      for (const w of searched) {
+        const v = this.unresolvedDelete(w, cwd, 'find would delete everything under');
+        if (v) return v;
       }
     }
     return undefined;
@@ -918,7 +1249,7 @@ export class Checker {
     let k = 0;
     while (k < texts.length && texts[k].startsWith('-')) {
       if (texts[k] === '-C' && k + 1 < texts.length) {
-        cwd = this.abs(texts[k + 1], cwd);
+        cwd = this.chdir(args[k + 1], cwd);
         k += 2;
       } else if (['-c', '--git-dir', '--work-tree', '--namespace'].includes(texts[k])) k += 2;
       else k++;
@@ -929,6 +1260,13 @@ export class Checker {
     const dry = longs.includes('--dry-run') || flags.some(f => f.slice(1).includes('n'));
     const force = longs.includes('--force') || flags.some(f => f.slice(1).includes('f'));
     const ignored = flags.some(f => /[xX]/.test(f.slice(1)));
+    if (force && ignored && !dry && cwd.includes(UNRESOLVED)) {
+      return new Violation(
+        'unresolved-path',
+        'git clean -x runs in a directory the guard cannot resolve (a variable, $(...) or cd), which could be a project, and deletes ignored data there',
+        'cd to the literal project path first, or remove the specific ignored folder you meant.'
+      );
+    }
     if (force && ignored && !dry && this.r.inProject(cwd)) {
       return this.r.violation(
         'git-wipe',
@@ -951,33 +1289,63 @@ export function resolveRulesPath(
   return existsSync(candidate) ? candidate : undefined;
 }
 
-let cached: { key: string; checker: Checker } | { key: string; error: string } | undefined;
+let cached: { key: string; checker: Checker } | undefined;
+
+/** Which rules file to use; `rulesPath: null` means the built-in DEFAULT_RULES. */
+export interface CheckOptions {
+  /**
+   * The rules file, decided by the caller (the CLI hook dispatcher passes the one
+   * the Archon server resolved, so the CLI's own environment cannot change it).
+   * Omitted: resolved from this process's environment (resolveRulesPath).
+   */
+  rulesPath?: string | null;
+}
+
+function loadChecker(path: string | undefined): Checker | Violation {
+  let key = path ?? '<default>';
+  try {
+    // The file's mtime is part of the key, so an edited rules file is reloaded.
+    if (path) key = `${path}@${statSync(path).mtimeMs}`;
+    if (cached?.key === key) return cached.checker;
+    const data = path
+      ? (JSON.parse(readFileSync(path, 'utf8')) as DestructiveRulesFile)
+      : DEFAULT_RULES;
+    const checker = new Checker(new Rules(data));
+    cached = { key, checker };
+    return checker;
+  } catch (err) {
+    // Not cached: the next check retries, so a fixed file takes effect at once.
+    return new Violation(
+      'rules-unreadable',
+      `the rules file ${path} could not be loaded (${(err as Error).message}), so no shell command is allowed`,
+      `fix or remove ${path} (${RULES_ENV} or ${RULES_FILE_NAME} in the Archon home)`
+    );
+  }
+}
 
 /**
  * Check one shell command run from `cwd`. Returns the rule it breaks, or undefined.
- * A configured rules file that cannot be loaded yields a violation for every command.
+ * A configured rules file that cannot be loaded, or a fault in the guard itself,
+ * yields a violation: the guard never waves a command through because it failed.
  */
-export function checkCommand(command: string, cwd: string): Violation | undefined {
-  const path = resolveRulesPath();
-  const key = path ?? '<default>';
-  if (cached?.key !== key) {
-    try {
-      const data = path
-        ? (JSON.parse(readFileSync(path, 'utf8')) as DestructiveRulesFile)
-        : DEFAULT_RULES;
-      cached = { key, checker: new Checker(new Rules(data)) };
-    } catch (err) {
-      cached = { key, error: (err as Error).message };
-    }
-  }
-  if ('error' in cached) {
+export function checkCommand(
+  command: string,
+  cwd: string,
+  options: CheckOptions = {}
+): Violation | undefined {
+  const path =
+    options.rulesPath === undefined ? resolveRulesPath() : (options.rulesPath ?? undefined);
+  const checker = loadChecker(path);
+  if (checker instanceof Violation) return checker;
+  try {
+    return checker.check(command, normPath(cwd));
+  } catch (err) {
     return new Violation(
-      'rules-unreadable',
-      `the rules file ${key} could not be loaded (${cached.error}), so no shell command is allowed`,
-      `fix or remove ${key} (${RULES_ENV} or ${RULES_FILE_NAME} in the Archon home)`
+      'guard-error',
+      `the destructive-command guard failed on this command (${(err as Error).message})`,
+      'Rewrite the command more simply, or split it into separate commands.'
     );
   }
-  return cached.checker.check(command, normPath(cwd));
 }
 
 /** Test hook: forget the cached rules so the next check reloads them. */

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   Checker,
   DEFAULT_RULES,
@@ -9,7 +11,11 @@ import {
   resetDestructiveGuardCache,
   type DestructiveRulesFile,
 } from './destructive-guard';
-import { createPreToolUseDestructiveGuardHook } from '../claude/destructive-guard-hook';
+import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
+import {
+  createPreToolUseDestructiveGuardHook,
+  guardRewrittenInput,
+} from '../claude/destructive-guard-hook';
 
 /**
  * The shared test list lives with the Python guard (stixed). Both implementations
@@ -21,6 +27,13 @@ const CASES_PATH = process.env.ARCHON_DESTRUCTIVE_CASES ?? `${STIXED}/destructiv
 const SHARED_RULES_PATH =
   process.env.ARCHON_DESTRUCTIVE_RULES_TEST ?? `${STIXED}/destructive_rules.json`;
 const haveShared = existsSync(CASES_PATH) && existsSync(SHARED_RULES_PATH);
+
+/**
+ * Shared cases this guard deliberately decides differently from the Python guard,
+ * pending an update of the shared list: a recursive delete of a path the guard
+ * cannot resolve is refused (security review 2026-10).
+ */
+const DIVERGES_FROM_SHARED = new Set(['while read f; do rm -rf "$f"; done < list.txt']);
 
 interface Case {
   cmd: string;
@@ -54,10 +67,56 @@ describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () 
   it('allows every allow case', () => {
     const wrong: string[] = [];
     for (const c of cases?.allow ?? []) {
+      if (DIVERGES_FROM_SHARED.has(c.cmd)) continue;
       const v = checker?.check(c.cmd, c.cwd ?? cases?.default_cwd ?? '/');
       if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
     }
     expect(wrong).toEqual([]);
+  });
+});
+
+describe('Archon regressions (destructive-guard.regressions.json)', () => {
+  const regressions = JSON.parse(
+    readFileSync(new URL('./destructive-guard.regressions.json', import.meta.url), 'utf8')
+  ) as Cases;
+  // Stixed's rules when present; otherwise the same paths inline, so the cases
+  // run on a machine without Stixed too.
+  const rules: DestructiveRulesFile = existsSync(SHARED_RULES_PATH)
+    ? (JSON.parse(readFileSync(SHARED_RULES_PATH, 'utf8')) as DestructiveRulesFile)
+    : {
+        protected_paths: ['/etc', '/usr', '/boot', '/var/lib/docker', '~', '/mnt/volumes/projects'],
+        project_parent: '/mnt/volumes/projects',
+        rules: DEFAULT_RULES.rules,
+      };
+  const checker = new Checker(new Rules(rules, '/home/staxed'));
+
+  it('blocks every block case with the expected rule', () => {
+    const wrong: string[] = [];
+    for (const c of regressions.block) {
+      const v = checker.check(c.cmd, c.cwd ?? regressions.default_cwd);
+      if (!v || v.rule !== c.rule)
+        wrong.push(`${c.cmd} -> ${v ? v.rule : 'allowed'} (want ${c.rule})`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('allows every allow case', () => {
+    const wrong: string[] = [];
+    for (const c of regressions.allow) {
+      const v = checker.check(c.cmd, c.cwd ?? regressions.default_cwd);
+      if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('asks for a literal path when it cannot resolve one', () => {
+    const v = checker.check('rm -rf "$ROOT/stixed"', '/tmp/work');
+    expect(v?.message()).toContain('Write the path out literally');
+  });
+
+  it('asks for a simpler command when it cannot parse a destructive one', () => {
+    const v = checker.check('echo "oops && rm -rf ~', '/tmp/work');
+    expect(v?.message()).toContain('Rewrite it more simply');
   });
 });
 
@@ -103,9 +162,55 @@ describe('Claude PreToolUse hook', () => {
     expect(read).toEqual({ continue: true } as unknown as HookOut);
   });
 
+  it('denies the heredoc-in-$(...) commit that once parsed as an open quote', async () => {
+    const command = `git commit -m "$(cat <<'EOF'\nDon't break\nEOF\n)" && rm -rf ~`;
+    const out = await hook({ tool_name: 'Bash', tool_input: { command } });
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
   it('uses the cwd the SDK reports for the call', async () => {
     const out = await hook({ tool_name: 'Bash', tool_input: { command: 'rm -rf etc' }, cwd: '/' });
     expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+describe('Claude node hooks that rewrite the call', () => {
+  type Out = {
+    hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+  };
+  const guards = [{ matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook('/work/tree')] }];
+  const rewriteTo = (command: string): HookCallback =>
+    (async () => ({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command },
+      },
+    })) as HookCallback;
+  const run = async (command: string): Promise<Out> => {
+    const [wrapped] = guardRewrittenInput(
+      [{ matcher: 'Bash', hooks: [rewriteTo(command)] }],
+      guards
+    );
+    const hook = wrapped.hooks[0] as unknown as (
+      i: Record<string, unknown>,
+      id: string | undefined,
+      o: { signal: AbortSignal }
+    ) => Promise<Out>;
+    return hook({ tool_name: 'Bash', tool_input: { command: 'ls' } }, undefined, {
+      signal: new AbortController().signal,
+    });
+  };
+
+  it('denies a rewrite into a destructive command', async () => {
+    const out = await run('rm -rf /etc');
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toContain('rewrote the call');
+  });
+
+  it("passes a harmless rewrite through as the node's own response", async () => {
+    const out = await run('ls -la');
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
   });
 });
 
@@ -123,6 +228,32 @@ describe('checkCommand rules resolution', () => {
     const v = checkCommand('ls', '/tmp');
     expect(v?.rule).toBe('rules-unreadable');
     expect(v?.message()).toContain('/nonexistent/destructive-rules.json');
+  });
+
+  it('takes the rules file from the caller, never from the environment, when given', () => {
+    process.env[RULES_ENV] = '/nonexistent/destructive-rules.json';
+    resetDestructiveGuardCache();
+    expect(checkCommand('ls', '/tmp', { rulesPath: null })).toBeUndefined();
+    expect(checkCommand('rm -rf /etc', '/tmp', { rulesPath: null })?.rule).toBe('recursive-delete');
+  });
+
+  it('reloads an edited rules file and retries one that failed to load', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'guard-rules-'));
+    try {
+      const path = join(dir, 'rules.json');
+      writeFileSync(path, '{ not json');
+      expect(checkCommand('ls', '/tmp', { rulesPath: path })?.rule).toBe('rules-unreadable');
+      writeFileSync(path, JSON.stringify(DEFAULT_RULES));
+      expect(checkCommand('ls', '/tmp', { rulesPath: path })).toBeUndefined();
+      expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })).toBeUndefined();
+      writeFileSync(path, JSON.stringify({ ...DEFAULT_RULES, protected_paths: ['/srv/data'] }));
+      utimesSync(path, new Date(), new Date(Date.now() + 5000));
+      expect(checkCommand('rm -rf /srv/data', '/tmp', { rulesPath: path })?.rule).toBe(
+        'recursive-delete'
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!existsSync(SHARED_RULES_PATH))('uses the configured rules file', () => {

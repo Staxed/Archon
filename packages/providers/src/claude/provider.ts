@@ -64,7 +64,10 @@ import { createLogger } from '@archon/paths';
 import { loadMcpConfig } from '../mcp/config';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { buildSubscriptionEnv, strippedKeysIn } from '../shared/subscription-env';
-import { createPreToolUseDestructiveGuardHook } from './destructive-guard-hook';
+import {
+  createPreToolUseDestructiveGuardHook,
+  guardRewrittenInput,
+} from './destructive-guard-hook';
 import { clampEffort, type AssertNever } from '@archon/paths/effort';
 import {
   claudeSkillSearchRoots,
@@ -630,8 +633,14 @@ async function applyNodeConfig(
         if (!matchers) continue;
         const existing = existingHooks?.[event] as HookCallbackMatcher[] | undefined;
         if (existing) {
+          // A node PreToolUse hook that rewrites the call must not slip the
+          // rewritten call past Archon's guards (the existing PreToolUse hooks).
+          const nodeMatchers =
+            event === 'PreToolUse'
+              ? guardRewrittenInput(matchers as HookCallbackMatcher[], existing)
+              : (matchers as HookCallbackMatcher[]);
           (options.hooks as Record<string, HookCallbackMatcher[]>)[event] = [
-            ...(matchers as HookCallbackMatcher[]),
+            ...nodeMatchers,
             ...existing,
           ];
         } else {
