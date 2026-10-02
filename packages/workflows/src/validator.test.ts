@@ -530,6 +530,49 @@ describe('validateWorkflowResources — MCP validation', () => {
     expect(issues.some(i => i.field === 'mcp' && i.level === 'error')).toBe(true);
   });
 
+  test('warning (not error) when MCP config is missing on a when-gated node', async () => {
+    // Opt-in integration pattern: the node is gated on the MCP file's presence,
+    // so a missing file must not fail validation out of the box.
+    const workflow = makeWorkflow('test', [
+      {
+        id: 'check',
+        kind: 'exec',
+        runtime: 'sh',
+        script: 'test -f opt.json && printf true || printf false',
+      } as DagNode,
+      {
+        id: 'notify',
+        kind: 'agent',
+        source: { kind: 'inline', prompt: 'ping' },
+        mcp: 'missing.json',
+        when: "$check.output == 'true'",
+        depends_on: ['check'],
+      } as unknown as DagNode,
+    ]);
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    const mcpIssues = issues.filter(i => i.field === 'mcp' && i.nodeId === 'notify');
+    expect(mcpIssues).toHaveLength(1);
+    expect(mcpIssues[0].level).toBe('warning');
+    expect(mcpIssues[0].message).toContain('gated by');
+  });
+
+  test('error when MCP config is invalid JSON even on a when-gated node', async () => {
+    const mcpPath = join(tmpDir, 'gated-bad.json');
+    await writeFile(mcpPath, '{bad json');
+    const workflow = makeWorkflow('test', [
+      {
+        id: 'notify',
+        kind: 'agent',
+        source: { kind: 'inline', prompt: 'ping' },
+        mcp: mcpPath,
+        when: "'a' == 'a'",
+      } as unknown as DagNode,
+    ]);
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    const mcpErrors = issues.filter(i => i.field === 'mcp' && i.level === 'error');
+    expect(mcpErrors).toHaveLength(1);
+  });
+
   test('error when MCP config has invalid JSON', async () => {
     const mcpPath = join(tmpDir, 'bad.json');
     await writeFile(mcpPath, '{bad json');

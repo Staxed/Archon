@@ -101,6 +101,12 @@
       "src/claude/config.test.ts"
     ],
     [
+      "src/claude/path-guard-hook.test.ts"
+    ],
+    [
+      "src/shared/cwd-notice.test.ts"
+    ],
+    [
       "src/community/pi/model-ref.test.ts"
     ],
     [
@@ -120,6 +126,9 @@
     ],
     [
       "src/community/pi/request-auth.test.ts"
+    ],
+    [
+      "src/community/pi/gateway.test.ts"
     ],
     [
       "src/community/pi/auth-status.test.ts"

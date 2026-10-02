@@ -2426,6 +2426,32 @@ describe('sendQuery decomposition behaviors', () => {
     expect(thrown.message).toContain('diagnostic: something broke');
   }, 5_000);
 
+  test('PreToolUse path guard is registered only when writableRoots is set', async () => {
+    const seen: unknown[] = [];
+    mockQuery.mockImplementation(async function* (args) {
+      seen.push(args.options?.hooks?.PreToolUse);
+      yield { type: 'result', session_id: 'sid' };
+    });
+
+    for await (const _ of client.sendQuery('chat', '/workspace')) {
+      // consume
+    }
+    for await (const _ of client.sendQuery('node', '/workspace', undefined, {
+      writableRoots: ['/artifacts'],
+    })) {
+      // consume
+    }
+
+    expect(seen[0]).toBeUndefined();
+    const guard = (seen[1] as { hooks: ((...a: unknown[]) => Promise<unknown>)[] }[])[0].hooks[0];
+    const denied = (await guard(
+      { tool_name: 'Write', tool_input: { file_path: '/source-repo/out.md' } },
+      undefined,
+      { signal: new AbortController().signal }
+    )) as { hookSpecificOutput?: { permissionDecision?: string } };
+    expect(denied.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
   test('PostToolUse hooks preserve success, failure, and interruption outcomes', async () => {
     mockQuery.mockImplementation(async function* (args) {
       const successHook = args.options?.hooks?.PostToolUse?.[0]?.hooks?.[0];

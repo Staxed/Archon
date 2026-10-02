@@ -53,6 +53,7 @@ import { CLAUDE_CAPABILITIES } from './capabilities';
 import { buildContainerSpawn } from './container-spawn';
 import { resolveClaudeBinaryPath, pathKind } from './binary-resolver';
 import { buildArchonMcpServer, ARCHON_TOOL_SERVER } from './native-tools';
+import { createPreToolUsePathGuardHook } from './path-guard-hook';
 import {
   SessionSpendLedger,
   spendSince,
@@ -881,7 +882,16 @@ function buildBaseClaudeOptions(
       // Destructive-command guard for the SDK's own Bash tool (a project, the
       // projects folder, system roots, Docker volumes). Node hooks are merged in
       // front of it by applyNodeConfig, never in place of it.
-      PreToolUse: [{ matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] }],
+      // Workflow nodes also confine Write/Edit/MultiEdit/NotebookEdit to cwd plus the
+      // run's engine dirs, so a leaked absolute path (e.g. from `git worktree
+      // list`) cannot steer writes into the source repo. Host runs only: inside
+      // a container the paths are the container's and the container is the wall.
+      PreToolUse: [
+        { matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] },
+        ...(requestOptions?.writableRoots !== undefined && containerExecContext === undefined
+          ? [{ hooks: [createPreToolUsePathGuardHook(cwd, requestOptions.writableRoots)] }]
+          : []),
+      ],
     },
     stderr: (data: string): void => {
       const output = data.trim();

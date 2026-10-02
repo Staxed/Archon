@@ -139,6 +139,7 @@ import { planGraph, resolvedBodyNodes } from './graph-plan';
 import { FAN_OUT_CANCEL_REASONS, waitCompletionEvents } from './store';
 import type { DagResumeSnapshot, FanOutCancelReason, PersistedNodeOutput } from './store';
 import { formatToolCall } from './utils/tool-formatter';
+import { formatUsd } from './utils/format-usd';
 import { createLogger, isPathInside, RUN_ARTIFACTS_ENGINE_SUBDIR } from '@archon/paths';
 import { getWorkflowEventEmitter } from './event-emitter';
 import { TerminalStatusWriteError, requireTerminalStatusWrite } from './terminal-status-write';
@@ -2269,9 +2270,13 @@ async function executeNodeInternal(
   // Request a fork when resuming. Exact-fork callers gate on sessionFork first;
   // legacy resume-only providers may continue the source session in place.
   const shouldForkSession = resumeSessionId !== undefined;
+  // Writes belong in the worktree or the run's engine dirs: the provider layer
+  // prefixes a cwd notice for every provider and Claude enforces it (path guard).
+  const writableRoots = checkoutSnapshotExcludes(artifactsDir, stateDir, logDir);
   const nodeOptionsWithAbort: SendQueryOptions | undefined = {
     ...nodeOptions,
     abortSignal: nodeAbortController.signal,
+    writableRoots,
     ...(shouldForkSession ? { forkSession: true } : {}),
   };
   let nodeIdleTimedOut = false;
@@ -2596,7 +2601,7 @@ async function executeNodeInternal(
             'dag.node_budget_cap_exceeded'
           );
           throw new Error(
-            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${cap.toFixed(2)}` : ''}.`
+            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${formatUsd(cap)}` : ''}.`
           );
         }
         // Fail loudly on any other SDK error result. Previously we broke out of
@@ -6111,9 +6116,11 @@ async function executeLoopNode(
               ? basePrompt
               : `${basePrompt}\n\n---\n\nYour previous response did not match the required output schema:\n${reaskErrors.map(e => `- ${e}`).join('\n')}\n\nRespond again with output that satisfies the schema exactly.`;
 
+          const writableRoots = checkoutSnapshotExcludes(artifactsDir, stateDir, logDir);
           const iterationOptions: SendQueryOptions | undefined = {
             ...resolvedOptions,
             abortSignal: iterationAbortController.signal,
+            writableRoots,
           };
 
           // Reask attempts start a FRESH session (mirrors runStreamPass in

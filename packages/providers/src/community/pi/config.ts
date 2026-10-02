@@ -132,6 +132,10 @@ export function parsePiConfig(raw: Record<string, unknown>): ParsedPiConfig {
 
   Object.assign(result, parseExtensionPostureFields(raw));
 
+  if (typeof raw.gatewayOnly === 'boolean') {
+    result.gatewayOnly = raw.gatewayOnly;
+  }
+
   if (raw.env && typeof raw.env === 'object' && !Array.isArray(raw.env)) {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(raw.env as Record<string, unknown>)) {
@@ -197,6 +201,7 @@ function validateExtensionPosture(raw: Record<string, unknown>, path = ''): void
 const PROCESS_SCOPED_SETTINGS = {
   env: 'Pi extension environment mutates process.env and is process-scoped',
   maxConcurrent: 'Pi concurrency is initialized once for the process lifetime',
+  gatewayOnly: 'the LLM gateway policy is host-wide and cannot be relaxed per run',
 } as const;
 
 /** Strict counterpart for authored config: `.archon/config.yaml` and per-run layers. */
@@ -222,6 +227,9 @@ export function parsePiConfigStrict(
     for (const [name, value] of Object.entries(raw.env)) {
       if (typeof value !== 'string') invalidRunConfigValue(`env.${name}`, 'a string');
     }
+  }
+  if (raw.gatewayOnly !== undefined && typeof raw.gatewayOnly !== 'boolean') {
+    invalidRunConfigValue('gatewayOnly', 'a boolean');
   }
   if (
     raw.maxConcurrent !== undefined &&

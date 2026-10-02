@@ -101,6 +101,13 @@ export interface PiProviderDefaults {
    */
   enableExtensions?: boolean;
   /**
+   * Fork policy: only `gateway-*` providers whose baseUrl sits under
+   * `$ARCHON_LLM_GATEWAY_URL` may be used; built-in vendors, auth.json logins
+   * and API-key env vars are refused at run time. See FORK.md.
+   * @default true
+   */
+  gatewayOnly?: boolean;
+  /**
    * Bind an `ExtensionUIContext` so extensions see `ctx.hasUI === true` and
    * `ctx.ui.notify()` forwards into the chunk stream. Ignored unless
    * `enableExtensions` is true.
@@ -523,6 +530,13 @@ export interface AgentRequestOptions {
   forkSession?: boolean;
   /** When false, skip writing session transcript to disk. */
   persistSession?: boolean;
+  /**
+   * Confine file-writing tools to `cwd` plus these absolute roots (a workflow
+   * run's artifacts, state and log dirs). Absent means unconfined. Enforced by
+   * the Claude provider's PreToolUse path guard on host runs; other providers
+   * and container runs ignore it (the prompt carries a cwd notice regardless).
+   */
+  writableRoots?: readonly string[];
   /**
    * In-process tools the model may call this turn. Defined once by the caller
    * (e.g. core's manage_run) and adapted per provider — Claude wraps each via
