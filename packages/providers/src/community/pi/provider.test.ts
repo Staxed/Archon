@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type {
   AgentSessionEvent,
   CreateAgentSessionOptions,
@@ -3227,9 +3227,20 @@ describe('PiProvider', () => {
       mockModelRuntimeCreate.mockClear();
     });
 
-    const env = (): Record<string, string> => ({
-      ARCHON_LLM_GATEWAY_URL: GATEWAY,
-      ARCHON_PI_MODELS_PATH: modelsPath,
+    // The gateway settings are the deployment's: Archon reads them from its own
+    // process environment only, never from a request's (project) env.
+    const GATEWAY_KEYS = ['ARCHON_LLM_GATEWAY_URL', 'ARCHON_PI_MODELS_PATH'] as const;
+    const savedGatewayEnv: Record<string, string | undefined> = {};
+    beforeEach(() => {
+      for (const k of GATEWAY_KEYS) savedGatewayEnv[k] = process.env[k];
+      process.env.ARCHON_LLM_GATEWAY_URL = GATEWAY;
+      process.env.ARCHON_PI_MODELS_PATH = modelsPath;
+    });
+    afterEach(() => {
+      for (const k of GATEWAY_KEYS) {
+        if (savedGatewayEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedGatewayEnv[k];
+      }
     });
 
     test('refuses a built-in direct vendor before loading any credential', async () => {
@@ -3237,7 +3248,6 @@ describe('PiProvider', () => {
         new PiProvider().sendQuery('hi', '/tmp', undefined, {
           model: 'openrouter/some/model',
           assistantConfig: { gatewayOnly: true },
-          env: env(),
         })
       );
       expect(error?.message).toContain('Pi gateway-only');
@@ -3268,7 +3278,6 @@ describe('PiProvider', () => {
         new PiProvider().sendQuery('hi', '/tmp', undefined, {
           model: 'gateway-openrouter/some/model',
           assistantConfig: { gatewayOnly: true },
-          env: env(),
         })
       );
 
@@ -3294,11 +3303,62 @@ describe('PiProvider', () => {
         new PiProvider().sendQuery('hi', '/tmp', undefined, {
           model: 'gateway-openrouter/some/model',
           assistantConfig: { gatewayOnly: true },
-          env: env(),
         })
       );
       expect(error?.message).toContain('not the gateway');
       expect(mockPrompt).not.toHaveBeenCalled();
+      rmSync(modelsDir, { recursive: true, force: true });
+    });
+
+    test('a request (project) env cannot redirect the gateway URL or models file', async () => {
+      const evilModels = join(modelsDir, 'evil.json');
+      writeFileSync(
+        evilModels,
+        JSON.stringify({
+          providers: {
+            'gateway-openrouter': {
+              baseUrl: 'https://openrouter.ai/api/v1',
+              api: 'openai-completions',
+              apiKey: 'gateway',
+              headers: { 'X-Caller': 'archon' },
+              models: [{ id: 'some/model' }],
+            },
+          },
+        })
+      );
+      let captured: string | undefined;
+      mockModelRuntimeCreate.mockImplementationOnce(async (options?: { modelsPath?: string }) => {
+        if (options?.modelsPath && existsSync(options.modelsPath)) {
+          captured = readFileSync(options.modelsPath, 'utf-8');
+        }
+        return {
+          setRuntimeApiKey: mockSetRuntimeApiKey,
+          getAuth: mockGetAuth,
+          hasConfiguredAuth: mockHasConfiguredAuth,
+        };
+      });
+      mockModelRegistryFind.mockImplementationOnce((provider, modelId) => ({
+        ...createMockModel(provider, modelId),
+        baseUrl: `${GATEWAY}/openrouter/v1`,
+      }));
+      resetScript(scriptedAgentEnd());
+
+      const { error } = await consume(
+        new PiProvider().sendQuery('hi', '/tmp', undefined, {
+          model: 'gateway-openrouter/some/model',
+          assistantConfig: { gatewayOnly: true },
+          env: {
+            ARCHON_LLM_GATEWAY_URL: 'https://openrouter.ai',
+            ARCHON_PI_MODELS_PATH: evilModels,
+          },
+        })
+      );
+
+      expect(error).toBeUndefined();
+      const perCall = JSON.parse(captured as string) as {
+        providers: Record<string, { baseUrl: string }>;
+      };
+      expect(perCall.providers['gateway-openrouter'].baseUrl).toBe(`${GATEWAY}/openrouter/v1`);
       rmSync(modelsDir, { recursive: true, force: true });
     });
   });

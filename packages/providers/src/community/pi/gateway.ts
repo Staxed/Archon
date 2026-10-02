@@ -4,9 +4,11 @@
  * Every HTTP model call on this host must go through the LLM metering gateway
  * (`llm-metrics`), which holds the provider keys. With `assistants.pi.gatewayOnly`
  * on (the fork default), a Pi node may only use a `gateway-*` provider defined in
- * a models.json whose baseUrl sits under `$ARCHON_LLM_GATEWAY_URL`, with a literal
- * (non-secret) apiKey and an `X-Caller` header. Built-in vendors (openrouter, xai,
- * openai, google, anthropic, …), auth.json logins and API-key env vars are refused.
+ * a models.json whose baseUrl sits under `$ARCHON_LLM_GATEWAY_URL`, with the
+ * placeholder apiKey `gateway` and an `X-Caller` header. Built-in vendors
+ * (openrouter, xai, openai, google, anthropic, …), auth.json logins and API-key env
+ * vars are refused. `ARCHON_LLM_GATEWAY_URL` and `ARCHON_PI_MODELS_PATH` are read
+ * from Archon's own process env (the deployment), never from a request's env.
  *
  * Pi resolves `${VAR}` only in apiKey/headers, never in baseUrl, so Archon
  * substitutes `${ARCHON_LLM_GATEWAY_URL}` in baseUrl itself and hands Pi a
@@ -22,6 +24,7 @@ import { expandTilde } from '@archon/paths';
 
 import { PI_PROVIDER_ENV_VARS } from './pi-vendor-map.generated';
 import { getUserModelsPath } from './request-auth';
+import { isStrippedSubscriptionEnvKey } from '../../shared/subscription-env';
 
 /** Gateway root without the provider segment, e.g. `http://localhost:8093`. */
 export const GATEWAY_URL_ENV = 'ARCHON_LLM_GATEWAY_URL';
@@ -53,14 +56,20 @@ export class PiGatewayPolicyError extends Error {
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-function readEnv(name: string, requestEnv: Env | undefined): string | undefined {
-  const value = (requestEnv?.[name] ?? process.env[name])?.trim();
+/**
+ * The gateway settings are read from the deployment's environment (Archon's own
+ * process env) only. A request's env carries the project's `.archon/config.yaml`
+ * `env:`, and a project must not be able to redirect the gateway URL or swap the
+ * models file. `deploymentEnv` exists for tests.
+ */
+function readEnv(name: string, deploymentEnv: Env): string | undefined {
+  const value = deploymentEnv[name]?.trim();
   return value ? value : undefined;
 }
 
 /** `$ARCHON_LLM_GATEWAY_URL` without a trailing slash; throws when unset. */
-export function resolveGatewayUrl(requestEnv?: Env): string {
-  const url = readEnv(GATEWAY_URL_ENV, requestEnv);
+export function resolveGatewayUrl(deploymentEnv: Env = process.env): string {
+  const url = readEnv(GATEWAY_URL_ENV, deploymentEnv);
   if (!url) {
     throw new PiGatewayPolicyError(
       `${GATEWAY_URL_ENV} is not set. Set it to http://localhost:8093 on the host or ` +
@@ -93,6 +102,34 @@ export function assertGatewayProviderId(provider: string): void {
 
 function isLiteral(value: string): boolean {
   return !value.includes('$') && !value.startsWith('!');
+}
+
+/** The documented apiKey placeholder (Pi wants a key; the gateway ignores it). */
+export const GATEWAY_API_KEY_PLACEHOLDER = 'gateway';
+
+/** Names that hold a real vendor credential: never referenced from the models file. */
+function isVendorKeyVar(name: string): boolean {
+  return (
+    Object.values(PI_PROVIDER_ENV_VARS).includes(name) ||
+    isStrippedSubscriptionEnvKey(name) ||
+    /(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$/.test(name) ||
+    name.startsWith('AWS_')
+  );
+}
+
+/**
+ * The apiKey must be the documented placeholder or a `${VAR}` reference to a
+ * non-vendor variable. Anything else may be a real key (and Pi also reads a bare
+ * env-var NAME as a reference, so `OPENROUTER_API_KEY` would pull the key in).
+ */
+function assertPlaceholderApiKey(value: unknown, where: string): void {
+  if (value === undefined || value === GATEWAY_API_KEY_PLACEHOLDER) return;
+  const ref = typeof value === 'string' ? /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value) : null;
+  if (ref && !isVendorKeyVar(ref[1])) return;
+  throw new PiGatewayPolicyError(
+    `${where} must be the placeholder '${GATEWAY_API_KEY_PLACEHOLDER}' (or a \${VAR} that is not a vendor key): ` +
+      'the gateway holds the real key, and a literal here may be one.'
+  );
 }
 
 function substituteBaseUrl(value: unknown, gatewayUrl: string, where: string): string | undefined {
@@ -131,11 +168,11 @@ function assertLiteralHeaders(headers: unknown, where: string): Record<string, s
  * its baseUrl(s) resolved against `$ARCHON_LLM_GATEWAY_URL`. Returns the file
  * path for `ModelRuntime.create({ modelsPath })`; the caller removes it.
  */
-export function buildGatewayModelsPath(provider: string, requestEnv?: Env): string {
+export function buildGatewayModelsPath(provider: string, deploymentEnv: Env = process.env): string {
   assertGatewayProviderId(provider);
-  const gatewayUrl = resolveGatewayUrl(requestEnv);
+  const gatewayUrl = resolveGatewayUrl(deploymentEnv);
 
-  const override = readEnv(GATEWAY_MODELS_PATH_ENV, requestEnv);
+  const override = readEnv(GATEWAY_MODELS_PATH_ENV, deploymentEnv);
   const sourcePath = override ? expandTilde(override) : getUserModelsPath();
   let parsed: { providers?: Record<string, unknown> };
   try {
@@ -161,15 +198,7 @@ export function buildGatewayModelsPath(provider: string, requestEnv?: Env): stri
   }
   config.baseUrl = baseUrl;
 
-  if (
-    config.apiKey !== undefined &&
-    (typeof config.apiKey !== 'string' || !isLiteral(config.apiKey))
-  ) {
-    throw new PiGatewayPolicyError(
-      `providers.${provider}.apiKey must be a literal placeholder (no \${VAR} or !command): ` +
-        'the gateway holds the real key.'
-    );
-  }
+  assertPlaceholderApiKey(config.apiKey, `providers.${provider}.apiKey`);
 
   const headers = assertLiteralHeaders(config.headers, `providers.${provider}.headers`);
   if (!Object.entries(headers).some(([k, v]) => k.toLowerCase() === 'x-caller' && v.trim())) {
@@ -184,6 +213,7 @@ export function buildGatewayModelsPath(provider: string, requestEnv?: Env): stri
       if (m.baseUrl !== undefined)
         m.baseUrl = substituteBaseUrl(m.baseUrl, gatewayUrl, `${where}.baseUrl`);
       if (m.headers !== undefined) assertLiteralHeaders(m.headers, `${where}.headers`);
+      assertPlaceholderApiKey(m.apiKey, `${where}.apiKey`);
       return m;
     });
   }

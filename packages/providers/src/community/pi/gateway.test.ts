@@ -28,7 +28,7 @@ describe('gateway policy primitives', () => {
     expect(() => assertGatewayProviderId('gateway-openrouter')).not.toThrow();
   });
 
-  test('gateway URL comes from the request env and must be set', () => {
+  test('gateway URL comes from the deployment env and must be set', () => {
     expect(resolveGatewayUrl({ ARCHON_LLM_GATEWAY_URL: `${HOST}/` })).toBe(HOST);
     expect(() => resolveGatewayUrl({ ARCHON_LLM_GATEWAY_URL: '' })).toThrow(/is not set/);
   });
@@ -108,13 +108,35 @@ describe('buildGatewayModelsPath', () => {
 
   test('refuses an apiKey or header that pulls a secret from the environment', () => {
     write({ 'gateway-openrouter': { ...good, apiKey: '${OPENROUTER_API_KEY}' } });
-    expect(() => build('gateway-openrouter')).toThrow(/apiKey must be a literal/);
+    expect(() => build('gateway-openrouter')).toThrow(/apiKey must be the placeholder/);
     write({ 'gateway-openrouter': { ...good, apiKey: '!cat key' } });
-    expect(() => build('gateway-openrouter')).toThrow(/apiKey must be a literal/);
+    expect(() => build('gateway-openrouter')).toThrow(/apiKey must be the placeholder/);
     write({
       'gateway-openrouter': { ...good, headers: { 'X-Caller': 'archon', Authorization: '$TOKEN' } },
     });
     expect(() => build('gateway-openrouter')).toThrow(/headers\.Authorization/);
+  });
+
+  test('refuses an apiKey that may be a real key, provider-wide or per model', () => {
+    for (const apiKey of [
+      'sk-or-v1-0123456789abcdef',
+      'OPENROUTER_API_KEY', // Pi reads a bare env-var name as a reference
+      '${XAI_API_KEY}',
+      '${GITHUB_TOKEN}',
+      'prefix-${MYGW_API_KEY}',
+    ]) {
+      write({ 'gateway-openrouter': { ...good, apiKey } });
+      expect(() => build('gateway-openrouter')).toThrow(/apiKey must be the placeholder/);
+    }
+    write({ 'gateway-openrouter': { ...good, models: [{ id: 'm', apiKey: 'sk-live-x' }] } });
+    expect(() => build('gateway-openrouter')).toThrow(/models\[0\]\.apiKey/);
+  });
+
+  test('accepts the placeholder, a non-key ${VAR} and no apiKey', () => {
+    for (const apiKey of ['gateway', '${ARCHON_GATEWAY_PLACEHOLDER}', undefined]) {
+      write({ 'gateway-openrouter': { ...good, apiKey } });
+      expect(() => build('gateway-openrouter')).not.toThrow();
+    }
   });
 
   test('requires the X-Caller header', () => {

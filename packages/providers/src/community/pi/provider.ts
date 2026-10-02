@@ -424,8 +424,10 @@ export class PiProvider implements IAgentProvider {
     let gatewayUrl: string | undefined;
     let gatewayModelsPath: string | undefined;
     if (gatewayOnly) {
-      gatewayModelsPath = buildGatewayModelsPath(parsed.provider, requestOptions?.env);
-      gatewayUrl = resolveGatewayUrl(requestOptions?.env);
+      // Deployment env only (Archon's process env): a request's env carries the
+      // project's config `env:`, which must not redirect the gateway or its models.
+      gatewayModelsPath = buildGatewayModelsPath(parsed.provider);
+      gatewayUrl = resolveGatewayUrl();
     }
 
     // 2. Build ModelRuntime + ModelRegistry. Both read on every sendQuery —
