@@ -70,6 +70,15 @@
       "src/codex/binary-guard.test.ts"
     ],
     [
+      "src/codex/parity.test.ts"
+    ],
+    [
+      "src/shared/cli-hooks/install.test.ts"
+    ],
+    [
+      "src/shared/cli-hooks/hook-dispatcher.test.ts"
+    ],
+    [
       "src/codex/binary-resolver.test.ts"
     ],
     [

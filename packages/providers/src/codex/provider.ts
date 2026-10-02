@@ -31,6 +31,24 @@ import {
 } from '../shared/structured-output';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { buildSubscriptionEnv } from '../shared/subscription-env';
+import {
+  formatBudget,
+  loadSkillText,
+  mapSandboxForCodex,
+  modelRates,
+  nodeHookSpecs,
+  noRatesError,
+  refusedClaudeOnlyOptions,
+  type CodexSandbox,
+} from '../shared/subscription-options';
+import {
+  codexHome,
+  codexHookTrustOverride,
+  ensureCodexDispatcher,
+  prepareHookRun,
+  unsupportedHookEvents,
+} from '../shared/cli-hooks/install';
+import { RolloutSpend } from './rollout-spend';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -92,19 +110,131 @@ function buildThreadOptions(
   cwd: string,
   model?: string,
   assistantConfig?: Record<string, unknown>,
-  nodeConfig?: NodeConfig
+  nodeConfig?: NodeConfig,
+  sandbox: CodexSandbox = mapSandboxForCodex(undefined, cwd)
 ): ThreadOptions {
   const config = parseCodexConfig(assistantConfig ?? {});
   return {
     workingDirectory: cwd,
     skipGitRepoCheck: true,
-    sandboxMode: 'danger-full-access',
-    networkAccessEnabled: true,
+    sandboxMode: sandbox.sandboxMode,
+    networkAccessEnabled: sandbox.networkAccessEnabled,
     approvalPolicy: 'never',
     model: model ?? config.model,
     modelReasoningEffort: resolveModelReasoningEffort(nodeConfig, config.modelReasoningEffort),
-    webSearchMode: config.webSearchMode,
+    // A node that denies WebSearch (or allows a list without it) gets no web search.
+    webSearchMode: webSearchAllowed(nodeConfig) ? config.webSearchMode : 'disabled',
     additionalDirectories: config.additionalDirectories,
+  };
+}
+
+function webSearchAllowed(nodeConfig?: NodeConfig): boolean {
+  if (nodeConfig?.denied_tools?.includes('WebSearch')) return false;
+  if (nodeConfig?.allowed_tools !== undefined && !nodeConfig.allowed_tools.includes('WebSearch')) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Everything a Codex run needs from the node besides the prompt, built once per
+ * model attempt: refusals first (before anything is written), then the hook
+ * spec the CLI dispatcher reads, the sandbox, preloaded skills and the budget.
+ */
+interface CodexRunSetup {
+  sandbox: CodexSandbox;
+  /** Extra `config` overrides (sandbox writable roots, preloaded skills). */
+  config: CodexConfigOverrides;
+  /** Raw `--config` strings (hook trust). */
+  configOverrides: string[];
+  /** Env that switches the hook dispatcher on for this run. */
+  hookEnv: Record<string, string>;
+  budget?: number;
+  codexHome: string;
+  warnings: ProviderWarning[];
+  cleanup: () => void;
+}
+
+function prepareCodexRun(
+  cwd: string,
+  model: string | undefined,
+  requestOptions: SendQueryOptions | undefined
+): CodexRunSetup {
+  const nodeConfig = requestOptions?.nodeConfig;
+  const hooks = nodeHookSpecs(nodeConfig);
+  const refused = refusedClaudeOnlyOptions(nodeConfig);
+  const badEvents = unsupportedHookEvents('codex', hooks);
+  if (badEvents.length > 0) refused.push(`hook events Codex never fires: ${badEvents.join(', ')}`);
+  if (refused.length > 0) {
+    throw new Error(
+      `Codex provider cannot honour ${refused.join('; ')}. Remove them from this node or run it on Claude; Archon never falls back to an API key for a subscription provider.`
+    );
+  }
+  const sandbox = mapSandboxForCodex(nodeConfig?.sandbox, cwd);
+  const budget = requestOptions?.maxBudgetUsd ?? nodeConfig?.maxBudgetUsd;
+  if (budget !== undefined && model && !modelRates(model)) {
+    throw noRatesError('Codex', model);
+  }
+
+  const warnings: ProviderWarning[] = [];
+  const config: CodexConfigOverrides = {};
+  for (const [key, value] of Object.entries(sandbox.config))
+    setCodexConfigValue(config, key, value);
+  const skills = loadSkillText(cwd, nodeConfig?.skills);
+  if (skills.text) config.developer_instructions = skills.text;
+  if (skills.missing.length > 0) {
+    getLog().warn({ missing: skills.missing }, 'codex.skills_missing');
+    warnings.push({
+      code: 'codex.skills_missing',
+      message: `Codex could not preload missing skills: ${skills.missing.join(', ')}. Expected a directory with SKILL.md under .agents/skills/ or .claude/skills/ (project or home).`,
+    });
+  }
+
+  // The CLI reads hooks from its own CODEX_HOME, which a per-user subscription
+  // delivery points at the run's artifacts dir.
+  const home = requestOptions?.env?.CODEX_HOME ?? codexHome();
+  const trust = ensureCodexDispatcher(home);
+  const hookRun = prepareHookRun({
+    version: 1,
+    provider: 'codex',
+    cwd,
+    pathGuard: isWorkflowNode(requestOptions),
+    ...(nodeConfig?.allowed_tools !== undefined ? { allowedTools: nodeConfig.allowed_tools } : {}),
+    ...(nodeConfig?.denied_tools !== undefined ? { deniedTools: nodeConfig.denied_tools } : {}),
+    ...(hooks ? { hooks } : {}),
+  });
+  return {
+    sandbox,
+    config,
+    configOverrides: [codexHookTrustOverride(trust, home)],
+    hookEnv: hookRun.env,
+    ...(budget !== undefined ? { budget } : {}),
+    codexHome: home,
+    warnings,
+    cleanup: hookRun.cleanup,
+  };
+}
+
+/** The error result a spend cap produces, as Claude's SDK reports one. */
+function* budgetExceeded(
+  spend: RolloutSpend,
+  budget: number,
+  threadId: string | null | undefined
+): Generator<MessageChunk> {
+  const cost = spend.cost();
+  getLog().warn({ cost, budget, model: spend.model }, 'codex.max_budget_exceeded');
+  yield {
+    type: 'system',
+    content: `❌ Stopped: this node's usage reached $${cost.toFixed(4)} (API-equivalent), over its maxBudgetUsd of $${formatBudget(budget)}.`,
+  };
+  yield {
+    type: 'result',
+    sessionId: threadId ?? undefined,
+    tokens: spend.usage(),
+    cost,
+    isError: true,
+    errorSubtype: 'error_max_budget_usd',
+    errors: [`maxBudgetUsd of $${formatBudget(budget)} exceeded`],
   };
 }
 
@@ -265,9 +395,18 @@ function isModelAccessError(errorMessage: string): boolean {
   const m = errorMessage.toLowerCase();
   const hasModel = m.includes('model');
   const hasAvailabilitySignal =
-    m.includes('not available') || m.includes('not found') || m.includes('access denied');
+    m.includes('not available') ||
+    m.includes('not found') ||
+    m.includes('access denied') ||
+    // ChatGPT accounts: "The 'x' model is not supported when using Codex with a
+    // ChatGPT account." Anchored on the model coming first, so an unsupported
+    // parameter ("'none' is not supported with the 'y' model") does not match.
+    /model[^.]{0,40}(is not supported|does not exist)/.test(m);
   return hasModel && hasAvailabilitySignal;
 }
+
+/** A model-access failure, kept distinct so fallbackModel can retry on it. */
+export class CodexModelAccessError extends Error {}
 
 function buildModelAccessMessage(model?: string): string {
   const normalizedModel = model?.trim();
@@ -831,7 +970,7 @@ function classifyAndEnrichCodexError(
 
   if (errorClass === 'model_access') {
     return {
-      enrichedError: new Error(buildModelAccessMessage(model)),
+      enrichedError: new CodexModelAccessError(buildModelAccessMessage(model)),
       errorClass,
       shouldRetry: false,
     };
@@ -872,7 +1011,8 @@ export class CodexProvider implements IAgentProvider {
   private async createCodexClient(
     configCodexBinaryPath: string | undefined,
     requestEnv?: Record<string, string>,
-    codexConfigOverrides?: CodexConfigOverrides
+    codexConfigOverrides?: CodexConfigOverrides,
+    rawConfigOverrides?: string[]
   ): Promise<Codex> {
     try {
       const codexOptions: CodexOptions = {
@@ -881,12 +1021,15 @@ export class CodexProvider implements IAgentProvider {
         // env, API keys included.
         env: buildCodexEnv(requestEnv),
         ...(codexConfigOverrides ? { config: codexConfigOverrides } : {}),
+        ...(rawConfigOverrides && rawConfigOverrides.length > 0
+          ? { configOverrides: rawConfigOverrides }
+          : {}),
       };
       return new Codex(codexOptions);
     } catch (error) {
       const err = error as Error;
       if (isModelAccessError(err.message)) {
-        throw new Error(buildModelAccessMessage());
+        throw new CodexModelAccessError(buildModelAccessMessage());
       }
       throw new Error(`Codex query failed: ${err.message}`);
     }
@@ -896,7 +1039,44 @@ export class CodexProvider implements IAgentProvider {
     return CODEX_CAPABILITIES;
   }
 
+  /**
+   * Run the query; on a model-access failure, run it again once on the node's
+   * fallbackModel (Codex has no fallback of its own).
+   */
   async *sendQuery(
+    prompt: string,
+    cwd: string,
+    resumeSessionId?: string,
+    requestOptions?: SendQueryOptions
+  ): AsyncGenerator<MessageChunk> {
+    const fallback = requestOptions?.fallbackModel ?? requestOptions?.nodeConfig?.fallbackModel;
+    const primary =
+      requestOptions?.model ?? parseCodexConfig(requestOptions?.assistantConfig ?? {}).model;
+    const canFallBack = typeof fallback === 'string' && fallback !== '' && fallback !== primary;
+    try {
+      for await (const chunk of this.runQuery(prompt, cwd, resumeSessionId, requestOptions)) {
+        if (
+          canFallBack &&
+          chunk.type === 'result' &&
+          chunk.isError === true &&
+          isModelAccessError((chunk.errors ?? []).join(' '))
+        ) {
+          throw new CodexModelAccessError((chunk.errors ?? []).join(' '));
+        }
+        yield chunk;
+      }
+    } catch (error) {
+      if (!(error instanceof CodexModelAccessError) || !canFallBack) throw error;
+      getLog().info({ model: primary, fallback }, 'codex.fallback_model');
+      yield {
+        type: 'system',
+        content: `⚠️ Model "${primary ?? 'default'}" is not available; retrying with fallback model "${fallback}".`,
+      };
+      yield* this.runQuery(prompt, cwd, resumeSessionId, { ...requestOptions, model: fallback });
+    }
+  }
+
+  private async *runQuery(
     prompt: string,
     cwd: string,
     resumeSessionId?: string,
@@ -904,7 +1084,24 @@ export class CodexProvider implements IAgentProvider {
   ): AsyncGenerator<MessageChunk> {
     const assistantConfig = requestOptions?.assistantConfig ?? {};
     const codexConfig = parseCodexConfig(assistantConfig);
-    const providerWarnings: ProviderWarning[] = [];
+    const setup = prepareCodexRun(cwd, requestOptions?.model ?? codexConfig.model, requestOptions);
+    try {
+      yield* this.runPrepared(prompt, cwd, resumeSessionId, requestOptions, setup);
+    } finally {
+      setup.cleanup();
+    }
+  }
+
+  private async *runPrepared(
+    prompt: string,
+    cwd: string,
+    resumeSessionId: string | undefined,
+    requestOptions: SendQueryOptions | undefined,
+    setup: CodexRunSetup
+  ): AsyncGenerator<MessageChunk> {
+    const assistantConfig = requestOptions?.assistantConfig ?? {};
+    const codexConfig = parseCodexConfig(assistantConfig);
+    const providerWarnings: ProviderWarning[] = [...setup.warnings];
     let declaredMcpConfigOverrides: CodexConfigOverrides | undefined;
 
     if (requestOptions?.nodeConfig?.mcp) {
@@ -926,10 +1123,17 @@ export class CodexProvider implements IAgentProvider {
       }
     }
 
+    // Node translations (sandbox writable roots, preloaded skills) layer on top of
+    // whatever MCP produced; with none, the overrides stay exactly as before.
+    if (Object.keys(setup.config).length > 0) {
+      declaredMcpConfigOverrides = { ...(declaredMcpConfigOverrides ?? {}), ...setup.config };
+    }
     const suppressWorkflowSkillCatalog = isWorkflowNode(requestOptions);
     const initialConfigOverrides = suppressWorkflowSkillCatalog
       ? withWorkflowSkillCatalogDisabled(declaredMcpConfigOverrides)
       : declaredMcpConfigOverrides;
+    // The hook dispatcher is switched on per run through the CLI's env.
+    const runEnv = { ...(requestOptions?.env ?? {}), ...setup.hookEnv };
 
     for (const warning of providerWarnings) {
       yield { type: 'system', content: `⚠️ ${warning.message}` };
@@ -938,14 +1142,16 @@ export class CodexProvider implements IAgentProvider {
     // 1. Initialize SDK and build thread options
     let codex = await this.createCodexClient(
       codexConfig.codexBinaryPath,
-      requestOptions?.env,
-      initialConfigOverrides
+      runEnv,
+      initialConfigOverrides,
+      setup.configOverrides
     );
     const threadOptions = buildThreadOptions(
       cwd,
       requestOptions?.model,
       assistantConfig,
-      requestOptions?.nodeConfig
+      requestOptions?.nodeConfig,
+      setup.sandbox
     );
 
     if (requestOptions?.abortSignal?.aborted) {
@@ -966,7 +1172,7 @@ export class CodexProvider implements IAgentProvider {
         } catch (startError) {
           const err = startError as Error;
           if (isModelAccessError(err.message)) {
-            throw new Error(buildModelAccessMessage(requestOptions?.model));
+            throw new CodexModelAccessError(buildModelAccessMessage(requestOptions?.model));
           }
           throw new Error(`Codex query failed: ${err.message}`);
         }
@@ -979,7 +1185,7 @@ export class CodexProvider implements IAgentProvider {
       } catch (error) {
         const err = error as Error;
         if (isModelAccessError(err.message)) {
-          throw new Error(buildModelAccessMessage(requestOptions?.model));
+          throw new CodexModelAccessError(buildModelAccessMessage(requestOptions?.model));
         }
         throw new Error(`Codex query failed: ${err.message}`);
       }
@@ -1032,7 +1238,7 @@ export class CodexProvider implements IAgentProvider {
             const err = startError as Error;
             if (isModelAccessError(err.message)) {
               getLog().debug({ attempt, errorClass: 'model_access' }, 'query_error_pre_retry');
-              throw new Error(buildModelAccessMessage(requestOptions?.model));
+              throw new CodexModelAccessError(buildModelAccessMessage(requestOptions?.model));
             }
             throw new Error(`Codex query failed: ${err.message}`);
           }
@@ -1043,6 +1249,13 @@ export class CodexProvider implements IAgentProvider {
           // lazily while events are iterated, so compatibility errors must be
           // caught around both runStreamed() and event consumption.
           let providerEventEmitted = false;
+          // maxBudgetUsd: priced from the rollout's per-call token counts, between events.
+          const budget = setup.budget;
+          const spend =
+            budget !== undefined
+              ? new RolloutSpend(threadOptions.model, setup.codexHome)
+              : undefined;
+          spend?.markStart(thread.id);
           while (true) {
             try {
               const result = await thread.runStreamed(effectivePrompt, turnOptions);
@@ -1059,6 +1272,15 @@ export class CodexProvider implements IAgentProvider {
                 // session context is lost even when the initial resumeThread succeeded.
                 resumedOutcome(resumeSessionId, !sessionResumeFailed && attempt === 0)
               )) {
+                if (spend && budget !== undefined) {
+                  spend.poll(thread.id);
+                  if (spend.exceeds(budget)) {
+                    // Stops the CLI; the result below is the error a spend cap gives on Claude.
+                    attemptController.abort();
+                    yield* budgetExceeded(spend, budget, thread.id);
+                    return;
+                  }
+                }
                 providerEventEmitted = true;
                 yield chunk;
               }
@@ -1087,8 +1309,9 @@ export class CodexProvider implements IAgentProvider {
 
               codex = await this.createCodexClient(
                 codexConfig.codexBinaryPath,
-                requestOptions?.env,
-                declaredMcpConfigOverrides
+                runEnv,
+                declaredMcpConfigOverrides,
+                setup.configOverrides
               );
               if (resumeSessionId) {
                 try {

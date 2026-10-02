@@ -90,28 +90,28 @@ describe('CodexProvider', () => {
   });
 
   describe('getCapabilities', () => {
-    test('returns limited capability set for Codex provider', () => {
+    test('returns the Codex capability set (subscription parity)', () => {
       const caps = client.getCapabilities();
       expect(caps).toEqual({
         sessionResume: true,
         sessionFork: false,
         mcp: true,
-        hooks: false,
-        skills: false,
+        hooks: true,
+        skills: true,
         agents: false,
-        toolRestrictions: false,
+        toolRestrictions: true,
         structuredOutput: 'enforced',
         requiresAllPropertiesRequired: true,
         envInjection: true,
-        costControl: false,
+        costControl: true,
         costReporting: false,
         tokenReporting: true,
         stopReasonReporting: false,
         turnCountReporting: false,
         resolvedModelReporting: false,
         effortControl: true,
-        fallbackModel: false,
-        sandbox: false,
+        fallbackModel: true,
+        sandbox: true,
         settingSources: false,
         nativeTools: false,
         containerExec: false,

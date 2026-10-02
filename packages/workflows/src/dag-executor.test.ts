@@ -2543,7 +2543,7 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     ).toBe(true);
   });
 
-  it('warns user when Codex DAG node has denied_tools only', async () => {
+  it('does not warn when Codex DAG node has denied_tools (hook dispatcher enforces them)', async () => {
     mockGetAgentProviderDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -2577,8 +2577,8 @@ describe('executeDagWorkflow -- tool restrictions', () => {
       })
     );
 
-    expect(deliveredMessages(platform)).toContain(
-      "Warning: Node 'review' uses allowed_tools/denied_tools but codex doesn't support it — this will be ignored."
+    expect(deliveredMessages(platform).some(m => m.includes('allowed_tools/denied_tools'))).toBe(
+      false
     );
   });
 
@@ -2648,7 +2648,7 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     expect(hooks.PreToolUse).toHaveLength(1);
   });
 
-  it('warns user when Codex DAG node has hooks', async () => {
+  it('does not warn when Codex DAG node has hooks (hook dispatcher runs them)', async () => {
     mockGetAgentProviderDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -2684,9 +2684,7 @@ describe('executeDagWorkflow -- tool restrictions', () => {
       })
     );
 
-    expect(deliveredMessages(platform)).toContain(
-      "Warning: Node 'review' uses hooks but codex doesn't support it — this will be ignored."
-    );
+    expect(deliveredMessages(platform).some(m => m.includes('uses hooks'))).toBe(false);
   });
 });
 
@@ -5185,7 +5183,7 @@ describe('executeDagWorkflow -- skills options', () => {
     expect(nodeConfig?.allowed_tools).toEqual(['Read', 'Grep']);
   });
 
-  it('warns that Codex ignores the YAML skills list', async () => {
+  it('does not warn when a Codex node lists skills (preloaded)', async () => {
     mockGetAgentProviderDag.mockReturnValue({
       sendQuery: mockSendQueryDag,
       getType: () => 'codex',
@@ -5219,11 +5217,8 @@ describe('executeDagWorkflow -- skills options', () => {
       })
     );
 
-    // Codex workflow nodes suppress the ambient catalog. Authors invoke installed
-    // native skills explicitly in the command/prompt with `$skill-name` instead.
-    expect(deliveredMessages(platform)).toContain(
-      "Warning: Node 'review' uses skills but codex doesn't support it — this will be ignored."
-    );
+    // Codex preloads a node's named skills into developer_instructions.
+    expect(deliveredMessages(platform).some(m => m.includes('uses skills'))).toBe(false);
   });
 
   it('passes agents to sendQuery nodeConfig when node has inline agents', async () => {

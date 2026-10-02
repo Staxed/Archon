@@ -123,7 +123,7 @@ describe('registry', () => {
       expect(claudeCaps.mcp).toBe(true);
       expect(codexCaps.mcp).toBe(true);
       expect(claudeCaps.hooks).toBe(true);
-      expect(codexCaps.hooks).toBe(false);
+      expect(codexCaps.hooks).toBe(true);
     });
   });
 
@@ -140,7 +140,7 @@ describe('registry', () => {
       const caps = getProviderCapabilities('codex');
       expect(caps.sessionFork).toBe(false);
       expect(caps.mcp).toBe(true);
-      expect(caps.hooks).toBe(false);
+      expect(caps.hooks).toBe(true);
       expect(caps.envInjection).toBe(true);
     });
 
