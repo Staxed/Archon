@@ -30,6 +30,7 @@ import {
   normalizeJsonSchemaForOpenAiStrict,
 } from '../shared/structured-output';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
+import { buildSubscriptionEnv } from '../shared/subscription-env';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
@@ -46,34 +47,12 @@ interface ProviderWarning {
   message: string;
 }
 
-// Singleton Codex instance (async because binary path resolution is async)
-let codexInstance: Codex | null = null;
-let codexInitPromise: Promise<Codex> | null = null;
-
-/** Reset singleton state. Exported for tests only. */
-export function resetCodexSingleton(): void {
-  codexInstance = null;
-  codexInitPromise = null;
-}
-
 /**
- * Get or create Codex SDK instance.
+ * Kept for API compatibility. There is no shared Codex instance any more: every
+ * query builds its own with an explicit, API-key-free env (see buildCodexEnv).
  */
-async function getCodex(configCodexBinaryPath?: string): Promise<Codex> {
-  if (codexInstance) return codexInstance;
-
-  if (!codexInitPromise) {
-    codexInitPromise = (async (): Promise<Codex> => {
-      const codexPathOverride = await resolveCodexBinaryPath(configCodexBinaryPath);
-      const instance = new Codex({ codexPathOverride });
-      codexInstance = instance;
-      return instance;
-    })().catch(err => {
-      codexInitPromise = null;
-      throw err;
-    });
-  }
-  return codexInitPromise;
+export function resetCodexSingleton(): void {
+  // nothing to reset
 }
 
 /**
@@ -129,12 +108,16 @@ function buildThreadOptions(
   };
 }
 
-function buildCodexEnv(requestEnv: Record<string, string>): Record<string, string> {
-  const baseEnv = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
-  );
+/**
+ * The Codex CLI's environment: the host env plus the managed project env, with
+ * every API-key and base-URL variable removed. Codex runs only on the ChatGPT
+ * subscription login ($CODEX_HOME/auth.json); a key in its env would bill the
+ * run to an API account instead. Always passed explicitly, because the SDK
+ * inherits the whole host env when none is given.
+ */
+export function buildCodexEnv(requestEnv?: Record<string, string>): Record<string, string> {
   // Managed project env intentionally overrides inherited process env for project-scoped execution.
-  return { ...baseEnv, ...requestEnv };
+  return buildSubscriptionEnv(process.env, requestEnv);
 }
 
 function buildMcpEnvSource(
@@ -891,16 +874,12 @@ export class CodexProvider implements IAgentProvider {
     requestEnv?: Record<string, string>,
     codexConfigOverrides?: CodexConfigOverrides
   ): Promise<Codex> {
-    if ((!requestEnv || Object.keys(requestEnv).length === 0) && !codexConfigOverrides) {
-      return getCodex(configCodexBinaryPath);
-    }
-
     try {
       const codexOptions: CodexOptions = {
         codexPathOverride: await resolveCodexBinaryPath(configCodexBinaryPath),
-        ...(requestEnv && Object.keys(requestEnv).length > 0
-          ? { env: buildCodexEnv(requestEnv) }
-          : {}),
+        // Always explicit: the SDK would otherwise hand the CLI the whole host
+        // env, API keys included.
+        env: buildCodexEnv(requestEnv),
         ...(codexConfigOverrides ? { config: codexConfigOverrides } : {}),
       };
       return new Codex(codexOptions);

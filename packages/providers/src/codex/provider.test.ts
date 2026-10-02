@@ -1595,21 +1595,43 @@ describe('CodexProvider', () => {
       }
     });
 
-    test('reuses the singleton Codex instance across sequential calls without env', async () => {
+    test('always hands the CLI an explicit env with every API key stripped', async () => {
+      const keys = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY'];
+      const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+      for (const k of keys) process.env[k] = `host-${k}`;
       mockRunStreamed.mockResolvedValue({
         events: (async function* () {
           yield { type: 'turn.completed', usage: defaultUsage };
         })(),
       });
 
-      for await (const _ of client.sendQuery('first prompt', '/workspace')) {
-        // consume
-      }
-      for await (const _ of client.sendQuery('second prompt', '/workspace')) {
-        // consume
-      }
+      try {
+        // No request env: the SDK would otherwise inherit the whole host env.
+        for await (const _ of client.sendQuery('first prompt', '/workspace')) {
+          // consume
+        }
+        for await (const _ of client.sendQuery('second prompt', '/workspace', undefined, {
+          env: { OPENAI_API_KEY: 'sk-project', CODEX_API_KEY: 'sk-c', PROJECT_VAR: 'kept' },
+        })) {
+          // consume
+        }
 
-      expect(MockCodex).toHaveBeenCalledTimes(1);
+        expect(MockCodex).toHaveBeenCalledTimes(2);
+        for (const call of MockCodex.mock.calls) {
+          const env = (call[0] as { env?: Record<string, string> }).env;
+          expect(env).toBeDefined();
+          for (const k of keys) expect(env?.[k]).toBeUndefined();
+        }
+        const secondEnv = (MockCodex.mock.calls[1][0] as { env: Record<string, string> }).env;
+        expect(secondEnv.PROJECT_VAR).toBe('kept');
+        // process.env itself is untouched
+        expect(process.env.OPENAI_API_KEY).toBe('host-OPENAI_API_KEY');
+      } finally {
+        for (const k of keys) {
+          if (saved[k] === undefined) delete process.env[k];
+          else process.env[k] = saved[k];
+        }
+      }
     });
 
     test('wraps per-call Codex constructor failures with provider error context', async () => {

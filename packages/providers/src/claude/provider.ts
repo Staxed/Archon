@@ -14,6 +14,9 @@
  *   filter tokens — it only logs which posture process.env shows (explicit
  *   token present vs not); the historical env-token allowlist was removed in
  *   #1067, so the log can read "global" while a per-request token authenticates.
+ * - Subscription only: `buildRequestSubprocessEnv` strips every API-key and
+ *   base-URL variable (shared/subscription-env.ts) from the merged env, so the
+ *   CLI always authenticates with its OAuth login, never an API key.
  * - CLAUDE_USE_GLOBAL_AUTH is an Archon-only boot sentinel (set for solo
  *   installs with no creds — see server/src/boot/claude-auth-posture.ts). The
  *   Claude CLI itself ignores it; it neither gates nor filters env here.
@@ -59,6 +62,7 @@ import {
 import { createLogger } from '@archon/paths';
 import { loadMcpConfig } from '../mcp/config';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
+import { buildSubscriptionEnv, strippedKeysIn } from '../shared/subscription-env';
 import { clampEffort, type AssertNever } from '@archon/paths/effort';
 import {
   claudeSkillSearchRoots,
@@ -176,11 +180,9 @@ function selectResolvedModelId(
  * - ~/.archon/.env loaded with override:true as the trusted source
  */
 function buildSubprocessEnv(): NodeJS.ProcessEnv {
-  // Using || intentionally: empty string should be treated as missing credential
-  const hasExplicitTokens = Boolean(
-    process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_API_KEY
-  );
-  const authMode = hasExplicitTokens ? 'explicit' : 'global';
+  // Using || intentionally: empty string should be treated as missing credential.
+  // Only the subscription token counts: API keys never reach the subprocess.
+  const authMode = process.env.CLAUDE_CODE_OAUTH_TOKEN ? 'explicit' : 'global';
   getLog().info(
     { authMode },
     authMode === 'global' ? 'using_global_auth' : 'using_explicit_tokens'
@@ -215,20 +217,18 @@ export function buildRequestSubprocessEnv(
 ): NodeJS.ProcessEnv {
   const isContainerRun = requestOptions?.execContext?.kind === 'container';
   const subprocessEnv = isContainerRun ? buildContainerBaseEnv() : buildSubprocessEnv();
-  const env = requestOptions?.env ? { ...subprocessEnv, ...requestOptions.env } : subprocessEnv;
-  // CLAUDE_API_KEY is Archon's variable name; the Claude Code CLI only reads
-  // ANTHROPIC_API_KEY, so mirror it or solo .env installs never authenticate
-  // (delivery.ts sets both vars on the per-user api_key path). Guarded on the
-  // MERGED env, not process.env: a per-request CLAUDE_CODE_OAUTH_TOKEN (per-user
-  // subscription delivered via requestOptions.env) must stay authoritative — the
-  // CLI prefers ANTHROPIC_API_KEY over the OAuth token, so injecting the install
-  // key alongside it would silently rebill the run. Truthiness is intentional:
-  // empty string = missing credential. Never clobbers an explicit ANTHROPIC_API_KEY.
-  if (env.CLAUDE_API_KEY && !env.ANTHROPIC_API_KEY && !env.CLAUDE_CODE_OAUTH_TOKEN) {
-    env.ANTHROPIC_API_KEY = env.CLAUDE_API_KEY;
-    getLog().debug('claude.api_key_mirrored');
+  // Subscription only: Claude Code runs on its OAuth login (CLAUDE_CODE_OAUTH_TOKEN
+  // or the CLI's own ~/.claude credentials), never an API key. The CLI prefers
+  // ANTHROPIC_API_KEY over the OAuth token, so a key anywhere in the merged env
+  // (host env, codebase env, a per-user delivered key) would silently bill the
+  // run to an API account. Strip them all, on host and container runs alike.
+  const stripped = [
+    ...new Set([...strippedKeysIn(subprocessEnv), ...strippedKeysIn(requestOptions?.env)]),
+  ];
+  if (stripped.length > 0) {
+    getLog().info({ stripped }, 'claude.api_key_env_stripped');
   }
-  return env;
+  return buildSubscriptionEnv(subprocessEnv, requestOptions?.env);
 }
 
 /**

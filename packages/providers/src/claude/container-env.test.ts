@@ -19,10 +19,10 @@ describe('buildRequestSubprocessEnv — container env isolation', () => {
   test('container run EXCLUDES host process.env (canary absent), keeps managed creds', () => {
     const env = buildRequestSubprocessEnv({
       execContext: { kind: 'container', containerId: 'c1' },
-      env: { ANTHROPIC_API_KEY: 'sk-managed', CODEBASE_VAR: 'x' },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-managed', CODEBASE_VAR: 'x' },
     });
     expect(env[CANARY]).toBeUndefined(); // host secret did NOT cross the boundary
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-managed'); // managed creds delivered
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-managed'); // managed creds delivered
     expect(env.CODEBASE_VAR).toBe('x');
     expect(env.TERM).toBe('dumb'); // minimal base only
   });
@@ -33,12 +33,25 @@ describe('buildRequestSubprocessEnv — container env isolation', () => {
     expect(env.FOO).toBe('bar');
   });
 
-  test('container run mirrors CLAUDE_API_KEY -> ANTHROPIC_API_KEY', () => {
+  test('container run strips API keys from the managed bag (subscription only)', () => {
     const env = buildRequestSubprocessEnv({
       execContext: { kind: 'container', containerId: 'c1' },
-      env: { CLAUDE_API_KEY: 'sk-claude' },
+      env: { CLAUDE_API_KEY: 'sk-claude', ANTHROPIC_API_KEY: 'sk-ant', OPENAI_API_KEY: 'sk-o' },
     });
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-claude');
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.CLAUDE_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env[CANARY]).toBeUndefined();
+  });
+
+  test('host run strips API keys inherited from the host env', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-host';
+    try {
+      const env = buildRequestSubprocessEnv({ env: { FOO: 'bar' } });
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.FOO).toBe('bar');
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
   });
 });
