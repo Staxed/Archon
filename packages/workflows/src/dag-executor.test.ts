@@ -15933,6 +15933,56 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     expect(capped?.data?.error).toBe("Node 'capped' exceeded cost cap of $2.50.");
   });
 
+  it('error message shows a sub-cent cost cap instead of $0.00', async () => {
+    let callCount = 0;
+    mockSendQueryDag.mockImplementation(async function* () {
+      callCount++;
+      if (callCount === 1) {
+        yield { type: 'assistant', content: 'done' };
+        yield { type: 'result', sessionId: 'sid1' };
+      } else {
+        yield {
+          type: 'result',
+          isError: true,
+          errorSubtype: 'error_max_budget_usd',
+          sessionId: 'sid2',
+        };
+      }
+    });
+
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      dagOptions({
+        deps: mockDeps,
+        platform,
+        cwd: testDir,
+        workflow: {
+          name: 'budget-subcent-test',
+          nodes: [
+            { id: 'ok', kind: 'agent', source: { kind: 'inline', prompt: 'do work first' } },
+            {
+              id: 'capped',
+              kind: 'agent',
+              source: { kind: 'command', name: 'my-cmd' },
+              maxBudgetUsd: 0.001,
+              depends_on: ['ok'],
+            },
+          ],
+        },
+        workflowRun,
+      })
+    );
+
+    const capped = persistedEvents(store).find(
+      event => event.event_type === 'node_failed' && event.step_name === 'capped'
+    );
+    expect(capped?.data?.error).toBe("Node 'capped' exceeded cost cap of $0.001.");
+  });
+
   it('fails node when SDK returns error_during_execution result', async () => {
     // Regression test for #1208: previously we only failed on error_max_budget_usd
     // and silently broke on all other isError subtypes, letting failed nodes

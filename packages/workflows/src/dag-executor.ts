@@ -139,6 +139,7 @@ import { planGraph, resolvedBodyNodes } from './graph-plan';
 import { FAN_OUT_CANCEL_REASONS, waitCompletionEvents } from './store';
 import type { DagResumeSnapshot, FanOutCancelReason, PersistedNodeOutput } from './store';
 import { formatToolCall } from './utils/tool-formatter';
+import { formatUsd } from './utils/format-usd';
 import { createLogger, isPathInside, RUN_ARTIFACTS_ENGINE_SUBDIR } from '@archon/paths';
 import { getWorkflowEventEmitter } from './event-emitter';
 import { TerminalStatusWriteError, requireTerminalStatusWrite } from './terminal-status-write';
@@ -2596,7 +2597,7 @@ async function executeNodeInternal(
             'dag.node_budget_cap_exceeded'
           );
           throw new Error(
-            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${cap.toFixed(2)}` : ''}.`
+            `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${formatUsd(cap)}` : ''}.`
           );
         }
         // Fail loudly on any other SDK error result. Previously we broke out of
