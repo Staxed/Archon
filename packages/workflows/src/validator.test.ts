@@ -1393,7 +1393,7 @@ describe('validateWorkflowResources — skills search roots', () => {
     expect(missingSkillIssues(issues)).toHaveLength(0);
   });
 
-  test('Codex warns about unsupported YAML skills without four-root validation', async () => {
+  test('Codex resolves YAML skills from the four shared roots (preloaded, no warning)', async () => {
     await stageSkill(tmpDir, '.claude', 'claude-only');
     const workflow = makeWorkflow(
       'test',
@@ -1410,9 +1410,7 @@ describe('validateWorkflowResources — skills search roots', () => {
 
     const issues = await validateWorkflowResources(workflow, tmpDir);
     expect(missingSkillIssues(issues)).toHaveLength(0);
-    const warning = issues.find(issue => issue.level === 'warning' && issue.field === 'skills');
-    expect(warning?.message).toContain("not supported by provider 'codex'");
-    expect(warning?.hint).toContain('$skill-name');
+    expect(issues.some(issue => issue.message.includes('not supported by provider'))).toBe(false);
   });
 
   test('uses a node model alias provider for Claude skill validation', async () => {
@@ -1445,7 +1443,7 @@ describe('validateWorkflowResources — skills search roots', () => {
     );
   });
 
-  test('uses a workflow model alias provider for inherited Codex skill warnings', async () => {
+  test('uses a workflow model alias provider for inherited Codex skill validation', async () => {
     const workflow = {
       ...skillsWorkflow('missing'),
       model: '@codex-workflow',
@@ -1456,10 +1454,10 @@ describe('validateWorkflowResources — skills search roots', () => {
       assistant: 'claude',
     });
 
-    expect(missingSkillIssues(issues)).toHaveLength(0);
-    expect(issues.some(issue => issue.message.includes("not supported by provider 'codex'"))).toBe(
-      true
-    );
+    // The generic (non-Claude) wording proves the alias-resolved 'codex' drove the check.
+    const missing = missingSkillIssues(issues);
+    expect(missing).toHaveLength(1);
+    expect(missing[0].message).toContain("Skill 'missing' not found in .agents/skills/");
   });
 
   test('Claude project-only settingSources rejects a user-only skill', async () => {
