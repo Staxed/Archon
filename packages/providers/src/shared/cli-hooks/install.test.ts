@@ -11,6 +11,7 @@ import {
   prepareHookRun,
   unsupportedHookEvents,
 } from './install';
+import type { HookRunSpec } from './hook-dispatcher';
 import {
   mapSandboxForCodex,
   mapSandboxForGrok,
@@ -171,7 +172,10 @@ describe('hook run preparation', () => {
       hooks: { Stop: [{ response: {} }], PostToolUse: [] },
     });
     expect(run.env.ARCHON_HOOK_EVENTS).toBe('PreToolUse,Stop');
-    expect(JSON.parse(readFileSync(run.env.ARCHON_HOOK_SPEC, 'utf8'))).toMatchObject({ cwd: '/w' });
+    const written = JSON.parse(readFileSync(run.env.ARCHON_HOOK_SPEC, 'utf8')) as HookRunSpec;
+    expect(written).toMatchObject({ cwd: '/w' });
+    // the guard's rules file is pinned by the server, never left to the CLI's env
+    expect(Object.hasOwn(written, 'rulesPath')).toBe(true);
     run.cleanup();
     run.cleanup();
     expect(existsSync(run.env.ARCHON_HOOK_SPEC)).toBe(false);

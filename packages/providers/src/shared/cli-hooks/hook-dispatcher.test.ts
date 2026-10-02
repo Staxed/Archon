@@ -221,6 +221,78 @@ describe('dispatchHook: destructive-command guard', () => {
     }
   });
 
+  test('covers Grok run_terminal_cmd and Codex write_stdin keystrokes', () => {
+    const g = dispatchHook(grok(), 'PreToolUse', pre('run_terminal_cmd', { command: 'rm -rf ~' }));
+    expect(decision(g)).toBe('deny');
+    const c = dispatchHook(
+      codex(),
+      'PreToolUse',
+      pre('write_stdin', { session_id: 1, chars: 'rm -rf /etc\n' })
+    );
+    expect(decision(c)).toBe('deny');
+  });
+
+  test('uses the rules file pinned in the spec, not the CLI environment', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dispatch-rules-'));
+    try {
+      const rulesPath = join(dir, 'rules.json');
+      writeFileSync(
+        rulesPath,
+        JSON.stringify({
+          protected_paths: ['/srv/data'],
+          rules: [{ id: 'recursive-delete', instead: 'no' }],
+        })
+      );
+      const out = dispatchHook(
+        codex({ rulesPath }),
+        'PreToolUse',
+        pre('Bash', { command: 'rm -rf /srv/data' })
+      );
+      expect(decision(out)).toBe('deny');
+      // null pins the built-in defaults: /srv/data is not protected there
+      const dflt = dispatchHook(
+        codex({ rulesPath: null }),
+        'PreToolUse',
+        pre('Bash', { command: 'rm -rf /srv/data' })
+      );
+      expect(dflt).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('judges the command a node hook rewrote it to (updatedInput)', () => {
+    const rewrite = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: 'rm -rf /etc' },
+      },
+    };
+    const spec = codex({ hooks: { PreToolUse: [{ matcher: 'Bash', response: rewrite }] } });
+    const out = dispatchHook(spec, 'PreToolUse', pre('Bash', { command: 'ls' }));
+    expect(decision(out)).toBe('deny');
+    expect(JSON.stringify(out)).toContain('rewrote the call');
+    const harmless = codex({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            response: {
+              hookSpecificOutput: {
+                ...rewrite.hookSpecificOutput,
+                updatedInput: { command: 'ls -la' },
+              },
+            },
+          },
+        ],
+      },
+    });
+    expect(decision(dispatchHook(harmless, 'PreToolUse', pre('Bash', { command: 'ls' })))).toBe(
+      'allow'
+    );
+  });
+
   test("resolves relative paths against the call's workdir", () => {
     const out = dispatchHook(
       codex(),

@@ -57,6 +57,12 @@ export interface HookRunSpec {
   deniedTools?: string[];
   /** The node's YAML hooks, by Claude event name. */
   hooks?: HookSpecsByEvent;
+  /**
+   * The destructive-command rules file the Archon server resolved (null: the
+   * built-in defaults). Carried here, not in the CLI's environment, so a
+   * project's env cannot point the guard at a weaker file.
+   */
+  rulesPath?: string | null;
 }
 
 /** The subset of a hook's stdin the dispatcher reads (both CLIs send these keys). */
@@ -89,6 +95,9 @@ interface ToolView {
  */
 const GROK_TO_CLAUDE: Record<string, string[]> = {
   run_terminal_command: ['Bash'],
+  // the name Grok's headless docs give its shell tool; Grok also maps `Bash` itself
+  run_terminal_cmd: ['Bash'],
+  Bash: ['Bash'],
   kill_command_or_subagent: ['Bash'],
   get_command_or_subagent_output: ['Bash'],
   read_file: ['Read'],
@@ -109,6 +118,10 @@ const CODEX_TO_CLAUDE: Record<string, string[]> = {
   Bash: ['Bash'],
   shell: ['Bash'],
   exec_command: ['Bash'],
+  local_shell: ['Bash'],
+  container_exec: ['Bash'],
+  // types into a running exec session: the keystrokes are a command line too
+  write_stdin: ['Bash'],
   update_plan: ['TodoWrite'],
   view_image: ['Read'],
   web_search: ['WebSearch'],
@@ -178,7 +191,7 @@ export function toolView(
 export function shellCommand(toolInput: unknown): string | undefined {
   if (!toolInput || typeof toolInput !== 'object') return undefined;
   const input = toolInput as Record<string, unknown>;
-  const raw = input.command ?? input.cmd;
+  const raw = input.command ?? input.cmd ?? input.chars;
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw) && raw.every((a): a is string => typeof a === 'string')) {
     // ['bash', '-lc', 'script'] -> a line a shell parser reads back into the same argv
@@ -274,7 +287,9 @@ const destructiveGuard: PreToolGuard = (spec, input, view) => {
   if (!view.names.includes('Bash')) return undefined;
   const command = shellCommand(input.tool_input);
   if (!command) return undefined;
-  return checkCommand(command, shellCwd(input, spec.cwd))?.message();
+  // The server decided the rules file; the CLI's env (fed by the project) does not.
+  const rules = 'rulesPath' in spec ? { rulesPath: spec.rulesPath ?? null } : {};
+  return checkCommand(command, shellCwd(input, spec.cwd), rules)?.message();
 };
 
 export const PRE_TOOL_GUARDS: PreToolGuard[] = [pathGuard, destructiveGuard];
@@ -321,6 +336,20 @@ export function dispatchHook(
   // Claude runs every matching hook and a deny wins; context from the others is kept.
   const deny = responses.find(isDenyResponse);
   if (deny) return deny;
+  // A node hook may rewrite the call (updatedInput): the guards judge what will
+  // actually run, not what the model asked for.
+  if (event === 'PreToolUse' && view && toolName) {
+    for (const r of responses) {
+      const updated = (r.hookSpecificOutput as Record<string, unknown> | undefined)?.updatedInput;
+      if (updated === undefined) continue;
+      const rewritten: HookInput = { ...input, tool_input: updated };
+      const newView = toolView(spec.provider, toolName, updated);
+      for (const guard of PRE_TOOL_GUARDS) {
+        const reason = guard(spec, rewritten, newView);
+        if (reason) return denyOutput(`${reason} (after this node's hook rewrote the call)`);
+      }
+    }
+  }
   const contexts = responses
     .map(r => (r.hookSpecificOutput as Record<string, unknown> | undefined)?.additionalContext)
     .filter((c): c is string => typeof c === 'string' && c.length > 0);

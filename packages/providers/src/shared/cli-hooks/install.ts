@@ -34,6 +34,7 @@ import {
   type HookRunSpec,
   type HookSpecsByEvent,
 } from './hook-dispatcher';
+import { resolveRulesPath } from '../destructive-guard';
 
 /** Claude hook events the Codex CLI fires (codex 0.157), with Codex's snake_case name. */
 export const CODEX_HOOK_EVENTS: Record<string, string> = {
@@ -283,7 +284,13 @@ export function prepareHookRun(spec: HookRunSpec): PreparedHookRun {
   const dir = join(tmpdir(), 'archon-hook-specs');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${randomUUID()}.json`);
-  writeFileSync(path, JSON.stringify(spec), { mode: 0o600 });
+  // The guard's rules file is the server's choice (its own environment), pinned
+  // here so the CLI's environment cannot change it.
+  const pinned: HookRunSpec = {
+    ...spec,
+    rulesPath: 'rulesPath' in spec ? (spec.rulesPath ?? null) : (resolveRulesPath() ?? null),
+  };
+  writeFileSync(path, JSON.stringify(pinned), { mode: 0o600 });
   const events = new Set<string>(['PreToolUse']);
   for (const [event, list] of Object.entries(spec.hooks ?? {})) {
     if ((list?.length ?? 0) > 0) events.add(event);
