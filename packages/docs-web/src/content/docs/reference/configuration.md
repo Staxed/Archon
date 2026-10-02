@@ -178,6 +178,7 @@ Run config accepts settings whose consumers still execute after the run is dispa
 - `worktree` and `container` already affected isolation.
 - `botName`, `streaming`, `paths`, and `concurrency` are process-scoped or have no per-run consumer.
 - `recommendedWorkflows` is listing-only.
+- `agentPromptAppend` is install/repo standing context, not a per-run setting.
 - `assistants.pi.env` and `assistants.pi.maxConcurrent` mutate process-lifetime Pi state rather than one request.
 
 Unknown keys, unregistered providers, invalid effort values, and alias names without `@` also fail instead of being ignored. CLI accepts a local path; the HTTP run API accepts inline validated content and never a caller-selected server path.
@@ -384,6 +385,26 @@ recommendedWorkflows:
 - The list lives **per-project only** — it is not part of global config (`~/.archon/config.yaml`) and is not per-user.
 
 **Worktree path behavior:** By default, every repo's worktrees live under `~/.archon/workspaces/<owner>/<repo>/worktrees/<branch>` — outside the repo, invisible to the IDE. Set `worktree.path` to opt in to a **repo-local** layout instead: worktrees are created at `<repoRoot>/<worktree.path>/<branch>` so they show up in the file tree and editor workspace. A common choice is `.worktrees`. Because worktrees now live inside the repository tree, you should add the directory to your `.gitignore` (Archon does not modify user-owned files). The configured path must be relative to the repo root; absolute paths and paths containing `..` segments fail loudly at worktree creation rather than silently falling back.
+
+### Standing agent context (`agentPromptAppend`)
+
+Text appended to the prompt of **every AI agent node** in a workflow run — command and
+prompt nodes, every loop iteration, and approval rework — after all variable substitution.
+Use it for install-wide context that bundled workflows should not have to be edited for.
+
+```yaml
+# ~/.archon/config.yaml (or a repo's .archon/config.yaml)
+agentPromptAppend: |
+  Before you start, read this project's notes at docs/agent-notes.md.
+```
+
+**Semantics:**
+
+- Valid in global and repo config. A repo value **replaces** the global one (not concatenated).
+- The text is static: workflow variables (`$ARGUMENTS`, `$ARTIFACTS_DIR`, …) are **not** substituted in it.
+- It is separated from the node prompt by a `---` rule. Bash, script, and approval-gate nodes are unaffected.
+- `--dry-run` previews show it on agent nodes, so `workflow run --dry-run` verifies it.
+- A non-string value is ignored with a warning; blank text appends nothing. Not accepted in run config (`--config`).
 
 ### Container isolation (folder projects)
 

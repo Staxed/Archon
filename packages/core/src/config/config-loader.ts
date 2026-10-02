@@ -624,6 +624,21 @@ function applyEnvOverrides(
 /**
  * Merge global config into defaults
  */
+/**
+ * Coerce `agentPromptAppend` to trimmed non-empty text. Anything else is
+ * ignored with a warning rather than failing the load: the append is
+ * advisory context, and a typo must not take the install down.
+ */
+function sanitizeAgentPromptAppend(raw: unknown, source: string): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') {
+    getLog().warn({ source, rawType: typeof raw }, 'config.agent_prompt_append_not_string_ignored');
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): MergedConfig {
   const result: MergedConfig = {
     ...defaults,
@@ -678,6 +693,9 @@ function mergeGlobalConfig(defaults: MergedConfig, global: GlobalConfig): Merged
   if (global.container) {
     result.container = { ...global.container };
   }
+
+  const globalAppend = sanitizeAgentPromptAppend(global.agentPromptAppend, 'global');
+  if (globalAppend !== undefined) result.agentPromptAppend = globalAppend;
 
   return result;
 }
@@ -751,6 +769,10 @@ function mergeRepoConfig(merged: MergedConfig, repo: RepoConfig): MergedConfig {
       getLog().warn({ rawValue: repo.docs.path }, 'config.docs_path_whitespace_ignored');
     }
   }
+
+  // Repo replaces the global append (not concatenated), like other scalar overrides.
+  const repoAppend = sanitizeAgentPromptAppend(repo.agentPromptAppend, 'repo');
+  if (repoAppend !== undefined) result.agentPromptAppend = repoAppend;
 
   // Propagate per-project env vars from repo config
   if (repo.env) {

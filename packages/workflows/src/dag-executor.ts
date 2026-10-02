@@ -196,6 +196,7 @@ import {
   loadCommandPrompt,
   substituteWorkflowVariables,
   buildPromptWithContext,
+  appendAgentPrompt,
   detectCompletionSignal,
   describeUnmetCompletion,
   stripCompletionTags,
@@ -2253,8 +2254,11 @@ async function executeNodeInternal(
     return result;
   }
 
-  // Substitute upstream node output references
-  const finalPrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
+  // Substitute upstream node output references, then the configured standing context
+  const finalPrompt = appendAgentPrompt(
+    substituteNodeOutputRefs(substitutedPrompt, nodeOutputs),
+    ctx.config.agentPromptAppend
+  );
 
   const streamingMode = platform.getStreamingMode();
 
@@ -6103,7 +6107,10 @@ async function executeLoopNode(
             i === startIteration ? '' : lastIterationOutput,
             { stateDir, inputs: resolveRunInputs(workflowRun), typedArtifactsFile }
           );
-          const basePrompt = substituteNodeOutputRefs(substitutedPrompt, nodeOutputs);
+          const basePrompt = appendAgentPrompt(
+            substituteNodeOutputRefs(substitutedPrompt, nodeOutputs),
+            ctx.config.agentPromptAppend
+          );
           // A reask re-runs this iteration's prompt with the schema errors appended, so
           // the model is told WHAT was wrong rather than silently asked again.
           const finalPrompt =

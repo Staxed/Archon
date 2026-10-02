@@ -871,6 +871,22 @@ export function buildPromptWithContext(
   return prompt;
 }
 
+/** Separator between an agent prompt and the configured `agentPromptAppend` text. */
+export const AGENT_PROMPT_APPEND_SEPARATOR = '\n\n---\n\n';
+
+/**
+ * Append the install/repo `agentPromptAppend` text to an AI agent prompt.
+ *
+ * Applied once per agent invocation, after every substitution, so the text is
+ * never subject to workflow-variable expansion and cannot be shadowed by node
+ * output. Empty or whitespace-only text appends nothing.
+ */
+export function appendAgentPrompt(prompt: string, append: string | undefined): string {
+  const text = append?.trim();
+  if (!text) return prompt;
+  return prompt + AGENT_PROMPT_APPEND_SEPARATOR + text;
+}
+
 // ─── Completion Signal Detection ────────────────────────────────────────────
 
 /**

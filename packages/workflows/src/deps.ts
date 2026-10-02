@@ -113,6 +113,11 @@ export interface WorkflowConfig {
   aliases?: RawAliasesConfig;
   tiers?: RawTiersConfig;
   commands: { folder?: string };
+  /**
+   * Static text appended to every AI agent node prompt (see `appendAgentPrompt`).
+   * Undefined/empty = nothing appended.
+   */
+  agentPromptAppend?: string;
   workflows?: {
     autoResumeOnQuotaReset: boolean;
     quotaFallbackDelayMs?: number;

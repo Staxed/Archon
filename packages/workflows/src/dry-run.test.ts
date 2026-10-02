@@ -1073,6 +1073,34 @@ describe('dryRunWorkflow', () => {
     expect(result.trace[0]?.resolvedText).toBe('Inspect issue 2100');
   });
 
+  test('appends the configured agentPromptAppend to agent prompts only', async () => {
+    const workflow = makeTestWorkflow({
+      name: 'agent-prompt-append',
+      nodes: [
+        { id: 'shell', bash: 'echo hi' },
+        { id: 'agent', prompt: 'Do $ARGUMENTS', depends_on: ['shell'] },
+      ],
+    });
+
+    const result = await dryRunWorkflow({
+      workflow,
+      userMessage: 'the work',
+      cwd: process.cwd(),
+      stubs: { shell: 'hi', agent: 'done' },
+      config: {
+        assistant: 'claude',
+        commands: {},
+        assistants: { claude: {}, codex: {} },
+        agentPromptAppend: 'Read the project card first.',
+      },
+    });
+
+    expect(result.trace.find(e => e.nodeId === 'shell')?.resolvedText).toBe('echo hi');
+    expect(result.trace.find(e => e.nodeId === 'agent')?.resolvedText).toBe(
+      'Do the work\n\n---\n\nRead the project card first.'
+    );
+  });
+
   test('substitutes an empty typed-artifact listing in a dry-run preview', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'archon-dry-run-typed-artifacts-'));
     temporaryDirectories.push(cwd);
