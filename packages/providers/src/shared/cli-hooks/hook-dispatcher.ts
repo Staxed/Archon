@@ -16,7 +16,8 @@
  * `hookSpecificOutput.permissionDecision: "deny"` blocks the call in both.
  *
  * For PreToolUse the dispatcher applies, in order: the path guard (no file
- * writes outside the working directory), the node's tool allow/deny list, then
+ * writes outside the working directory), the destructive-command guard on shell
+ * calls (../destructive-guard.ts), the node's tool allow/deny list, then
  * the node's static hook responses by matcher. Every other event only replays
  * the node's static responses. A PreToolUse that cannot read its spec DENIES
  * (fail closed); both CLIs treat a crashed hook as "allow".
@@ -26,6 +27,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { validatePath } from './path-validation';
+import { checkCommand, shellQuote } from '../destructive-guard';
 
 export const HOOK_SPEC_ENV = 'ARCHON_HOOK_SPEC';
 export const HOOK_EVENTS_ENV = 'ARCHON_HOOK_EVENTS';
@@ -172,12 +174,6 @@ export function toolView(
   return { names, writes: isWrite && path ? [path] : [], mcp: false };
 }
 
-/** POSIX single-quote a word so a shell parses it back unchanged. */
-export function quoteShellWord(s: string): string {
-  if (s !== '' && /^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
-  return `'${s.replaceAll("'", "'\\''")}'`;
-}
-
 /** The shell command a Bash-like call would run: a string, or Codex's argv array. */
 export function shellCommand(toolInput: unknown): string | undefined {
   if (!toolInput || typeof toolInput !== 'object') return undefined;
@@ -186,7 +182,7 @@ export function shellCommand(toolInput: unknown): string | undefined {
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw) && raw.every((a): a is string => typeof a === 'string')) {
     // ['bash', '-lc', 'script'] -> a line a shell parser reads back into the same argv
-    return raw.map(quoteShellWord).join(' ');
+    return raw.map(shellQuote).join(' ');
   }
   return undefined;
 }
@@ -273,7 +269,15 @@ const pathGuard: PreToolGuard = (spec, _input, view) => {
   return undefined;
 };
 
-export const PRE_TOOL_GUARDS: PreToolGuard[] = [pathGuard];
+/** Shell calls (Bash-like on either CLI) must not destroy what git cannot restore. */
+const destructiveGuard: PreToolGuard = (spec, input, view) => {
+  if (!view.names.includes('Bash')) return undefined;
+  const command = shellCommand(input.tool_input);
+  if (!command) return undefined;
+  return checkCommand(command, shellCwd(input, spec.cwd))?.message();
+};
+
+export const PRE_TOOL_GUARDS: PreToolGuard[] = [pathGuard, destructiveGuard];
 
 /**
  * Decide one hook event. Returns the JSON to print (Claude's hook output shape,

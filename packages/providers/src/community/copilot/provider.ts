@@ -37,6 +37,7 @@ import { COPILOT_EFFORTS, parseCopilotConfig, type CopilotProviderDefaults } fro
 import { clampEffort } from '@archon/paths/effort';
 import { resolveCopilotBinaryPath } from './binary-resolver';
 import { bridgeSession } from './event-bridge';
+import { checkCommand } from '../../shared/destructive-guard';
 
 // `ReasoningEffort` is defined in the SDK but not re-exported from its barrel
 // (as of @github/copilot-sdk@0.2.2), so the vocabulary is mirrored in ./config
@@ -282,6 +283,33 @@ function applyAgents(
   );
 }
 
+/**
+ * Archon's destructive-command guard (shared/destructive-guard.ts) for Copilot's
+ * shell tool: every shell permission request is checked before the approval
+ * handler sees it, and a destructive command is rejected with the guard's reason
+ * as feedback to the model. Everything else goes to `approve` unchanged.
+ */
+export function guardShellPermissions(
+  approve: SessionConfig['onPermissionRequest'],
+  cwd: string
+): SessionConfig['onPermissionRequest'] {
+  if (!approve) return approve;
+  return (request, invocation) => {
+    const shell = request as { kind?: unknown; fullCommandText?: unknown };
+    if (shell.kind === 'shell' && typeof shell.fullCommandText === 'string') {
+      const violation = checkCommand(shell.fullCommandText, cwd);
+      if (violation) {
+        getLog().warn(
+          { command: shell.fullCommandText, cwd, rule: violation.rule },
+          'copilot.shell_destructive_blocked'
+        );
+        return { kind: 'reject', feedback: violation.message() };
+      }
+    }
+    return approve(request, invocation);
+  };
+}
+
 // ─── SessionConfig assembly ─────────────────────────────────────────────────
 
 /**
@@ -317,7 +345,7 @@ async function buildSessionConfig(
     streaming: true,
     systemMessage: resolveSystemMessage(requestOptions),
     enableConfigDiscovery: copilotConfig.enableConfigDiscovery ?? false,
-    onPermissionRequest: approveAll,
+    onPermissionRequest: guardShellPermissions(approveAll, cwd),
   };
 
   applyToolRestrictions(sessionConfig, requestOptions?.nodeConfig);

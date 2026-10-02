@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { guardGapNotice } from '../../shared/destructive-guard';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -587,6 +588,11 @@ export class PiProvider implements IAgentProvider {
     //    PI_CAPABILITIES; nodeConfig fields that don't map cleanly still
     //    trigger a dag-executor warning upstream.
     const nodeConfig = requestOptions?.nodeConfig;
+    // Pi runs its bash tool with no Archon hook point: the destructive-command
+    // guard cannot see it, so a workflow node is told rather than left to assume.
+    if (typeof nodeConfig?.nodeId === 'string' && nodeConfig.nodeId.trim()) {
+      yield { type: 'system', content: guardGapNotice('Pi') };
+    }
 
     //    4a. thinkingLevel: Pi's native representation of Archon's `effort` field.
     const { level: thinkingLevel, warning: thinkingWarning } = resolvePiThinkingLevel(nodeConfig);

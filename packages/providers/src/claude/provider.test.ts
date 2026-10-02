@@ -1856,6 +1856,47 @@ describe('ClaudeProvider', () => {
       expect(env.HOME).toBe('/custom/home');
     });
 
+    describe('destructive-command guard', () => {
+      type Matcher = {
+        matcher?: string;
+        hooks: ((input: Record<string, unknown>) => Promise<Record<string, unknown>>)[];
+      };
+      async function preToolUse(
+        options?: Parameters<ClaudeProvider['sendQuery']>[3]
+      ): Promise<Matcher[]> {
+        mockQuery.mockImplementation(async function* () {
+          yield { type: 'result', session_id: 'sid' };
+        });
+        for await (const _ of client.sendQuery('test', '/work/tree', undefined, options)) {
+          // consume
+        }
+        const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> };
+        return (callArgs.options.hooks as Record<string, Matcher[]>).PreToolUse;
+      }
+
+      test('a Bash PreToolUse hook denies destructive commands on every query', async () => {
+        const guard = (await preToolUse()).find(m => m.matcher === 'Bash');
+        expect(guard).toBeDefined();
+        const out = await guard!.hooks[0]({
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf /etc' },
+        });
+        expect(out).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+        const ok = await guard!.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'ls' } });
+        expect(ok).toEqual({ continue: true });
+      });
+
+      test('node YAML hooks are added in front of the guard, not instead of it', async () => {
+        const matchers = await preToolUse({
+          nodeConfig: {
+            nodeId: 'n',
+            hooks: { PreToolUse: [{ matcher: 'Write', response: { continue: true } }] },
+          },
+        });
+        expect(matchers.map(m => m.matcher)).toEqual(['Write', 'Bash']);
+      });
+    });
+
     describe('subscription-only auth: API keys never reach the subprocess', () => {
       const ENV_KEYS_UNDER_TEST = [
         'CLAUDE_API_KEY',

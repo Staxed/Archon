@@ -120,7 +120,7 @@ mock.module('@github/copilot-sdk', () => ({
 }));
 
 // Provider imports AFTER mocks are installed.
-import { CopilotProvider, resetCopilotSingleton } from './provider';
+import { CopilotProvider, guardShellPermissions, resetCopilotSingleton } from './provider';
 
 function evt<T extends SessionEvent['type']>(type: T, data: unknown): SessionEvent {
   return {
@@ -574,5 +574,29 @@ describe('CopilotProvider.sendQuery', () => {
         }
       })()
     ).rejects.toThrow('kaboom');
+  });
+});
+
+describe('guardShellPermissions (destructive-command guard)', () => {
+  const approve = mock(() => ({ kind: 'approve-once' as const }));
+  type Handler = (r: Record<string, unknown>, i: { sessionId: string }) => unknown;
+  const handler = guardShellPermissions(approve as never, '/work/tree') as unknown as Handler;
+
+  test('rejects a destructive shell command with the guard reason', async () => {
+    approve.mockClear();
+    const out = (await handler(
+      { kind: 'shell', fullCommandText: 'docker volume rm pgdata' },
+      { sessionId: 's' }
+    )) as { kind: string; feedback?: string };
+    expect(out.kind).toBe('reject');
+    expect(out.feedback).toContain('destructive-command guard');
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  test('passes ordinary shell commands and other requests to the approval handler', async () => {
+    approve.mockClear();
+    await handler({ kind: 'shell', fullCommandText: 'git status' }, { sessionId: 's' });
+    await handler({ kind: 'write', fileName: '/etc/x' }, { sessionId: 's' });
+    expect(approve).toHaveBeenCalledTimes(2);
   });
 });

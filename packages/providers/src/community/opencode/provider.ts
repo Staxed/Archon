@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { guardGapNotice } from '../../shared/destructive-guard';
 import { createLogger } from '@archon/paths';
 
 import type {
@@ -83,6 +84,12 @@ export class OpencodeProvider implements IAgentProvider {
         'OpenCode external baseUrl mode is no longer supported. ' +
           'Archon now requires managed embedded OpenCode runtime for fully controlled agent lifecycle.'
       );
+    }
+
+    // OpenCode runs its shell tool server-side with no Archon hook point: the
+    // destructive-command guard cannot see it, so a workflow node is told.
+    if (requestOptions?.nodeConfig?.nodeId) {
+      yield { type: 'system', content: guardGapNotice('OpenCode') };
     }
 
     const sessionCwd =

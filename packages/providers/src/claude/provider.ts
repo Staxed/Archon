@@ -63,6 +63,7 @@ import { createLogger } from '@archon/paths';
 import { loadMcpConfig } from '../mcp/config';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { buildSubscriptionEnv, strippedKeysIn } from '../shared/subscription-env';
+import { createPreToolUseDestructiveGuardHook } from './destructive-guard-hook';
 import { clampEffort, type AssertNever } from '@archon/paths/effort';
 import {
   claudeSkillSearchRoots,
@@ -875,7 +876,13 @@ function buildBaseClaudeOptions(
     // enables (`hook_progress`) falls through — it is only emitted for
     // async hooks, which Archon does not register today.
     includeHookEvents: true,
-    hooks: buildToolCaptureHooks(toolResultQueue),
+    hooks: {
+      ...buildToolCaptureHooks(toolResultQueue),
+      // Destructive-command guard for the SDK's own Bash tool (a project, the
+      // projects folder, system roots, Docker volumes). Node hooks are merged in
+      // front of it by applyNodeConfig, never in place of it.
+      PreToolUse: [{ matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] }],
+    },
     stderr: (data: string): void => {
       const output = data.trim();
       if (!output) return;

@@ -80,6 +80,9 @@
       "src/shared/cli-hooks/hook-dispatcher.test.ts"
     ],
     [
+      "src/shared/destructive-guard.test.ts"
+    ],
+    [
       "src/codex/binary-resolver.test.ts"
     ],
     [

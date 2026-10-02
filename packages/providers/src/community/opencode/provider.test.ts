@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 
+import { guardGapNotice } from '../../shared/destructive-guard';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1464,7 +1465,10 @@ describe('OpencodeProvider', () => {
     );
 
     expect(error).toBeUndefined();
-    expect(chunks).toEqual([{ type: 'result', sessionId: 'session-1' }]);
+    expect(chunks).toEqual([
+      { type: 'system', content: guardGapNotice('OpenCode') },
+      { type: 'result', sessionId: 'session-1' },
+    ]);
     expect(mockCreateOpencode).toHaveBeenCalledTimes(2);
     expect(mockLogger.info).toHaveBeenCalledWith(
       { attempt: 0, sessionCwd: join(cwd, '.archon-opencode', 'node-2') },
