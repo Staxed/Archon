@@ -2442,8 +2442,14 @@ describe('sendQuery decomposition behaviors', () => {
       // consume
     }
 
-    expect(seen[0]).toBeUndefined();
-    const guard = (seen[1] as { hooks: ((...a: unknown[]) => Promise<unknown>)[] }[])[0].hooks[0];
+    // The destructive guard (matcher 'Bash') is always present; the path guard
+    // (no matcher) only joins it when writableRoots is set.
+    type Entry = { matcher?: string; hooks: ((...a: unknown[]) => Promise<unknown>)[] };
+    const chat = seen[0] as Entry[];
+    const node = seen[1] as Entry[];
+    expect(chat.map(e => e.matcher)).toEqual(['Bash']);
+    expect(node.map(e => e.matcher)).toEqual(['Bash', undefined]);
+    const guard = node[1].hooks[0];
     const denied = (await guard(
       { tool_name: 'Write', tool_input: { file_path: '/source-repo/out.md' } },
       undefined,
