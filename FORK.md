@@ -4,6 +4,24 @@ This is Staxed's fork of [Archon](https://github.com/coleam00/Archon), rebased o
 upstream v0.11.1. This file lists where it deviates from upstream and what a
 deployment of it needs.
 
+## Deviations from upstream
+
+- **Subscription-only auth:** Claude Code, Codex and Grok run on their own
+  subscription logins (OAuth); Archon never falls back to a provider API key.
+- **Grok provider:** a Grok CLI provider alongside Claude and Codex.
+- **Destructive-command guard:** refuses destructive commands from agent nodes
+  (ported on a separate branch).
+- **Pi gateway-only:** the Pi provider may only call the LLM gateway (below).
+- **Inner agents stay inside their cwd:** workflow nodes get a cwd notice, and
+  Claude's Write/Edit tools are denied outside the worktree and the run's
+  artifacts, state and log dirs.
+- **Missing MCP config on a `when:`-gated node** is a validation warning, not an
+  error.
+- **Sub-cent cost caps** show as `$0.001`, not `$0.00`.
+- **Retired fork code:** the fork's knowledge base, its own OpenRouter and
+  llama.cpp clients and its own tool loop are gone. Gateway models run through
+  Pi, and project knowledge lives in Stixed project cards.
+
 ## Pi provider: LLM gateway only
 
 On this host every HTTP model call goes through the metering gateway
