@@ -28,6 +28,7 @@ import {
 } from './output-ref';
 import { discoverScriptsForCwd } from './script-discovery';
 import {
+  appendAgentPrompt,
   describeUnmetCompletion,
   detectCompletionSignal,
   isInlineScript,
@@ -519,6 +520,8 @@ function completedOutput(node: DagNode, stub: DryRunStubValue): NodeOutput {
 
 interface DryRunContext {
   workflow: ResolvedWorkflow;
+  /** The install's `agentPromptAppend`, appended to agent prompts as a real run does. */
+  agentPromptAppend?: string;
   userMessage: string;
   cwd: string;
   /**
@@ -944,7 +947,10 @@ async function simulateLoop(
   }
   let resolvedText = template;
   for (let current = 1; current <= node.loop.max_iterations; current++) {
-    resolvedText = resolveText(template, ctx, outputs, false, previous);
+    resolvedText = appendAgentPrompt(
+      resolveText(template, ctx, outputs, false, previous),
+      ctx.agentPromptAppend
+    );
     const stub = stubFor(node, ctx);
     if (stub === undefined) {
       ctx.missingStubs.add(node.id);
@@ -1263,7 +1269,7 @@ async function simulateNode(
       isAgentNode(node) && nodeBindings !== undefined
         ? { ...(ctx.inputs ?? {}), ...nodeBindings }
         : undefined;
-    const resolvedText =
+    const substitutedText =
       isExecNode(node) && node.runtime !== 'sh'
         ? resolveText(sourceText, ctx, outputs, true, '', false)
         : resolveText(
@@ -1275,6 +1281,9 @@ async function simulateNode(
             undefined,
             commandInputs
           );
+    const resolvedText = isAgentNode(node)
+      ? appendAgentPrompt(substitutedText, ctx.agentPromptAppend)
+      : substitutedText;
     const stub = stubFor(node, ctx);
     if (stub === undefined && isExecNode(node) && ctx.execCode) {
       const executed = await executeCodeNode(node, resolvedText, ctx, nodeBindings, execution);
@@ -1482,6 +1491,9 @@ export async function dryRunWorkflow(options: {
   const tempRoot = join(getArchonTempPath(), `dry-run-${randomUUID()}`);
   const ctx: DryRunContext = {
     workflow: options.workflow,
+    ...(options.config?.agentPromptAppend
+      ? { agentPromptAppend: options.config.agentPromptAppend }
+      : {}),
     userMessage: options.userMessage,
     cwd: options.cwd,
     execWorkspace: options.execWorkspace ?? options.cwd,

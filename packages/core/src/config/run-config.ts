@@ -70,6 +70,10 @@ const keyClassifications = {
     kind: 'unavailable',
     reason: 'recommended workflows are listing-only and have no run consumer',
   },
+  agentPromptAppend: {
+    kind: 'unavailable',
+    reason: 'agent prompt append is install/repo standing context, not a per-run setting',
+  },
 } as const satisfies Record<ConfigKey, KeyClassification>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

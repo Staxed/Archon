@@ -191,6 +191,16 @@ export interface GlobalConfig {
 
   /** Default-off policy for continuing terminal quota failures after time passes. */
   workflows?: WorkflowContinuationConfig;
+
+  /**
+   * Text appended to the prompt of every AI agent node (command, prompt, loop
+   * iteration, approval rework) in workflow runs, after variable substitution.
+   * Static text — no workflow variables are substituted in it. Use it for
+   * install-wide standing context that bundled workflows should not need to be
+   * edited for (e.g. "read this project's notes first"). Repo config replaces
+   * the global value. Non-string values are ignored with a warning.
+   */
+  agentPromptAppend?: string;
 }
 
 // Ordinary global/repo config remains forward-compatible: unlike the explicitly
@@ -340,6 +350,16 @@ export interface RepoConfig {
   recommendedWorkflows?: string[];
 
   /**
+   * Text appended to the prompt of every AI agent node (command, prompt, loop
+   * iteration, approval rework) in workflow runs, after variable substitution.
+   * Static text — no workflow variables are substituted in it. Use it for
+   * install-wide standing context that bundled workflows should not need to be
+   * edited for (e.g. "read this project's notes first"). Repo config replaces
+   * the global value. Non-string values are ignored with a warning.
+   */
+  agentPromptAppend?: string;
+
+  /**
    * Default commands/workflows configuration
    */
   defaults?: {
@@ -446,6 +466,8 @@ export interface MergedConfig {
    * config is consumed (CLI folder branch). Undefined when nothing is configured.
    */
   container?: ContainerConfig;
+  /** Merged `agentPromptAppend` (repo replaces global). Undefined when unset. */
+  agentPromptAppend?: string;
 }
 
 /**

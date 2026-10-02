@@ -395,6 +395,55 @@ recommendedWorkflows: "archon-plan"
       });
     });
 
+    test('agentPromptAppend: global value is trimmed and merged', async () => {
+      mockFsReadFile
+        .mockResolvedValueOnce(
+          `
+agentPromptAppend: |
+  Read the project card first.
+`
+        )
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+      const config = await loadConfig('/test/repo');
+
+      expect(config.agentPromptAppend).toBe('Read the project card first.');
+    });
+
+    test('agentPromptAppend: repo value replaces the global value', async () => {
+      mockFsReadFile.mockResolvedValueOnce(`
+agentPromptAppend: global text
+`).mockResolvedValueOnce(`
+agentPromptAppend: repo text
+`);
+
+      const config = await loadConfig('/test/repo');
+
+      expect(config.agentPromptAppend).toBe('repo text');
+    });
+
+    test('agentPromptAppend: a non-string repo value is ignored', async () => {
+      mockFsReadFile.mockResolvedValueOnce(`
+agentPromptAppend: global text
+`).mockResolvedValueOnce(`
+agentPromptAppend: [not, a, string]
+`);
+      const keptGlobal = await loadConfig('/test/repo');
+      expect(keptGlobal.agentPromptAppend).toBe('global text');
+    });
+
+    test('agentPromptAppend: a blank value appends nothing', async () => {
+      mockFsReadFile
+        .mockResolvedValueOnce(
+          `
+agentPromptAppend: "   "
+`
+        )
+        .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      const blank = await loadConfig('/test/repo');
+      expect(blank.agentPromptAppend).toBeUndefined();
+    });
+
     test('merges global and repo quota continuation policy per field', async () => {
       mockFsReadFile.mockResolvedValueOnce(`
 workflows:

@@ -40,6 +40,7 @@ import {
   providerFailureKind,
   safeSendMessage,
   type UnknownErrorTracker,
+  appendAgentPrompt,
 } from './executor-shared';
 
 describe('substituteWorkflowVariables', () => {
@@ -565,6 +566,26 @@ describe('substituteWorkflowVariables', () => {
       { shellSafe: true }
     );
     expect(prompt).toBe('cd /tmp/artifacts && git checkout main # run-1 docs/');
+  });
+});
+
+describe('appendAgentPrompt', () => {
+  it('returns the prompt unchanged when nothing is configured', () => {
+    expect(appendAgentPrompt('Do the work', undefined)).toBe('Do the work');
+    expect(appendAgentPrompt('Do the work', '')).toBe('Do the work');
+    expect(appendAgentPrompt('Do the work', '  \n ')).toBe('Do the work');
+  });
+
+  it('appends trimmed text after a separator', () => {
+    expect(appendAgentPrompt('Do the work', '\nRead the card.\n')).toBe(
+      'Do the work\n\n---\n\nRead the card.'
+    );
+  });
+
+  it('never substitutes workflow variables in the appended text', () => {
+    expect(appendAgentPrompt('x', 'Literal $ARGUMENTS and $ARTIFACTS_DIR')).toBe(
+      'x\n\n---\n\nLiteral $ARGUMENTS and $ARTIFACTS_DIR'
+    );
   });
 });
 
