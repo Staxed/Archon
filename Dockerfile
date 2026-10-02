@@ -180,6 +180,8 @@ COPY --from=web-build --chown=appuser:appuser /app/packages/web/dist/ ./packages
 # Copy config, migrations, and bundled defaults
 COPY --chown=appuser:appuser .archon/ ./.archon/
 COPY --chown=appuser:appuser migrations/ ./migrations/
+# Fork: Pi gateway provider definitions (FORK.md); ARCHON_PI_MODELS_PATH points here.
+COPY --chown=appuser:appuser deploy/pi/ ./deploy/pi/
 COPY --chown=appuser:appuser tsconfig*.json ./
 
 # Back to root: the entrypoint must start as root to fix volume ownership,

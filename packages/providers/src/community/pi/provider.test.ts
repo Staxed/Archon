@@ -320,6 +320,10 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
 // Import AFTER mocks are set — module resolution freezes the mocks.
 import { ARCHON_PI_ANTHROPIC_OAUTH_SYSTEM_PROMPT, PiProvider } from './provider';
 import { PI_CAPABILITIES } from './capabilities';
+import { setPiGatewayOnlyDefaultForTest } from './gateway';
+// The upstream suites below drive built-in vendors directly; the fork's
+// gateway-only default is exercised explicitly in 'gateway-only mode'.
+setPiGatewayOnlyDefaultForTest(false);
 // Same module instance the provider dynamic-imports, so clearing this cache
 // resets the loader the provider reuses across calls (issue #1877).
 import {
@@ -3195,6 +3199,107 @@ describe('PiProvider', () => {
         }),
         'pi.extension_provider_reapply_failed'
       );
+    });
+  });
+
+  describe('gateway-only mode (fork)', () => {
+    const GATEWAY = 'http://host.docker.internal:8093';
+    let modelsDir: string;
+    let modelsPath: string;
+
+    beforeEach(() => {
+      modelsDir = mkdtempSync(join(tmpdir(), 'archon-pi-gateway-test-'));
+      modelsPath = join(modelsDir, 'models.gateway.json');
+      writeFileSync(
+        modelsPath,
+        JSON.stringify({
+          providers: {
+            'gateway-openrouter': {
+              baseUrl: '${ARCHON_LLM_GATEWAY_URL}/openrouter/v1',
+              api: 'openai-completions',
+              apiKey: 'gateway',
+              headers: { 'X-Caller': 'archon' },
+              models: [{ id: 'some/model' }],
+            },
+          },
+        })
+      );
+      mockModelRuntimeCreate.mockClear();
+    });
+
+    const env = (): Record<string, string> => ({
+      ARCHON_LLM_GATEWAY_URL: GATEWAY,
+      ARCHON_PI_MODELS_PATH: modelsPath,
+    });
+
+    test('refuses a built-in direct vendor before loading any credential', async () => {
+      const { error } = await consume(
+        new PiProvider().sendQuery('hi', '/tmp', undefined, {
+          model: 'openrouter/some/model',
+          assistantConfig: { gatewayOnly: true },
+          env: env(),
+        })
+      );
+      expect(error?.message).toContain('Pi gateway-only');
+      expect(error?.message).toContain("provider 'openrouter' is not allowed");
+      expect(mockModelRuntimeCreate).not.toHaveBeenCalled();
+      rmSync(modelsDir, { recursive: true, force: true });
+    });
+
+    test('runs a gateway provider with the baseUrl resolved and no auth.json', async () => {
+      let captured: string | undefined;
+      mockModelRuntimeCreate.mockImplementationOnce(async (options?: { modelsPath?: string }) => {
+        if (options?.modelsPath && existsSync(options.modelsPath)) {
+          captured = readFileSync(options.modelsPath, 'utf-8');
+        }
+        return {
+          setRuntimeApiKey: mockSetRuntimeApiKey,
+          getAuth: mockGetAuth,
+          hasConfiguredAuth: mockHasConfiguredAuth,
+        };
+      });
+      mockModelRegistryFind.mockImplementationOnce((provider, modelId) => ({
+        ...createMockModel(provider, modelId),
+        baseUrl: `${GATEWAY}/openrouter/v1`,
+      }));
+      resetScript(scriptedAgentEnd());
+
+      const { error } = await consume(
+        new PiProvider().sendQuery('hi', '/tmp', undefined, {
+          model: 'gateway-openrouter/some/model',
+          assistantConfig: { gatewayOnly: true },
+          env: env(),
+        })
+      );
+
+      expect(error).toBeUndefined();
+      const args = mockModelRuntimeCreate.mock.calls[0]?.[0] as
+        | { authPath?: string; modelsPath?: string }
+        | undefined;
+      expect(args?.authPath).toContain('archon-pi-gateway');
+      expect(args?.modelsPath).not.toBe(modelsPath);
+      const perCall = JSON.parse(captured as string) as {
+        providers: Record<string, { baseUrl: string; headers: Record<string, string> }>;
+      };
+      expect(perCall.providers['gateway-openrouter'].baseUrl).toBe(`${GATEWAY}/openrouter/v1`);
+      expect(perCall.providers['gateway-openrouter'].headers['X-Caller']).toBe('archon');
+      expect(mockSetRuntimeApiKey).not.toHaveBeenCalled();
+      rmSync(modelsDir, { recursive: true, force: true });
+    });
+
+    test('refuses a model that resolves to a non-gateway baseUrl', async () => {
+      // The default mock model resolves to https://example.invalid.
+      resetScript(scriptedAgentEnd());
+      const { error } = await consume(
+        new PiProvider().sendQuery('hi', '/tmp', undefined, {
+          model: 'gateway-openrouter/some/model',
+          assistantConfig: { gatewayOnly: true },
+          env: env(),
+        })
+      );
+      expect(error?.message).toContain('not the gateway');
+      expect(mockPrompt).not.toHaveBeenCalled();
+      rmSync(modelsDir, { recursive: true, force: true });
     });
   });
 });

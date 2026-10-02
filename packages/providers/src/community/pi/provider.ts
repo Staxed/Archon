@@ -20,6 +20,14 @@ import { PI_CAPABILITIES } from './capabilities';
 import { parsePiConfig, resolvePiExtensionSettings } from './config';
 import { parsePiModelRef } from './model-ref';
 import { buildCustomProviderModelsPath } from './request-auth';
+import {
+  PiGatewayPolicyError,
+  buildGatewayModelsPath,
+  gatewayAuthPath,
+  isGatewayBaseUrl,
+  isPiGatewayOnly,
+  resolveGatewayUrl,
+} from './gateway';
 import { withResumedOutcome, resumedOutcome } from '../../shared/resumed';
 
 // IMPORTANT: Do NOT add static `import { ... } from '@earendil-works/*'` here,
@@ -408,6 +416,17 @@ export class PiProvider implements IAgentProvider {
       );
     }
 
+    // 1b. Fork policy: gateway-only (FORK.md). Refuse direct vendors before any
+    //     credential is read; the per-call models.json below carries the
+    //     gateway provider with its baseUrl resolved for this host or container.
+    const gatewayOnly = isPiGatewayOnly(piConfig.gatewayOnly);
+    let gatewayUrl: string | undefined;
+    let gatewayModelsPath: string | undefined;
+    if (gatewayOnly) {
+      gatewayModelsPath = buildGatewayModelsPath(parsed.provider, requestOptions?.env);
+      gatewayUrl = resolveGatewayUrl(requestOptions?.env);
+    }
+
     // 2. Build ModelRuntime + ModelRegistry. Both read on every sendQuery —
     //    user edits to auth.json or models.json take effect without restart.
     //    The registry is a thin facade over the runtime — extension providers
@@ -431,13 +450,15 @@ export class PiProvider implements IAgentProvider {
     // throws after the substitution succeeded.
     let customProviderModelsPath: string | undefined;
     try {
-      customProviderModelsPath = !envVarName
-        ? buildCustomProviderModelsPath({
-            provider: parsed.provider,
-            requestEnv: requestOptions?.env,
-            protectedEnvKeys: requestOptions?.protectedEnvKeys,
-          })
-        : undefined;
+      customProviderModelsPath = gatewayModelsPath
+        ? gatewayModelsPath
+        : !envVarName
+          ? buildCustomProviderModelsPath({
+              provider: parsed.provider,
+              requestEnv: requestOptions?.env,
+              protectedEnvKeys: requestOptions?.protectedEnvKeys,
+            })
+          : undefined;
       // Archon delivers per-user credentials (API keys + subscriptions) as a
       // per-run auth.json and points us at it via ARCHON_PI_AUTH_PATH — using an
       // explicit authPath (not PI_CODING_AGENT_DIR) so the user's models.json /
@@ -445,9 +466,10 @@ export class PiProvider implements IAgentProvider {
       // per-call `requestOptions.env` channel (the executor's per-user injection
       // never writes to process.env — see the piConfig.env note above), so read it
       // there first and fall back to process.env for a shell-level override.
-      const archonAuthPath =
-        (requestOptions?.env?.ARCHON_PI_AUTH_PATH ?? process.env.ARCHON_PI_AUTH_PATH)?.trim() ||
-        undefined;
+      const archonAuthPath = gatewayOnly
+        ? gatewayAuthPath()
+        : (requestOptions?.env?.ARCHON_PI_AUTH_PATH ?? process.env.ARCHON_PI_AUTH_PATH)?.trim() ||
+          undefined;
       // pi-coding-agent 0.84.0 folded AuthStorage + ModelRegistry into a single
       // ModelRuntime; ModelRegistry is now a thin facade constructed from a
       // runtime. authPath still feeds the file-backed CredentialStore inside
@@ -517,7 +539,9 @@ export class PiProvider implements IAgentProvider {
     //    (no auth.json disk write, unlike AuthStorage.set) (#1984).
     const readEnvOverride = (name: string | undefined): string | undefined =>
       name ? (requestOptions?.env?.[name] ?? process.env[name]) : undefined;
-    const envOverride = readEnvOverride(oauthVarName) ?? readEnvOverride(envVarName);
+    const envOverride = gatewayOnly
+      ? undefined
+      : (readEnvOverride(oauthVarName) ?? readEnvOverride(envVarName));
     if (envOverride) {
       // pi 0.84.0+: setRuntimeApiKey is async (the runtime serializes the
       // credential mutation per provider). await it before any subsequent
@@ -934,6 +958,16 @@ export class PiProvider implements IAgentProvider {
         session.dispose();
         throw err;
       }
+    }
+
+    // 4h. Gateway-only: whatever resolved the model (catalog, models.json or an
+    //     extension's registerProvider upsert), it must still call the gateway.
+    if (gatewayUrl !== undefined && !isGatewayBaseUrl(model.baseUrl, gatewayUrl)) {
+      session.dispose();
+      throw new PiGatewayPolicyError(
+        `model '${parsed.provider}/${parsed.modelId}' resolved to baseUrl '${model.baseUrl}', ` +
+          `not the gateway (${gatewayUrl}).`
+      );
     }
 
     // 5. Structured output (best-effort). Pi has no SDK-level JSON schema

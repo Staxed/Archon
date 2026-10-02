@@ -475,3 +475,18 @@ describe('resolvePiExtensionSettings', () => {
     });
   });
 });
+
+describe('gatewayOnly (fork)', () => {
+  test('parses a boolean and drops anything else', () => {
+    expect(parsePiConfig({ gatewayOnly: false })).toEqual({ gatewayOnly: false });
+    expect(parsePiConfig({ gatewayOnly: 'no' })).toEqual({});
+  });
+
+  test('is accepted in config.yaml but cannot be relaxed per run', () => {
+    expect(parsePiConfigStrict({ gatewayOnly: true }, 'install')).toEqual({ gatewayOnly: true });
+    expect(() => parsePiConfigStrict({ gatewayOnly: false }, 'run')).toThrow(
+      InvalidProviderRunConfigError
+    );
+    expect(() => parsePiConfigStrict({ gatewayOnly: 'yes' }, 'install')).toThrow();
+  });
+});

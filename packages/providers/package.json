@@ -115,6 +115,9 @@
       "src/community/pi/request-auth.test.ts"
     ],
     [
+      "src/community/pi/gateway.test.ts"
+    ],
+    [
       "src/community/pi/auth-status.test.ts"
     ],
     [
