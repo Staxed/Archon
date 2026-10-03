@@ -1,5 +1,5 @@
 {
-  "_comment": "Archon-side regressions for the destructive-command guard (security review, 2026-10). Same shape as Stixed's destructive_cases.json; run with Stixed's rules file and home /home/staxed. Jev guard layer Phase 2 (2026-10): scripts fed to or written for a shell, unquoted heredoc and process substitutions, find filters that match everything or the vault's notes, rsync --delete, the knowledge tree and Archon's home.",
+  "_comment": "Archon-side regressions for the destructive-command guard (security review, 2026-10). Same shape as Stixed's destructive_cases.json; run with Stixed's rules file and home /home/staxed. Jev guard layer Phase 2 (2026-10): scripts fed to or written for a shell, unquoted heredoc and process substitutions, find filters that match everything or the vault's notes, rsync --delete, the knowledge tree and Archon's home. Jev guard layer review fixes (2026-10): a command the guard cannot parse is allowed with a log-only entry; unresolved paths are judged as the Python guard judges them (no separate unresolved-path refusal); find action order, -prune and protected names; rm of every note in a vault folder; commands run in a container.",
   "default_cwd": "/mnt/volumes/projects/stixed",
   "block": [
     {
@@ -15,51 +15,24 @@
       "rule": "recursive-delete"
     },
     {
-      "cmd": "echo \"unbalanced && rm -rf ~",
-      "rule": "unparsed-destructive"
-    },
-    {
-      "cmd": "find . -delete 'oops",
-      "rule": "unparsed-destructive"
-    },
-    {
-      "cmd": "git clean -fdx \"oops",
-      "rule": "unparsed-destructive"
-    },
-    {
       "cmd": "rm -rf \"$ROOT/stixed\"",
-      "rule": "unresolved-path"
-    },
-    {
-      "cmd": "rm -rf \"$1\"",
-      "cwd": "/tmp/work",
-      "rule": "unresolved-path"
-    },
-    {
-      "cmd": "for f in $(cat list.txt); do rm -rf \"$f\"; done",
-      "cwd": "/tmp/work",
-      "rule": "unresolved-path"
+      "rule": "recursive-delete"
     },
     {
       "cmd": "cd \"$(git rev-parse --show-toplevel)/..\" && rm -rf stixed",
-      "rule": "unresolved-path"
+      "rule": "recursive-delete"
     },
     {
       "cmd": "cd - && rm -rf stixed",
-      "rule": "unresolved-path"
+      "rule": "recursive-delete"
     },
     {
       "cmd": "cd \"$X\" && git clean -fdx",
-      "rule": "unresolved-path"
+      "rule": "git-wipe"
     },
     {
       "cmd": "git -C \"$X\" clean -fdx",
-      "rule": "unresolved-path"
-    },
-    {
-      "cmd": "find \"$DIR\" -delete",
-      "cwd": "/tmp/work",
-      "rule": "unresolved-path"
+      "rule": "git-wipe"
     },
     {
       "cmd": "rm -rf \"${A:-${HOME}}\"",
@@ -144,6 +117,24 @@
     {
       "cmd": "rm -rf ~/.archon",
       "rule": "recursive-delete"
+    },
+    {
+      "cmd": "find . -name .git -exec rm -rf {} +",
+      "cwd": "/mnt/volumes/projects/Dashed",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "find . -path ./node_modules -prune -o -delete",
+      "cwd": "/mnt/volumes/projects/Dashed",
+      "rule": "recursive-delete"
+    },
+    {
+      "cmd": "rm -f SecondBrain/Memory/daily/*",
+      "rule": "vault-delete"
+    },
+    {
+      "cmd": "docker compose exec scheduler rm -rf /app/SecondBrain/Memory/daily",
+      "rule": "recursive-delete"
     }
   ],
   "allow": [
@@ -194,6 +185,45 @@
     },
     {
       "cmd": "rm -rf ~/.archon/workspaces/Staxed/stixed/worktrees/archon/fix-x"
+    },
+    {
+      "cmd": "echo \"unbalanced && rm -rf ~",
+      "note": "bash rejects a command the guard cannot parse, so nothing in it runs: allowed, with a log-only entry"
+    },
+    {
+      "cmd": "find . -delete 'oops",
+      "note": "unparsable: allowed, with a log-only entry"
+    },
+    {
+      "cmd": "git clean -fdx \"oops",
+      "note": "unparsable: allowed, with a log-only entry"
+    },
+    {
+      "cmd": "rm -rf \"$1\"",
+      "cwd": "/tmp/work",
+      "note": "an all-variable target where no protected name could be: left to the judged layer"
+    },
+    {
+      "cmd": "for f in $(cat list.txt); do rm -rf \"$f\"; done",
+      "cwd": "/tmp/work",
+      "note": "an all-variable target where no protected name could be: left to the judged layer"
+    },
+    {
+      "cmd": "find \"$DIR\" -delete",
+      "cwd": "/tmp/work",
+      "note": "an unresolved find root that names nothing protected: left to the judged layer"
+    },
+    {
+      "cmd": "rm -rf \"$ROOT\"/dist/*"
+    },
+    {
+      "cmd": "pushd x && rm -rf build && popd && rm -rf dist/*"
+    },
+    {
+      "cmd": "while read -r d; do rm -rf \"$d\"; done < <(find . -name node_modules -prune)"
+    },
+    {
+      "cmd": "cat > clean.sh <<'EOF'\n#!/bin/bash\nrm -rf \"$1\"\nEOF\nbash clean.sh dist"
     }
   ]
 }

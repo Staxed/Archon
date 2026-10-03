@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
@@ -33,13 +41,6 @@ const SHARED_RULES_PATH =
 const haveShared = existsSync(CASES_PATH) && existsSync(SHARED_RULES_PATH);
 const trackTempRoot = trackTempRoots();
 
-/**
- * Shared cases this guard deliberately decides differently from the Python guard,
- * pending an update of the shared list: a recursive delete of a path the guard
- * cannot resolve is refused (security review 2026-10).
- */
-const DIVERGES_FROM_SHARED = new Set(['while read f; do rm -rf "$f"; done < list.txt']);
-
 interface Case {
   cmd: string;
   cwd?: string;
@@ -72,7 +73,6 @@ describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () 
   it('allows every allow case', () => {
     const wrong: string[] = [];
     for (const c of cases?.allow ?? []) {
-      if (DIVERGES_FROM_SHARED.has(c.cmd)) continue;
       const v = checker?.check(c.cmd, c.cwd ?? cases?.default_cwd ?? '/');
       if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
     }
@@ -110,14 +110,73 @@ describe('Archon regressions (destructive-guard.regressions.json)', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('asks for a literal path when it cannot resolve one', () => {
+  it('judges an unresolved path as the Python guard does: a protected name is a hard stop', () => {
     const v = checker.check('rm -rf "$ROOT/stixed"', '/tmp/work');
-    expect(v?.message()).toContain('Write the path out literally');
+    expect(v?.rule).toBe('recursive-delete');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(checker.check('rm -rf "$ROOT/build"', '/tmp/work')).toBeUndefined();
   });
 
-  it('asks for a simpler command when it cannot parse a destructive one', () => {
-    const v = checker.check('echo "oops && rm -rf ~', '/tmp/work');
-    expect(v?.message()).toContain('Rewrite it more simply');
+  it('allows a command it cannot parse and writes a log-only entry', () => {
+    const entries: { command: string; reason: string }[] = [];
+    const logging = new Checker(new Rules(rules, '/home/staxed'), e => entries.push(e));
+    expect(logging.check('echo "oops && rm -rf ~', '/tmp/work')).toBeUndefined();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].command).toBe('echo "oops && rm -rf ~');
+    expect(entries[0].reason).toContain('unbalanced');
+    expect(logging.check('rm -rf node_modules', '/tmp/work')).toBeUndefined();
+    expect(entries).toHaveLength(1);
+  });
+});
+
+describe('symlinks: a followed path is judged where it really leads', () => {
+  // An Archon workspace's `source` is a link to the project: `rm -rf source/` (which
+  // follows it) deletes the project's contents; `rm -rf source` removes only the link.
+  const fixture = (): { tmp: string; source: string; checker: Checker } => {
+    const tmp = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-links-')));
+    const projects = join(tmp, 'projects');
+    mkdirSync(join(projects, 'app', 'src'), { recursive: true });
+    const ws = join(tmp, 'ws', 'o', 'app');
+    mkdirSync(ws, { recursive: true });
+    const source = join(ws, 'source');
+    symlinkSync(join(projects, 'app'), source);
+    const rules = new Rules({ ...DEFAULT_RULES, project_parent: projects }, '/home/staxed');
+    return { tmp, source, checker: new Checker(rules) };
+  };
+
+  it('refuses a delete that follows the link into the project', () => {
+    const { tmp, source, checker } = fixture();
+    const wrong: string[] = [];
+    for (const [cmd, cwd] of [
+      [`rm -rf ${source}/`, tmp],
+      [`rm -rf ${source}/*`, tmp],
+      [`rm -rf ${source}/.`, tmp],
+      [`find ${source}/ -delete`, tmp],
+      [`find -L ${source} -delete`, tmp],
+      ['rm -rf .git', source],
+      ['rm -rf ./*', source],
+      ['git clean -fdx', source],
+      [`mv ${source}/ /tmp/elsewhere`, tmp],
+    ]) {
+      if (!checker.check(cmd, cwd)) wrong.push(`${cmd} (cwd ${cwd}) allowed`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('allows removing the link itself and work inside the project', () => {
+    const { tmp, source, checker } = fixture();
+    const wrong: string[] = [];
+    for (const [cmd, cwd] of [
+      [`rm -rf ${source}`, tmp],
+      [`rm ${source}`, tmp],
+      [`find ${source} -delete`, tmp],
+      [`rm -rf ${source}/src`, tmp],
+      ['rm -rf node_modules dist', source],
+    ]) {
+      const v = checker.check(cmd, cwd);
+      if (v) wrong.push(`${cmd} -> ${v.message()}`);
+    }
+    expect(wrong).toEqual([]);
   });
 });
 
@@ -173,10 +232,17 @@ describe('floor messages', () => {
     expect(v?.message()).toContain('without -v is a different command and is fine');
   });
 
-  it("the guard's own cannot-decide refusals still ask for a clearer command", () => {
-    const v = checker.check('rm -rf "$ROOT/x"', '/tmp/work');
-    expect(v?.rule).toBe('unresolved-path');
+  it("the guard's own failures ask for a fix, not a hard stop", () => {
+    const v = checkCommand('ls', '/tmp', { rulesPath: '/nonexistent/destructive-rules.json' });
+    expect(v?.rule).toBe('rules-unreadable');
     expect(v?.message()).not.toContain(HARD_STOP);
+  });
+
+  it('a vault-delete is a hard stop that names Obsidian Sync', () => {
+    const v = checker.check('rm SecondBrain/Memory/*.md', '/mnt/volumes/projects/stixed');
+    expect(v?.rule).toBe('vault-delete');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(v?.message()).toContain('Obsidian Sync');
   });
 });
 

@@ -30,19 +30,22 @@
  * `bash -c`, `$(...)`, process substitution, `cd a && rm -rf b`, a script fed to a
  * shell on stdin (`bash -euo pipefail <<EOF`, `printf ... | sh`) and a script written
  * and run in the same command (`cat > x.sh <<EOF ... EOF; bash x.sh`) are seen
- * through. Threat model: mistakes, not a hostile agent. A script already on disk is
- * not read.
+ * through, as are a script's and a shell function's arguments, `trap` strings, and a
+ * command run in a container (`docker exec`, `docker compose exec`, `stixctl compose
+ * <project> exec`). Threat model: mistakes, not a hostile agent. A script already on
+ * disk is not read.
  *
- * Where this port is stricter than the Python guard (security review 2026-10):
- * - a command it cannot parse is searched as raw text, and refused when it holds a
- *   command the rules cover (`unparsed-destructive`); the guard throwing refuses too;
- * - a recursive delete (rm -r, unfiltered find -delete, git clean -x) of a path, or
- *   from a `cd`, that holds an expansion it cannot resolve is refused
- *   (`unresolved-path`), unless the path ends in a build folder (node_modules,
- *   dist, .venv ...). $TMPDIR/$TMP/$TEMP and mktemp resolve to a temp path.
+ * A path the guard cannot resolve (a variable, `$(...)`, a `cd -` or `popd` with no
+ * earlier folder in the command) is judged as the Python guard judges it: refused
+ * only when its literal part names something protected wherever it sits, is a glob
+ * directly in that folder, or climbs out with `..`; an all-variable target counts
+ * where a protected name could be, unless a narrowed `find` feeds it. A command it
+ * cannot parse is allowed (bash rejects it too) and written to the log as a log-only
+ * entry; the guard throwing still refuses (`guard-error`).
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { createLogger } from '@archon/paths';
 
 export const RULES_ENV = 'ARCHON_DESTRUCTIVE_RULES';
 /** Stixed's promoted, root-owned copy of the shared rules (changes only through its promote step). */
@@ -107,6 +110,11 @@ export const DEFAULT_RULES: DestructiveRulesFile = {
         "Removing a project, the vault, Archon's home or a system folder is the user's to do. If you meant only a narrower path inside a project (node_modules, dist, .venv), that is a different command and is fine.",
     },
     {
+      id: 'vault-delete',
+      instead:
+        "The vault is not in git and Obsidian Sync spreads a delete to every machine, so emptying a vault folder is the user's to do. Deleting one named note is a different command and is fine.",
+    },
+    {
       id: 'move-protected',
       instead: "Moving or renaming a project, the vault or a system folder is the user's to do.",
     },
@@ -131,8 +139,8 @@ export const HARD_STOP =
 export class Violation {
   /**
    * `hard`: a rule from the rules file (the catastrophic floor), whose message is a
-   * hard stop. The guard's own "cannot decide" refusals (unresolved-path,
-   * unparsed-destructive, rules-unreadable, guard-error) ask for a clearer command.
+   * hard stop. The guard's own failures (rules-unreadable, guard-error) ask for a
+   * fix or a clearer command.
    */
   constructor(
     readonly rule: string,
@@ -235,6 +243,19 @@ export class Rules {
    * themselves: a find starting above one is refused whatever its filter.
    */
   readonly system: string[];
+  /**
+   * Names distinctive enough to be protected wherever the folder above them cannot
+   * be resolved: every project, `.git`, the projects folder, the home folder, the
+   * vault (SecondBrain, Memory) and dot-folders such as .archon. Generic names
+   * (concepts, sessions, worktrees) are not: `rm -rf "$OUT/sessions"` is ordinary work.
+   */
+  readonly names: Set<string>;
+  /**
+   * Folder name -> the protected names directly inside a folder of that name ('*':
+   * any). Judges a glob under a literal parent whose own folder is unresolved:
+   * `"$X"/projects/*` may be projects, `"$X"/dist/*` may not.
+   */
+  readonly childNames: Map<string, Set<string>>;
   private readonly instead: Map<string, string>;
 
   constructor(data: DestructiveRulesFile, home: string = homedir()) {
@@ -250,6 +271,72 @@ export class Rules {
       p => (!pp || !p.startsWith(pp + '/')) && !p.startsWith(homePrefix)
     );
     this.instead = new Map(data.rules.map(r => [r.id, r.instead]));
+    this.names = this.protectedNames();
+    this.childNames = this.buildChildNames();
+  }
+
+  private list(directory: string | null): string[] {
+    if (!directory) return [];
+    try {
+      return readdirSync(directory);
+    } catch {
+      return [];
+    }
+  }
+
+  private protectedNames(): Set<string> {
+    const names = new Set<string>(['.git']);
+    const dotted = this.protectedPaths.filter(p => basename(p).startsWith('.'));
+    const from = [
+      ...(this.projectParent ? [this.projectParent] : []),
+      normPath(this.home),
+      ...this.vaults,
+      ...this.childrenOf,
+      ...dotted,
+    ];
+    for (const p of from) if (p.replace(/\//g, '')) names.add(basename(p));
+    for (const n of this.list(this.projectParent)) names.add(n);
+    names.delete('');
+    return names;
+  }
+
+  private buildChildNames(): Map<string, Set<string>> {
+    const m = new Map<string, Set<string>>();
+    const add = (k: string, v: string): void => {
+      if (!m.has(k)) m.set(k, new Set());
+      m.get(k)?.add(v);
+    };
+    for (const p of this.protectedPaths) {
+      const parent = dirname(p);
+      if (parent !== p && basename(parent)) add(basename(parent), basename(p));
+    }
+    for (const d of [...(this.projectParent ? [this.projectParent] : []), ...this.childrenOf]) {
+      if (basename(d)) add(basename(d), '*');
+    }
+    for (const n of this.list(this.projectParent)) add(n, '.git');
+    return m;
+  }
+
+  /**
+   * Every protected path at or under `p`: listed paths, the projects (and their
+   * .git) under it, and the children of a protected_children_of folder under it.
+   */
+  protectedUnder(p: string): string[] {
+    const pre = p.replace(/\/+$/, '') + '/';
+    const out = new Set(this.protectedPaths.filter(q => q === p || q.startsWith(pre)));
+    for (const d of [...(this.projectParent ? [this.projectParent] : []), ...this.childrenOf]) {
+      if (d === p || d.startsWith(pre)) for (const n of this.list(d)) out.add(joinPath(d, n));
+      else if (dirname(p) === d) out.add(p);
+    }
+    const pp = this.projectParent;
+    if (pp && (pp === p || pp.startsWith(pre))) {
+      for (const n of this.list(pp)) out.add(`${pp}/${n}/.git`);
+    } else if (pp && dirname(p) === pp) out.add(joinPath(p, '.git'));
+    return [...out].sort();
+  }
+
+  inVault(path: string): boolean {
+    return this.vaults.some(v => path === v || path.startsWith(v + '/'));
   }
 
   /** A protected path itself, a project root, a child of a protected_children_of folder, or a project's .git. */
@@ -307,6 +394,17 @@ export class Rules {
 
 // ---------------------------------------------------------------- lexer
 
+/**
+ * Where an unresolved variable's value comes from, so a delete of it can be judged
+ * like `find ... | xargs rm -r`: the pipeline in front of `while read` (`cmds`), or
+ * the text of the `<(...)` after `done <`, of `for x in $(...)`, of `mapfile <
+ * <(...)` or of a `$(...)` word itself (`text`). Neither: unknown.
+ */
+interface Feed {
+  cmds?: Command[];
+  text?: string;
+}
+
 interface Word {
   text: string;
   /** Contains an unquoted * ? [ */
@@ -315,6 +413,18 @@ interface Word {
   unknown?: boolean;
   /** [text, glob] per loop value, when a loop variable is in it. */
   alts?: [string, boolean][];
+  /** The literal text after the last unresolved expansion. */
+  tail?: string;
+  /** What produced the word's one unresolved expansion. */
+  feed?: Feed;
+}
+
+/** A snapshot of the lexer's variables, for what runs in the same shell (a function, trap, eval, source, $(...)). */
+interface Vars {
+  values: Record<string, string>;
+  unknown: Set<string>;
+  loops: Map<string, [string, boolean][]>;
+  feeds: Map<string, Feed>;
 }
 
 interface Command {
@@ -326,6 +436,12 @@ interface Command {
   sep: string;
   /** $(...), backtick and <(...) bodies, and those run inside an unquoted heredoc. */
   subs: string[];
+  /** The <(...) body this command reads on stdin (`done < <(find ...)`). */
+  stdinSub?: string;
+  /** A command of a function body: it runs only when the function is called. */
+  func?: string;
+  /** The shell variables after this command. */
+  vars?: Vars;
 }
 
 class ParseError extends Error {}
@@ -340,6 +456,10 @@ const LOOP_REF = /\uE000([A-Za-z_][A-Za-z0-9_]*)\uE000/;
 /** Reserved words that introduce a command without being one: `do rm -rf x` runs rm. */
 const KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{']);
 const DECLARE = new Set(['export', 'local', 'declare', 'readonly', 'typeset']);
+const FUNC_NAME = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
+/** A word that is exactly "$@". */
+const ARGV_ALL = /"\$@"|"\$\{@\}"|\$@|\$\{@\}/y;
+const MAPFILE_ARG = new Set(['-d', '-n', '-O', '-s', '-u', '-C', '-c']);
 const MAX_ALTS = 64;
 
 /** Index just past the closing quote of the '...' starting at `i`. */
@@ -621,7 +741,14 @@ function printfText(args: string[]): string {
  * Variables are followed in order: `NAME=value` (alone or after export/local/...)
  * sets NAME for the commands after it, `for NAME in a b` gives NAME each listed
  * value, and `read NAME` makes it unknown. A word holding an expansion that cannot
- * be resolved is marked `unknown`, so a delete of it can be judged as "anything".
+ * be resolved is marked `unknown` (the expansion reads as empty, the worst case for
+ * an absolute path), and its `tail` keeps the literal text after that expansion.
+ *
+ * `argv` is the positional parameters ($1, "$@") of a script this command line wrote
+ * and ran with arguments, or of `bash -c '...' _ a b`; undefined (the hook's own
+ * command) leaves them unknown. A function body (`f() { ... }`) is recorded in
+ * `functions`; its commands are marked with `func`, since they run only when the
+ * function is called, and positional parameters inside it are unknown here.
  */
 class Lexer {
   private i = 0;
@@ -629,14 +756,36 @@ class Lexer {
   private cur: Command = newCommand();
   /** [delimiter, strip tabs, command, delimiter quoted] */
   private pendingHeredocs: [string, boolean, Command, boolean][] = [];
-  private readonly loops = new Map<string, [string, boolean][]>();
-  private readonly unknownNames = new Set<string>();
+  private loops = new Map<string, [string, boolean][]>();
+  private unknownNames = new Set<string>();
+  private feeds = new Map<string, Feed>();
+  readonly functions = new Map<string, string>();
+  /** Open function bodies: [name, body start, brace depth]. */
+  private fstack: [string, number, number][] = [];
+  private braces = 0;
+  /** Per open loop: the `read` feeds bound in its condition. */
+  private loopframes: Feed[][] = [];
+  private argv: Word[] | undefined;
   private unk = false;
+  private feed: Feed | undefined;
+  private nexp = 0;
 
   constructor(
     private s: string,
-    private readonly env: Record<string, string>
-  ) {}
+    private readonly env: Record<string, string>,
+    argv?: Word[],
+    inherit?: Vars
+  ) {
+    this.argv = argv ? [...argv] : undefined;
+    if (inherit) {
+      const pwd = env.PWD;
+      Object.assign(env, inherit.values);
+      if (pwd !== undefined) env.PWD = pwd;
+      this.unknownNames = new Set(inherit.unknown);
+      this.loops = new Map(inherit.loops);
+      this.feeds = new Map(inherit.feeds);
+    }
+  }
 
   /** Expand the text of a ${A:-text} operand (quotes removed, expansions followed). */
   private expandText(text: string): string {
@@ -683,13 +832,80 @@ class Lexer {
         // consumed
       } else if (this.operator()) {
         // consumed
+      } else if (this.argv && this.fstack.length === 0 && this.allArgs()) {
+        // consumed
       } else {
+        const start = this.i;
         const w = this.word();
-        if (w) this.cur.words.push(w);
+        if (w) {
+          this.cur.words.push(w);
+          this.afterWord(w, start);
+        }
       }
     }
     this.end('');
+    // An unclosed function body: bash rejects it, but judge its commands anyway.
+    if (this.fstack.length > 0) for (const cmd of this.cmds) cmd.func = undefined;
     return this.cmds;
+  }
+
+  /** A word that is exactly "$@" becomes one word per positional parameter. */
+  private allArgs(): boolean {
+    ARGV_ALL.lastIndex = this.i;
+    const m = ARGV_ALL.exec(this.s);
+    if (!m) return false;
+    const end = this.i + m[0].length;
+    if (end < this.s.length && !' \t\n;&|()<>'.includes(this.s[end])) return false;
+    this.i = end;
+    for (const w of this.argv ?? []) this.cur.words.push({ ...w, feed: undefined });
+    return true;
+  }
+
+  /** Track `{ ... }` at command start, so a function body's end is found. */
+  private afterWord(w: Word, start: number): void {
+    const words = this.cur.words;
+    const raw = this.s.slice(start, this.i);
+    if (words.length === 1 && raw === '{') this.braces++;
+    else if (words.length === 1 && raw === '}') {
+      words.pop();
+      this.braces--;
+      const top = this.fstack[this.fstack.length - 1];
+      if (top?.[2] === this.braces) {
+        this.fstack.pop();
+        this.functions.set(top[0], this.s.slice(top[1], start));
+      }
+    } else if (words.length === 2 && words[0].text === 'function' && FUNC_NAME.test(raw)) {
+      let j = this.i;
+      while (j < this.s.length && ' \t\n'.includes(this.s[j])) j++;
+      if (this.s[j] === '{' && (j + 1 === this.s.length || ' \t\n'.includes(this.s[j + 1]))) {
+        this.openFunction(w.text, j + 1);
+      }
+    }
+  }
+
+  /** `name() {` or `function name() {`, with this.i at the `(`. */
+  private functionParens(): boolean {
+    const words = this.cur.words;
+    if (!(words.length === 1 || (words.length === 2 && words[0].text === 'function'))) return false;
+    const name = words[words.length - 1];
+    if (name.unknown || name.alts || !FUNC_NAME.test(name.text)) return false;
+    let j = this.i + 1;
+    while (j < this.s.length && ' \t'.includes(this.s[j])) j++;
+    if (this.s[j] !== ')') return false;
+    j++;
+    while (j < this.s.length && ' \t\n'.includes(this.s[j])) j++;
+    if (!(this.s[j] === '{' && (j + 1 === this.s.length || ' \t\n'.includes(this.s[j + 1])))) {
+      return false;
+    }
+    this.openFunction(name.text, j + 1);
+    return true;
+  }
+
+  private openFunction(name: string, bodyStart: number): void {
+    this.fstack.push([name, bodyStart, this.braces]);
+    this.braces++;
+    this.cur = newCommand(';');
+    this.i = bodyStart;
   }
 
   /** <(cmd) / >(cmd): the body runs; the word is a /dev/fd path. */
@@ -702,7 +918,14 @@ class Lexer {
 
   private end(op: string): void {
     if (this.cur.words.length > 0 || this.cur.redirects.length > 0) {
-      this.bind(this.cur.words);
+      if (this.fstack.length > 0) this.cur.func = this.fstack[0][0];
+      this.bind(this.cur);
+      this.cur.vars = {
+        values: { ...this.env },
+        unknown: new Set(this.unknownNames),
+        loops: new Map(this.loops),
+        feeds: new Map(this.feeds),
+      };
       this.cmds.push(this.cur);
     }
     this.cur = newCommand(op);
@@ -710,41 +933,123 @@ class Lexer {
 
   private setVar(name: string, value: string, unknown: boolean): void {
     this.loops.delete(name);
+    this.feeds.delete(name);
     this.env[name] = value;
     if (unknown) this.unknownNames.add(name);
     else this.unknownNames.delete(name);
   }
 
+  /** The commands piped into `cmd` (`find ... | sort | while read d`). */
+  private pipeline(cmd: Command): Command[] | undefined {
+    if ((cmd.sep !== '|' && cmd.sep !== '|&') || this.cmds.length === 0) return undefined;
+    let k = this.cmds.length - 1;
+    while (k > 0 && (this.cmds[k].sep === '|' || this.cmds[k].sep === '|&')) k--;
+    return this.cmds.slice(k);
+  }
+
   /** Record what a finished command does to variables used after it. */
-  private bind(all: Word[]): void {
+  private bind(cmd: Command): void {
+    const all = cmd.words;
+    const opener = all.length > 0 ? all[0].text : '';
     let k = 0;
     while (k < all.length && KEYWORDS.has(all[k].text)) k++;
     let words = all.slice(k);
+    if (opener === 'while' || opener === 'until') this.loopframes.push([]);
     if (words.length === 0) return;
-    const head = words[0].text;
+    let head = words[0].text;
     if ((head === 'for' || head === 'select') && words.length >= 2 && NAME.test(words[1].text)) {
+      this.loopframes.push([]);
       const name = words[1].text;
       const values = words.length >= 3 && words[2].text === 'in' ? words.slice(3) : [];
-      if (values.length > 0 && !values.some(w => w.unknown || w.alts)) {
+      let flat: [string, boolean][] = [];
+      for (const w of values) {
+        if (w.unknown) {
+          flat = [];
+          break;
+        }
+        flat.push(...(w.alts ?? [[w.text, w.glob] as [string, boolean]]));
+      }
+      if (values.length > 0 && flat.length > 0) {
         this.setVar(name, '', false);
-        this.loops.set(
-          name,
-          values.slice(0, MAX_ALTS).map(w => [w.text, w.glob] as [string, boolean])
-        );
+        this.loops.set(name, flat.slice(0, MAX_ALTS));
       } else {
         this.setVar(name, '', true);
+        if (values.length === 1 && values[0].feed) this.feeds.set(name, values[0].feed); // for d in $(find ...)
       }
       return;
     }
+    if (head === 'done') {
+      const frame = this.loopframes.pop() ?? [];
+      for (const feed of frame) {
+        if (!feed.cmds && cmd.stdinSub !== undefined) feed.text = cmd.stdinSub; // done < <(find ...)
+      }
+      return;
+    }
+    let j = 0;
+    while (j < words.length - 1 && ASSIGN.test(words[j].text)) j++; // IFS= read -r d
+    if (j > 0 && ['read', 'mapfile', 'readarray'].includes(words[j].text)) {
+      words = words.slice(j);
+      head = words[0].text;
+    }
     if (head === 'read') {
-      for (const w of words.slice(1)) if (NAME.test(w.text)) this.setVar(w.text, '', true);
+      const feed: Feed = { cmds: this.pipeline(cmd), text: cmd.stdinSub };
+      for (const w of words.slice(1)) {
+        if (NAME.test(w.text)) {
+          this.setVar(w.text, '', true);
+          this.feeds.set(w.text, feed);
+        }
+      }
+      this.loopframes[this.loopframes.length - 1]?.push(feed);
+      return;
+    }
+    if (head === 'mapfile' || head === 'readarray') {
+      let name = 'MAPFILE';
+      for (let i = 1; i < words.length; ) {
+        const t = words[i].text;
+        if (MAPFILE_ARG.has(t)) i += 2;
+        else if (t.startsWith('-')) i++;
+        else {
+          name = t;
+          break;
+        }
+      }
+      if (NAME.test(name)) {
+        this.setVar(name, '', true);
+        this.feeds.set(name, { cmds: this.pipeline(cmd), text: cmd.stdinSub });
+      }
+      return;
+    }
+    if (head === 'shift') {
+      if (this.argv && this.fstack.length === 0) {
+        const n = words.length > 1 && /^\d+$/.test(words[1].text) ? Number(words[1].text) : 1;
+        this.argv = this.argv.slice(n);
+      }
+      return;
+    }
+    if (head === 'set') {
+      if (this.fstack.length > 0) return;
+      const texts = words.slice(1).map(w => w.text);
+      const dd = texts.indexOf('--');
+      if (dd >= 0) {
+        this.argv = words.slice(1 + dd + 1);
+        return;
+      }
+      for (let i = 0; i < texts.length; ) {
+        if (texts[i] === '-o' || texts[i] === '+o') i += 2;
+        else if (texts[i].startsWith('-') || texts[i].startsWith('+')) i++;
+        else {
+          this.argv = undefined; // `set a b` sets the parameters to what the guard may not know
+          break;
+        }
+      }
       return;
     }
     if (DECLARE.has(head)) words = words.slice(1).filter(w => !w.text.startsWith('-'));
     if (words.length > 0 && words.every(w => ASSIGN.test(w.text))) {
       for (const w of words) {
         const m = ASSIGN.exec(w.text);
-        if (m) this.setVar(m[1], m[2], Boolean(w.unknown || w.alts));
+        // Inside a function body the assignment happens only if it is called.
+        if (m) this.setVar(m[1], m[2], Boolean(w.unknown || w.alts || this.fstack.length > 0));
       }
     }
   }
@@ -752,6 +1057,7 @@ class Lexer {
   private operator(): boolean {
     for (let op of OPS) {
       if (this.s.startsWith(op, this.i)) {
+        if (op === '(' && this.functionParens()) return true;
         this.i += op.length;
         if (op === '\n' && this.pendingHeredocs.length > 0) this.readHeredocs();
         if (op === '(' || op === ')') op = ';';
@@ -778,7 +1084,9 @@ class Lexer {
       return true;
     }
     if (this.s.startsWith('<(', this.i) || this.s.startsWith('>(', this.i)) {
+      const reads = op === '<' && (fd === '' || fd === '0') && this.s.startsWith('<(', this.i);
       this.cur.redirects.push([op, this.processSubstitution(), fd]);
+      if (reads) this.cur.stdinSub = this.cur.subs[this.cur.subs.length - 1];
       return true;
     }
     const w = this.word();
@@ -812,13 +1120,29 @@ class Lexer {
   private word(): Word | undefined {
     const s = this.s;
     const out: string[] = [];
+    let size = 0;
+    let tailFrom: number | undefined;
     let glob = false;
     let started = false;
     this.unk = false;
+    this.feed = undefined;
+    this.nexp = 0;
+    const put = (text: string): void => {
+      out.push(text);
+      size += text.length;
+    };
+    const expand = (): void => {
+      const before = this.unk;
+      this.unk = false;
+      this.nexp++;
+      put(this.expansion());
+      if (this.unk) tailFrom = size;
+      this.unk = before || this.unk;
+    };
     if (s.startsWith('~', this.i)) {
       const j = this.i + 1;
       if (j === s.length || '/ \t\n;&|)'.includes(s[j])) {
-        out.push(this.env.HOME ?? '');
+        put(this.env.HOME ?? '');
         this.i = j;
         started = true;
       }
@@ -828,12 +1152,12 @@ class Lexer {
       if (' \t\n;&|()<>'.includes(c)) break;
       started = true;
       if (c === '\\') {
-        if (this.i + 1 < s.length) out.push(s[this.i + 1]);
+        if (this.i + 1 < s.length) put(s[this.i + 1]);
         this.i += 2;
       } else if (c === "'") {
         const end = s.indexOf("'", this.i + 1);
         if (end < 0) throw new ParseError("unbalanced '");
-        out.push(s.slice(this.i + 1, end));
+        put(s.slice(this.i + 1, end));
         this.i = end + 1;
       } else if (c === '"') {
         this.i++;
@@ -845,33 +1169,35 @@ class Lexer {
             break;
           }
           if (c === '\\' && this.i + 1 < s.length && '"\\$`'.includes(s[this.i + 1])) {
-            out.push(s[this.i + 1]);
+            put(s[this.i + 1]);
             this.i += 2;
           } else if (c === '$' || c === '`') {
-            out.push(this.expansion());
+            expand();
           } else {
-            out.push(c);
+            put(c);
             this.i++;
           }
         }
       } else if (c === '$' && s[this.i + 1] === "'") {
         // $'...' (ANSI-C quoting): `rm -rf $'/etc'` is `rm -rf /etc`
         const [text, next] = skipAnsiC(s, this.i + 1);
-        out.push(text);
+        put(text);
         this.i = next;
       } else if (c === '$' && s[this.i + 1] === '"') {
         this.i++; // $"..." (locale quoting) reads as "..."
       } else if (c === '$' || c === '`') {
-        out.push(this.expansion());
+        expand();
       } else {
         if (c === '*' || c === '?' || c === '[') glob = true;
-        out.push(c);
+        put(c);
         this.i++;
       }
     }
     if (!started) return undefined;
     const text = out.join('');
-    if (!text.includes('\uE000')) return { text, glob, unknown: this.unk };
+    const tail = tailFrom !== undefined ? text.slice(tailFrom) : undefined;
+    const feed = this.nexp === 1 && this.unk ? this.feed : undefined;
+    if (!text.includes('\uE000')) return { text, glob, unknown: this.unk, tail, feed };
     // A loop variable: one alternative per combination of its listed values.
     const parts = text.split(LOOP_REF);
     let alts: [string, boolean][] = [['', glob]];
@@ -885,14 +1211,34 @@ class Lexer {
           .slice(0, MAX_ALTS);
       }
     });
-    return { text: alts[0][0], glob: alts[0][1], unknown: this.unk, alts };
+    return { text: alts[0][0], glob: alts[0][1], unknown: this.unk, alts, tail };
   }
 
   private variable(name: string): string {
     if (this.loops.has(name)) return `\uE000${name}\uE000`;
     const own = Object.hasOwn(this.env, name);
-    if (!own || this.unknownNames.has(name)) this.unk = true;
+    if (!own || this.unknownNames.has(name)) {
+      this.unk = true;
+      this.feed = this.feeds.get(name);
+    }
     return own ? this.env[name] : '';
+  }
+
+  /**
+   * $1..$9 and $# of a script run with known arguments; undefined when unknown (the
+   * hook's own command, or inside a function body).
+   */
+  private positional(ch: string): string | undefined {
+    if (!this.argv || this.fstack.length > 0) return undefined;
+    if (ch === '#') return String(this.argv.length);
+    if (/^[1-9]$/.test(ch)) {
+      const n = Number(ch);
+      if (n > this.argv.length) return '';
+      const w = this.argv[n - 1];
+      if (w.unknown || w.alts) this.unk = true;
+      return w.text;
+    }
+    return undefined;
   }
 
   private expansion(): string {
@@ -920,6 +1266,10 @@ class Lexer {
       const end = scanBrace(s, this.i + 2);
       const inner = s.slice(this.i + 2, end);
       this.i = end + 1;
+      if (/^[1-9#]$/.test(inner)) {
+        const pos = this.positional(inner);
+        if (pos !== undefined) return pos;
+      }
       const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(inner);
       const name = m ? m[0] : '';
       const rest = inner.slice(name.length);
@@ -933,12 +1283,17 @@ class Lexer {
       const op = /^(:?[-=])/.exec(rest);
       if (op && name) {
         const fallback = this.expandText(rest.slice(op[1].length));
+        this.feed = undefined;
         // An unset name may still be set in the environment the shell runs in.
         if (!known) this.unk = true;
         if (!own) return fallback;
         return val || (op[1].startsWith(':') ? fallback : val);
       }
-      if (!known) this.unk = true;
+      if (!known) {
+        this.unk = true;
+        // ${d}, "${dirs[@]}": the variable's feed, if it has one
+        this.feed = ['', '[@]', '[*]'].includes(rest) ? this.feeds.get(name) : undefined;
+      }
       return val;
     }
     VAR.lastIndex = this.i + 1;
@@ -949,7 +1304,10 @@ class Lexer {
     }
     this.i++;
     if (this.i < s.length && '@*#?$!-0123456789'.includes(s[this.i])) {
+      const ch = s[this.i];
       this.i++;
+      const pos = this.positional(ch);
+      if (pos !== undefined) return pos;
       this.unk = true;
       return '';
     }
@@ -961,6 +1319,7 @@ class Lexer {
     if (body.trim() === 'pwd') return this.env.PWD ?? '';
     if (body.trim().split(' ')[0] === 'mktemp') return '/tmp/guard-mktemp'; // always a fresh temp path
     this.unk = true;
+    this.feed = { text: body }; // rm -rf $(find ...)
     return '';
   }
 }
@@ -970,7 +1329,7 @@ class Lexer {
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh']);
 const MAX_DEPTH = 8;
 /** Marks a directory the guard could not resolve (`cd "$X"`); never a real path. */
-const UNRESOLVED = '\uE001';
+const UNRESOLVED = '';
 const UNRESOLVED_CWD = `/${UNRESOLVED}unresolved`;
 /**
  * Temp-dir variables resolve to a temp path, so `rm -rf "$TMPDIR/x"` is judged as
@@ -981,60 +1340,6 @@ const TEMP_ENV: Record<string, string> = {
   TMP: '/tmp/guard-tmpdir',
   TEMP: '/tmp/guard-tmpdir',
 };
-/** Folder names a recursive delete may target even through an unresolved path. */
-const DISPOSABLE = new Set([
-  'node_modules',
-  'dist',
-  'build',
-  'out',
-  '.venv',
-  'venv',
-  'target',
-  'coverage',
-  '.next',
-  '.nuxt',
-  '.turbo',
-  '.cache',
-  '__pycache__',
-  '.pytest_cache',
-  '.mypy_cache',
-  '.ruff_cache',
-  '.parcel-cache',
-]);
-
-/**
- * Used when the command cannot be parsed (or nests too deep): the raw text is
- * searched for the commands the rules cover. A match is refused, since the guard
- * cannot tell whether it runs; anything else is allowed (the shell would most
- * likely reject a command this guard cannot read).
- */
-const RAW_DESTRUCTIVE: [RegExp, string][] = [
-  [/\brm\b[^;&|\n]*\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?=\s|$)/, 'a recursive rm'],
-  [/\bfind\b[^\n]*\s(?:-delete\b|-(?:exec|execdir|ok|okdir)\s+\S*\brm\b)/, 'a find that deletes'],
-  [/\bgit\b[^\n]*\bclean\b[^;&|\n]*\s-[a-zA-Z]*[xXf]/, 'git clean'],
-  [/\b(?:mkfs[.\w]*|wipefs|blkdiscard|shred|sgdisk)\b/, 'a disk tool'],
-  [/\bdd\b[^\n]*\bof=\/dev\//, 'dd onto a device'],
-  [
-    />\s*\/dev\/(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|mapper\/|disk\/)/,
-    'a write to a disk device',
-  ],
-  [/\bvolume\s+(?:rm|remove|prune)\b/, 'a docker volume delete'],
-  [/\bdown\b[^;&|\n]*\s(?:-[a-zA-Z]*v[a-zA-Z]*|--volumes)(?=\s|$)/, 'compose down -v'],
-  [/\bsystem\s+prune\b[^\n]*--volumes/, 'docker system prune --volumes'],
-];
-
-function rawScan(cmd: string, why: string): Violation | undefined {
-  for (const [re, what] of RAW_DESTRUCTIVE) {
-    if (re.test(cmd)) {
-      return new Violation(
-        'unparsed-destructive',
-        `the guard could not parse this command (${why}) and it contains ${what}`,
-        'Rewrite it more simply: balanced quotes, no heredoc inside $(...), one destructive command per call (write long text such as a commit message to a file first).'
-      );
-    }
-  }
-  return undefined;
-}
 const DEVICE =
   /^\/dev\/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|md\d|dm-\d|loop\d|mapper\/|disk\/)/;
 const FIND_FILTERS = new Set([
@@ -1049,8 +1354,104 @@ const FIND_FILTERS = new Set([
 ]);
 const FIND_PATH_FILTERS = new Set(['-path', '-ipath', '-wholename', '-iwholename']);
 const FIND_EXEC = ['-exec', '-execdir', '-ok', '-okdir'];
+/** find tests that take one argument (so it is not read as an operator or a path). */
+const FIND_ARG1 = new Set([
+  '-name',
+  '-iname',
+  '-path',
+  '-ipath',
+  '-wholename',
+  '-iwholename',
+  '-regex',
+  '-iregex',
+  '-lname',
+  '-ilname',
+  '-type',
+  '-xtype',
+  '-mtime',
+  '-mmin',
+  '-atime',
+  '-amin',
+  '-ctime',
+  '-cmin',
+  '-newer',
+  '-anewer',
+  '-cnewer',
+  '-size',
+  '-perm',
+  '-user',
+  '-group',
+  '-uid',
+  '-gid',
+  '-links',
+  '-inum',
+  '-samefile',
+  '-maxdepth',
+  '-mindepth',
+  '-fstype',
+  '-used',
+  '-regextype',
+  '-context',
+  '-files0-from',
+]);
 const MATCH_ALL_REGEX = new Set(['.*', '^.*', '.*$', '^.*$', '.+', '^.+$']);
 const STDOUT_FDS = new Set(['', '1', '&']);
+const DOCKER_GLOBAL_ARG = new Set([
+  '-H',
+  '--host',
+  '-c',
+  '--context',
+  '--config',
+  '-l',
+  '--log-level',
+]);
+const DOCKER_EXEC_ARG = new Set([
+  '-e',
+  '--env',
+  '--env-file',
+  '-u',
+  '--user',
+  '-w',
+  '--workdir',
+  '--detach-keys',
+]);
+const COMPOSE_GLOBAL_ARG = new Set([
+  '-f',
+  '--file',
+  '-p',
+  '--project-name',
+  '--project-directory',
+  '--env-file',
+  '--profile',
+  '--ansi',
+  '--progress',
+  '--parallel',
+]);
+const COMPOSE_EXEC_ARG = new Set(['-e', '--env', '-u', '--user', '-w', '--workdir', '--index']);
+/** Options of sort/uniq/head/tail/grep that take the next word as their value. */
+const LINE_FILTER_ARG = new Set([
+  '-n',
+  '-c',
+  '-k',
+  '-t',
+  '-o',
+  '-S',
+  '-T',
+  '-e',
+  '-m',
+  '-A',
+  '-B',
+  '-C',
+  '-f',
+  '-s',
+  '-w',
+  '--lines',
+  '--bytes',
+  '--key',
+  '--field-separator',
+  '--regexp',
+  '--max-count',
+]);
 /** rsync options that take the next word as their value (when not written --opt=value). */
 const RSYNC_ARG = new Set([
   '-e',
@@ -1116,13 +1517,47 @@ const RSYNC_ARG = new Set([
 ]);
 const RSYNC_SHORT_ARG = 'efTM@B';
 
-/** Scripts a command line wrote so far: absolute path -> content (undefined: unknown). */
-type Files = Map<string, string | undefined>;
+/**
+ * Shared by one command line and everything it runs: the scripts it wrote (absolute
+ * path -> content, undefined when unknown) and the shell functions it defined (name
+ * -> body), with the ones called so far.
+ */
+interface Scope {
+  files: Map<string, string | undefined>;
+  funcs: Map<string, string>;
+  called: Set<string>;
+}
+
+/**
+ * `cd -` and `popd` within one command line: the previous folder (undefined: the one
+ * before this command, which the guard cannot know) and the pushd stack.
+ */
+interface Dirs {
+  old?: string;
+  stack: string[];
+}
+
+/** A command the guard could not read, allowed and reported as a log-only entry. */
+export type LogOnly = (entry: { command: string; cwd: string; reason: string }) => void;
 
 type Outcome = [Violation | undefined, string | undefined];
-type FindFilter = [kind: string, pattern: string, negated: boolean];
+type FindFilter = [kind: string, pattern: string];
+type FindNode =
+  | ['filter', FindFilter]
+  | ['test']
+  | ['act', string, boolean]
+  | ['not', FindNode]
+  | ['and', FindNode[]]
+  | ['or', FindNode[]];
+type Dnf = FindFilter[][];
+type FindAction = [kind: string, recursive: boolean, dnf: Dnf];
 
-function writeFile(files: Files, path: string, text: string | undefined, append: boolean): void {
+function writeFile(
+  files: Map<string, string | undefined>,
+  path: string,
+  text: string | undefined,
+  append: boolean
+): void {
   if (append) {
     // An unknown append leaves the known part, which still runs.
     if (text !== undefined) files.set(path, (files.get(path) ?? '') + text);
@@ -1183,30 +1618,309 @@ function globCanEndWith(pattern: string, suffix: string): boolean {
   return true;
 }
 
+/** A glob component that matches every file or every note: *, *.md, *.* */
+function matchesEveryNote(component: string): boolean {
+  return (
+    component.includes('*') && ['', '.', '.md'].includes(component.replace(/\*/g, '').toLowerCase())
+  );
+}
+
+/**
+ * A filter that only drops lines from a list of paths (sort, uniq, head, tail, grep
+ * without -o), so a find's narrowing still holds after it.
+ */
+function narrowsLines(words: Word[]): boolean {
+  if (words.length === 0) return false;
+  const name = basename(words[0].text);
+  const grep = ['grep', 'egrep', 'fgrep'].includes(name);
+  if (!grep && !['sort', 'uniq', 'head', 'tail', 'tac'].includes(name)) return false;
+  let operands = 0;
+  let patternGiven = false;
+  for (let k = 1; k < words.length; ) {
+    const t = words[k].text;
+    if (t.startsWith('-') && t.length > 1) {
+      if (
+        grep &&
+        (['-o', '--only-matching', '-r', '-R', '--recursive'].includes(t) ||
+          (!t.startsWith('--') && /[orR]/.test(t)))
+      ) {
+        return false; // prints parts of lines, or reads files instead of stdin
+      }
+      if (['-e', '--regexp', '-f'].includes(t)) patternGiven = true;
+      k += LINE_FILTER_ARG.has(t) ? 2 : 1;
+      continue;
+    }
+    operands++;
+    k++;
+  }
+  // A file operand makes it read that file instead of the paths on stdin.
+  return operands <= (patternGiven || !grep ? 0 : 1);
+}
+
+class FindSyntax extends Error {}
+
+/** find's expression: ( ) ! -not -a -and -o -or, tests and actions. */
+class FindParser {
+  private k = 0;
+  constructor(private readonly t: string[]) {}
+
+  private peek(): string | undefined {
+    return this.t[this.k];
+  }
+
+  parse(): FindNode {
+    if (this.t.length === 0) return ['and', []];
+    const e = this.or();
+    if (this.k !== this.t.length) throw new FindSyntax('trailing tokens');
+    return e;
+  }
+
+  private or(): FindNode {
+    const items = [this.and()];
+    while (this.peek() === '-o' || this.peek() === '-or') {
+      this.k++;
+      items.push(this.and());
+    }
+    return items.length === 1 ? items[0] : ['or', items];
+  }
+
+  private and(): FindNode {
+    const items = [this.unary()];
+    for (;;) {
+      const p = this.peek();
+      if (p === undefined || p === '-o' || p === '-or' || p === ')') break;
+      if (p === '-a' || p === '-and') this.k++;
+      items.push(this.unary());
+    }
+    return items.length === 1 ? items[0] : ['and', items];
+  }
+
+  private unary(): FindNode {
+    const t = this.peek();
+    if (t === undefined) throw new FindSyntax('missing operand');
+    if (t === '!' || t === '-not') {
+      this.k++;
+      return ['not', this.unary()];
+    }
+    if (t === '(') {
+      this.k++;
+      const e = this.or();
+      if (this.peek() !== ')') throw new FindSyntax('unbalanced (');
+      this.k++;
+      return e;
+    }
+    return this.primary();
+  }
+
+  private arg(): string {
+    if (this.k >= this.t.length) throw new FindSyntax('missing argument');
+    return this.t[this.k++];
+  }
+
+  private primary(): FindNode {
+    const t = this.t[this.k++];
+    if (FIND_FILTERS.has(t)) return ['filter', [t, this.arg()]];
+    if (t === '-delete') return ['act', 'delete', false];
+    if (FIND_EXEC.includes(t)) {
+      const cmd: string[] = [];
+      for (;;) {
+        if (this.k >= this.t.length) throw new FindSyntax('unterminated -exec');
+        const tok = this.t[this.k++];
+        if (tok === ';' || (tok === '+' && cmd[cmd.length - 1] === '{}')) break;
+        cmd.push(tok);
+      }
+      if (cmd.length > 0 && basename(cmd[0]) === 'rm') {
+        const recursive = cmd
+          .slice(1)
+          .some(
+            x => x === '--recursive' || (x.startsWith('-') && !x.startsWith('--') && /[rR]/.test(x))
+          );
+        return ['act', 'rm', recursive];
+      }
+      return ['act', 'other', false];
+    }
+    if (t === '-print' || t === '-print0' || t === '-ls') return ['act', 'print', false];
+    if (t === '-printf') {
+      this.arg();
+      return ['act', 'print', false];
+    }
+    if (t === '-fprint' || t === '-fprint0' || t === '-fls') {
+      this.arg();
+      return ['act', 'other', false];
+    }
+    if (t === '-fprintf') {
+      this.arg();
+      this.arg();
+      return ['act', 'other', false];
+    }
+    if (t === '-prune') return ['act', 'prune', false];
+    if (FIND_ARG1.has(t) || /^-newer[aBcmt]{2}$/.test(t)) this.arg();
+    return ['test'];
+  }
+}
+
+const DNF_CAP = 64;
+
+function dnfAnd(a: Dnf, b: Dnf): Dnf {
+  if (a.length * b.length > DNF_CAP) return [[]]; // too many branches to follow: not narrowed
+  return a.flatMap(x => b.map(y => [...x, ...y]));
+}
+
+/**
+ * The filters that must match for `node` to be true, as alternatives (an empty
+ * alternative: it can be true with no filter matching).
+ */
+function trueDnf(node: FindNode): Dnf {
+  switch (node[0]) {
+    case 'filter':
+      return [[node[1]]];
+    case 'and': {
+      let out: Dnf = [[]];
+      for (const item of node[1]) out = dnfAnd(out, trueDnf(item));
+      return out;
+    }
+    case 'or': {
+      const out = node[1].flatMap(trueDnf);
+      return out.length <= DNF_CAP ? out : [[]];
+    }
+    default:
+      return [[]]; // a test, an action, or a negation (which never narrows)
+  }
+}
+
+/**
+ * [kind, recursive, filters that must match for it to run] for each delete in a find
+ * expression, or with `feed` for each print (the implicit -print included). An
+ * expression this cannot parse is read the old way: every filter narrows.
+ */
+function findActions(expr: string[], feed: boolean): FindAction[] {
+  let tree: FindNode;
+  try {
+    tree = new FindParser(expr).parse();
+  } catch (err) {
+    if (err instanceof FindSyntax) return findActionsFlat(expr, feed);
+    throw err;
+  }
+  const acts: FindAction[] = [];
+  const walk = (node: FindNode, ctx: Dnf): void => {
+    if (node[0] === 'and') {
+      let cur = ctx;
+      for (const item of node[1]) {
+        walk(item, cur);
+        cur = dnfAnd(cur, trueDnf(item));
+      }
+    } else if (node[0] === 'or') {
+      for (const item of node[1]) walk(item, ctx); // an earlier branch being false narrows nothing
+    } else if (node[0] === 'not') walk(node[1], ctx);
+    else if (node[0] === 'act') acts.push([node[1], node[2], ctx]);
+  };
+  walk(tree, [[]]);
+  if (!feed) return acts.filter(a => a[0] === 'delete' || a[0] === 'rm');
+  let prints = acts.filter(a => a[0] === 'print');
+  // No action but -prune: find prints what matches.
+  if (!acts.some(a => a[0] !== 'prune')) prints = [['print', true, trueDnf(tree)]];
+  return prints.map(a => ['print', true, a[2]] as FindAction);
+}
+
+function findActionsFlat(expr: string[], feed: boolean): FindAction[] {
+  const execRm = (k: number): boolean =>
+    FIND_EXEC.includes(expr[k]) && k + 1 < expr.length && basename(expr[k + 1]) === 'rm';
+  const deleting = expr.includes('-delete') || expr.some((_, k) => execRm(k));
+  if (!deleting && !feed) return [];
+  const recursive =
+    feed ||
+    expr.some(
+      (_, k) =>
+        execRm(k) && expr.slice(k + 2).some(x => /^(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$/.test(x))
+    );
+  const filters: FindFilter[] = [];
+  expr.forEach((t, k) => {
+    if (
+      FIND_FILTERS.has(t) &&
+      k + 1 < expr.length &&
+      !(k > 0 && (expr[k - 1] === '!' || expr[k - 1] === '-not'))
+    ) {
+      filters.push([t, expr[k + 1]]);
+    }
+  });
+  const anyBranch = expr.includes('-o') || expr.includes('-or');
+  const dnf: Dnf = anyBranch ? filters.map(f => [f]) : [filters];
+  return [[feed ? 'print' : 'delete', recursive, dnf.length > 0 ? dnf : [[]]]];
+}
+
+/**
+ * Whether a find filter matches an entry with this name and printed path. find's
+ * globs let * match a leading dot and, in -path, a slash.
+ */
+function findMatch([kind, pattern]: FindFilter, name: string, path: string): boolean {
+  let subject = kind === '-name' || kind === '-iname' ? name : path;
+  let pat = pattern;
+  if (kind.startsWith('-i')) {
+    subject = subject.toLowerCase();
+    pat = pat.toLowerCase();
+  }
+  if (kind.endsWith('regex')) {
+    try {
+      return new RegExp(`^(?:${pat})$`, 's').test(subject);
+    } catch {
+      return false;
+    }
+  }
+  return fnmatch(subject, pat);
+}
+
+function emptyScope(): Scope {
+  return { files: new Map(), funcs: new Map(), called: new Set() };
+}
+
 export class Checker {
-  constructor(private readonly r: Rules) {}
+  /** `logOnly` receives the commands the guard could not read (they are allowed). */
+  constructor(
+    private readonly r: Rules,
+    private readonly logOnly?: LogOnly
+  ) {}
 
   /**
-   * `files` holds the scripts this command line has written so far, so running one
-   * (`bash x.sh`, `./x.sh`, `source x.sh`) is checked like a heredoc.
+   * `argv`: the positional parameters when this is a script or function run with
+   * known arguments (undefined: unknown). `inherit`: the caller's variables, for what
+   * runs in the same shell (a function, trap, eval, source, $(...)).
    */
-  check(cmd: string, cwd: string, depth = 0, files: Files = new Map()): Violation | undefined {
+  check(
+    cmd: string,
+    cwd: string,
+    depth = 0,
+    scope: Scope = emptyScope(),
+    argv?: Word[],
+    inherit?: Vars
+  ): Violation | undefined {
     if (cmd.trim() === '') return undefined;
-    if (depth > MAX_DEPTH) return rawScan(cmd, `nested more than ${MAX_DEPTH} levels deep`);
+    if (depth > MAX_DEPTH) {
+      this.logOnly?.({ command: cmd, cwd, reason: `nested more than ${MAX_DEPTH} levels deep` });
+      return undefined;
+    }
     const env: Record<string, string> = { ...TEMP_ENV, HOME: this.r.home, PWD: cwd };
+    let lexer: Lexer;
     let cmds: Command[];
     try {
-      cmds = new Lexer(cmd, env).run();
+      lexer = new Lexer(cmd, env, argv, inherit);
+      cmds = lexer.run();
     } catch (err) {
-      if (err instanceof ParseError) return rawScan(cmd, err.message);
+      if (err instanceof ParseError) {
+        // bash rejects what this cannot read, so nothing in it runs
+        this.logOnly?.({ command: cmd, cwd, reason: err.message });
+        return undefined;
+      }
       throw err;
     }
-    let prev: Command | undefined;
+    for (const [name, body] of lexer.functions) scope.funcs.set(name, body);
+    const dirs: Dirs = { stack: [] };
+    let upstream: Command[] = [];
     let prevOut: string | undefined;
     for (const c of cmds) {
+      if (c.func) continue; // a function body runs when the function is called
       env.PWD = cwd;
       for (const body of c.subs) {
-        const v = this.check(body, cwd, depth + 1, files);
+        const v = this.check(body, cwd, depth + 1, scope, undefined, c.vars);
         if (v) return v;
       }
       for (const [op, target] of c.redirects) {
@@ -1215,12 +1929,23 @@ export class Checker {
         }
       }
       const piped = c.sep === '|' || c.sep === '|&';
+      if (!piped) upstream = [];
       const stdin = piped ? prevOut : undefined;
-      const [v, newCwd] = this.command(c.words, c, prev, cwd, depth, files, stdin);
+      const [v, newCwd] = this.command(c.words, c, upstream, cwd, depth, scope, stdin, dirs);
       if (v) return v;
-      prevOut = this.output(c, stdin, cwd, files);
+      prevOut = this.output(c, stdin, cwd, scope.files);
       if (newCwd !== undefined) cwd = newCwd;
-      prev = c;
+      upstream = [...upstream, c];
+    }
+    // A function never called by name may still run (a variable holding its name):
+    // its body is judged with unknown arguments.
+    const last = cmds.length > 0 ? cmds[cmds.length - 1].vars : undefined;
+    for (const [name, body] of lexer.functions) {
+      if (!scope.called.has(name)) {
+        scope.called.add(name);
+        const v = this.check(body, cwd, depth + 1, scope, undefined, last);
+        if (v) return v;
+      }
     }
     return undefined;
   }
@@ -1239,38 +1964,89 @@ export class Checker {
     return this.abs(w.text, cwd);
   }
 
-  /** A path holding an expansion the guard could not resolve (target or effective cwd). */
-  private unresolved(w: Word, cwd: string): boolean {
-    if (w.unknown || w.text.includes(UNRESOLVED)) return true;
-    return !w.text.startsWith('/') && cwd.includes(UNRESOLVED);
+  /** A path the command follows through a symlink at its end: `source/`, `.`. */
+  private static follows(text: string): boolean {
+    return /(\/|\/\.|\/\.\.)$/.test(text) || text === '.' || text === '..';
   }
 
   /**
-   * Refuse a recursive delete of a path the guard cannot resolve, unless its last
-   * component is plainly a disposable build folder (node_modules, dist, .venv ...).
+   * `p`, plus where it really is when a symlink on the way leads elsewhere (an Archon
+   * workspace's `source` is a link to the project). The last component is followed
+   * only when the command follows it (`rm -rf source/` deletes the project's
+   * contents; `rm -rf source` removes the link).
    */
-  private unresolvedDelete(w: Word, cwd: string, what: string): Violation | undefined {
-    if (!this.unresolved(w, cwd)) return undefined;
-    const name = basename(w.text.replace(/\/+$/, ''));
-    if (!w.glob && !w.alts && DISPOSABLE.has(name) && !w.text.split('/').includes('..')) {
+  private realPaths(p: string, follow: boolean): string[] {
+    if (p.includes(UNRESOLVED)) return [p];
+    let real: string | undefined;
+    try {
+      if (follow) real = existsSync(p) ? realpathSync(p) : undefined;
+      else {
+        const parent = dirname(p);
+        real =
+          parent !== p && parent !== '' && existsSync(parent) && statSync(parent).isDirectory()
+            ? joinPath(realpathSync(parent), basename(p))
+            : undefined;
+      }
+    } catch {
+      real = undefined;
+    }
+    if (real) {
+      const n = normPath(real);
+      if (n !== p) return [p, n];
+    }
+    return [p];
+  }
+
+  /**
+   * For a path whose folder the guard cannot resolve (a variable, `$(...)`, an
+   * unresolved `cd`): the protected thing it may be. Only a literal name that is
+   * protected wherever it sits (a project, `.git`, SecondBrain, .archon ...), a glob
+   * directly in the unresolved folder or under a literal parent whose children are
+   * protected (`"$X"/*`, `"$X"/projects/*`), or a path that climbs out with `..`
+   * counts; any other unresolved path is left to the judged layer.
+   */
+  private unresolvedHit(w: Word, cwd: string): string | undefined {
+    let rel: string;
+    let where: string;
+    if (cwd.includes(UNRESOLVED) && !w.text.startsWith('/')) {
+      rel = w.text;
+      where = '<a folder the guard cannot resolve>/';
+      if (rel.split('/').filter(x => x !== '' && x !== '.').length === 0) {
+        // `rm -rf "$Y"`: a name that is all variable, as in a known folder
+        if (w.unknown && rel.replace(/\//g, '') === '') return undefined;
+        return `${where}${rel || '.'} (the folder itself, which may be a project)`;
+      }
+    } else if (w.unknown && w.tail?.replace(/\//g, '')) {
+      rel = (w.tail ?? '').replace(/^\/+/, '');
+      where = '<a variable the guard cannot resolve>/';
+    } else return undefined;
+    const parts = rel.split('/').filter(x => x !== '' && x !== '.');
+    if (parts.length === 0) return undefined; // "$X"/. : rm refuses to remove '.'
+    const last = parts[parts.length - 1];
+    if (last === '..') return `${where}${rel} (which may be any folder)`;
+    if (w.glob && /[*?[]/.test(last)) {
+      const names =
+        parts.length === 1
+          ? this.r.names
+          : (this.r.childNames.get(parts[parts.length - 2]) ?? new Set());
+      if (names.has('*') || [...names].some(n => globMatch(n, last))) {
+        return `${where}${rel} (a glob that may match a protected folder there)`;
+      }
       return undefined;
     }
-    const shown = w.text.includes(UNRESOLVED) || w.text === '' ? 'an unresolved path' : w.text;
-    return new Violation(
-      'unresolved-path',
-      `${what} ${shown}, which holds a variable, $(...) or cd the guard cannot resolve (it could be any folder, a project included)`,
-      'Write the path out literally: resolve the variable first (printf \'%s\\n\' "$X"), then run the delete on the printed path. Temp dirs ($TMPDIR, mktemp) and build folders (node_modules, dist, .venv, build) are fine as they are.'
-    );
+    if (this.r.names.has(last)) return `${where}${rel} (which may be the protected '${last}')`;
+    return undefined;
   }
 
   private targetHits(w: Word, cwd: string): string | undefined {
     if (w.alts) {
       for (const [text, glob] of w.alts) {
-        const hit = this.targetHits({ text, glob, unknown: w.unknown }, cwd);
+        const hit = this.targetHits({ text, glob, unknown: w.unknown, tail: w.tail }, cwd);
         if (hit) return hit;
       }
       return undefined;
     }
+    if (cwd.includes(UNRESOLVED) && !w.text.startsWith('/')) return this.unresolvedHit(w, cwd);
     if (w.text === '') {
       // A target that is nothing but an unresolved variable could be any name
       // here, so it is refused where a name here would be protected.
@@ -1279,28 +2055,61 @@ export class Checker {
       }
       return undefined;
     }
+    const hit = this.unresolvedHit(w, cwd);
+    if (hit) return hit;
     if (!w.glob) {
-      const p = this.abs(w.text, cwd);
-      return this.r.hits(p) ? p : undefined;
+      for (const p of this.realPaths(this.abs(w.text, cwd), Checker.follows(w.text))) {
+        if (this.r.hits(p)) return p;
+      }
+      return undefined;
     }
     // Judge the first globbed component: `projects/*` -> dir projects, pattern `*`.
-    const head = w.text.split(/[*?[]/)[0];
+    const [directory, pattern] = this.globParts(w.text, cwd);
+    for (const d of this.realPaths(directory, true)) {
+      // a glob lists the folder through a link
+      if (!this.r.hits(d)) continue;
+      if (this.r.isProtected(d) && pattern.replace(/[*.]/g, '') === '') return joinPath(d, pattern);
+      for (const name of this.r.protectedChildren(d)) {
+        if (name === '*' || globMatch(name, pattern)) return joinPath(d, name);
+      }
+    }
+    return undefined;
+  }
+
+  /** `a/b/*.md/c` -> [abs folder a/b, first globbed component `*.md`, the rest [c]]. */
+  private globParts(text: string, cwd: string): [string, string, string[]] {
+    const head = text.split(/[*?[]/)[0];
     let directory: string;
-    let pattern: string;
+    let parts: string[];
     if (head.includes('/')) {
       const d = head.slice(0, head.lastIndexOf('/'));
-      pattern = w.text.slice(d.length + 1).split('/')[0];
+      parts = text.slice(d.length + 1).split('/');
       directory = this.abs(d || '/', cwd);
     } else {
       directory = cwd;
-      pattern = w.text.split('/')[0];
+      parts = text.split('/');
     }
-    if (!this.r.hits(directory)) return undefined;
-    if (this.r.isProtected(directory) && pattern.replace(/[*.]/g, '') === '') {
-      return joinPath(directory, pattern);
+    return [directory, parts[0], parts.slice(1).filter(x => x)];
+  }
+
+  /**
+   * A glob deleting every file directly in a protected vault folder
+   * (`SecondBrain/Memory/*.md`, `Memory/daily/*`): the folder, else undefined.
+   */
+  private vaultGlob(w: Word, cwd: string): string | undefined {
+    if (w.alts) {
+      for (const [text, glob] of w.alts) {
+        const hit = this.vaultGlob({ text, glob, unknown: w.unknown }, cwd);
+        if (hit) return hit;
+      }
+      return undefined;
     }
-    for (const name of this.r.protectedChildren(directory)) {
-      if (name === '*' || globMatch(name, pattern)) return joinPath(directory, name);
+    if (!w.glob || w.unknown || (cwd.includes(UNRESOLVED) && !w.text.startsWith('/')))
+      return undefined;
+    const [directory, pattern, rest] = this.globParts(w.text, cwd);
+    if (![pattern, ...rest].every(matchesEveryNote)) return undefined;
+    for (const d of this.realPaths(directory, true)) {
+      if (this.r.isProtected(d) && this.r.inVault(d)) return d;
     }
     return undefined;
   }
@@ -1308,11 +2117,12 @@ export class Checker {
   private command(
     words: Word[],
     c: Command,
-    prev: Command | undefined,
+    upstream: Command[],
     cwd: string,
     depth: number,
-    files: Files,
-    stdin: string | undefined
+    scope: Scope,
+    stdin: string | undefined,
+    dirs: Dirs
   ): Outcome {
     const peeled = this.peel(words, cwd);
     cwd = peeled.cwd;
@@ -1322,7 +2132,7 @@ export class Checker {
         .slice(i + 2)
         .map(w => shellQuote(w.text))
         .join(' ');
-      return [this.check(`${words[i + 1].text} ${rest}`, cwd, depth + 1, files), undefined];
+      return [this.check(`${words[i + 1].text} ${rest}`, cwd, depth + 1, scope), undefined];
     }
     const xargs = peeled.xargs;
     const rest = words.slice(peeled.i);
@@ -1330,29 +2140,44 @@ export class Checker {
     const name = basename(rest[0].text);
     const args = rest.slice(1);
 
-    if (name === 'cd' || name === 'pushd') {
-      const dirs = args.filter(w => !/^-[LPe@]+$/.test(w.text));
-      if (dirs.length === 0) return [undefined, this.r.home];
-      if (dirs[0].text === '-') return [undefined, UNRESOLVED_CWD];
-      return [undefined, this.chdir(dirs[0], cwd)];
+    if (name === 'cd' || name === 'pushd' || name === 'popd') {
+      return [undefined, this.cd(name, args, cwd, dirs)];
     }
-    if (name === 'popd') return [undefined, UNRESOLVED_CWD];
+    if (scope.funcs.has(name) && !rest[0].text.includes('/')) {
+      scope.called.add(name);
+      return [
+        this.check(scope.funcs.get(name) ?? '', cwd, depth + 1, scope, args, c.vars),
+        undefined,
+      ];
+    }
     if (rest[0].text.includes('/')) {
       // ./x.sh, /tmp/x.sh: a script this command line wrote
-      const v = this.runFile(rest[0], cwd, depth, files);
+      const v = this.runFile(rest[0], cwd, depth, scope, args);
       if (v) return [v, undefined];
     }
-    if (SHELLS.has(name)) return [this.shell(args, c, cwd, depth, files, stdin), undefined];
+    if (SHELLS.has(name)) return [this.shell(args, c, cwd, depth, scope, stdin), undefined];
     if (name === 'source' || name === '.') {
-      return [args.length > 0 ? this.runFile(args[0], cwd, depth, files) : undefined, undefined];
+      return [
+        args.length > 0
+          ? this.runFile(args[0], cwd, depth, scope, args.slice(1), c.vars)
+          : undefined,
+        undefined,
+      ];
     }
     if (name === 'eval') {
-      return [this.check(args.map(w => w.text).join(' '), cwd, depth + 1, files), undefined];
+      return [
+        this.check(args.map(w => w.text).join(' '), cwd, depth + 1, scope, undefined, c.vars),
+        undefined,
+      ];
     }
-    if (name === 'rm') {
-      const upstream = c.sep === '|' || c.sep === '|&' ? prev : undefined;
-      return [this.rm(args, cwd, xargs, upstream), undefined];
+    if (name === 'trap') {
+      // trap 'commands' SIGNAL: the string runs later, as a command line
+      if (args.length > 0 && !args[0].text.startsWith('-')) {
+        return [this.check(args[0].text, cwd, depth + 1, scope, undefined, c.vars), undefined];
+      }
+      return [undefined, undefined];
     }
+    if (name === 'rm') return [this.rm(args, cwd, xargs, upstream), undefined];
     if (name === 'mv') return [this.mv(args, cwd), undefined];
     if (name === 'find') return [this.find(args, cwd), undefined];
     if (name === 'rsync') return [this.rsync(args, cwd), undefined];
@@ -1362,6 +2187,19 @@ export class Checker {
     ) {
       return [this.disk(name, args), undefined];
     }
+    if (['docker', 'docker-compose', 'podman', 'stixctl'].includes(name)) {
+      const inner = this.execInner(name, args);
+      if (inner) {
+        // docker exec, docker compose exec, stixctl compose <p> exec: the command inside
+        // the container is judged; its folder is the container's own.
+        const [iwords, icwd] = inner;
+        const cmd: Command = { ...newCommand(), words: [...iwords] };
+        return [
+          this.command(iwords, cmd, [], icwd, depth + 1, scope, undefined, { stack: [] })[0],
+          undefined,
+        ];
+      }
+    }
     if (name === 'docker' || name === 'docker-compose' || name === 'podman') {
       return [this.docker(name, args), undefined];
     }
@@ -1370,6 +2208,90 @@ export class Checker {
     }
     if (name === 'git') return [this.git(args, cwd), undefined];
     return [undefined, undefined];
+  }
+
+  /**
+   * The folder after cd / pushd / popd; `cd -` and `popd` go back to a folder this
+   * command line left, and are unresolved only when it left none.
+   */
+  private cd(name: string, args: Word[], cwd: string, dirs: Dirs): string {
+    const operands = args.filter(w => !/^-[LPe@]+$/.test(w.text));
+    if (name === 'popd') {
+      // popd +N edits the stack; an empty one is the shell's own
+      const target =
+        operands.length > 0 || dirs.stack.length === 0
+          ? UNRESOLVED_CWD
+          : (dirs.stack.pop() ?? UNRESOLVED_CWD);
+      dirs.old = cwd;
+      return target;
+    }
+    if (name === 'pushd' && operands.length > 0 && /^[+-]\d+$/.test(operands[0].text)) {
+      dirs.stack.push(cwd);
+      dirs.old = cwd;
+      return UNRESOLVED_CWD; // rotates the shell's stack
+    }
+    if (name === 'pushd' && operands.length === 0) {
+      const target = dirs.stack.pop() ?? UNRESOLVED_CWD;
+      dirs.stack.push(cwd);
+      dirs.old = cwd;
+      return target;
+    }
+    let target: string;
+    if (operands.length === 0) target = this.r.home;
+    else if (name === 'cd' && operands[0].text === '-') target = dirs.old ?? UNRESOLVED_CWD;
+    else target = this.chdir(operands[0], cwd);
+    if (name === 'pushd') dirs.stack.push(cwd);
+    dirs.old = cwd;
+    return target;
+  }
+
+  /**
+   * [the command, its folder] that docker/podman exec, docker compose exec or
+   * `stixctl compose <project> exec [-T] <svc>` runs in a container; undefined if not exec.
+   */
+  private execInner(name: string, args: Word[]): [Word[], string] | undefined {
+    const t = args.map(w => w.text);
+    let k = 0;
+    if (name === 'stixctl') {
+      if (t.length >= 3 && t[0] === 'compose' && t[2] === 'exec') {
+        return this.execArgs(args, 3, COMPOSE_EXEC_ARG);
+      }
+      return undefined;
+    }
+    if (name === 'docker' || name === 'podman') {
+      while (k < t.length && t[k].startsWith('-')) k += DOCKER_GLOBAL_ARG.has(t[k]) ? 2 : 1;
+      if (t[k] === 'exec') return this.execArgs(args, k + 1, DOCKER_EXEC_ARG);
+      if (t[k] !== 'compose') return undefined;
+      k++;
+    }
+    while (k < t.length && t[k].startsWith('-')) k += COMPOSE_GLOBAL_ARG.has(t[k]) ? 2 : 1;
+    if (t[k] === 'exec') return this.execArgs(args, k + 1, COMPOSE_EXEC_ARG);
+    return undefined;
+  }
+
+  private execArgs(args: Word[], k: number, withValue: Set<string>): [Word[], string] | undefined {
+    let cwd = UNRESOLVED_CWD; // the container's working folder, which the guard cannot see
+    while (k < args.length && args[k].text.startsWith('-')) {
+      const t = args[k].text;
+      if (t === '--') {
+        k++;
+        break;
+      }
+      const eq = t.indexOf('=');
+      const opt = eq >= 0 ? t.slice(0, eq) : t;
+      const takes = eq < 0 && withValue.has(opt);
+      if (opt === '-w' || opt === '--workdir') {
+        const word: Word =
+          eq >= 0
+            ? { text: t.slice(eq + 1), glob: false }
+            : (args[k + 1] ?? { text: '', glob: false });
+        cwd = word.text.startsWith('/') && !word.unknown ? normPath(word.text) : UNRESOLVED_CWD;
+      }
+      k += takes ? 2 : 1;
+    }
+    k++; // the container or service
+    if (k >= args.length) return undefined;
+    return [args.slice(k), cwd];
   }
 
   /**
@@ -1434,9 +2356,16 @@ export class Checker {
     return { i, xargs, cwd };
   }
 
-  private runFile(w: Word, cwd: string, depth: number, files: Files): Violation | undefined {
-    const content = files.get(this.abs(w.text, cwd));
-    return content ? this.check(content, cwd, depth + 1, files) : undefined;
+  private runFile(
+    w: Word,
+    cwd: string,
+    depth: number,
+    scope: Scope,
+    argv: Word[],
+    inherit?: Vars
+  ): Violation | undefined {
+    const content = scope.files.get(this.abs(w.text, cwd));
+    return content ? this.check(content, cwd, depth + 1, scope, [...argv], inherit) : undefined;
   }
 
   private shell(
@@ -1444,7 +2373,7 @@ export class Checker {
     c: Command,
     cwd: string,
     depth: number,
-    files: Files,
+    scope: Scope,
     stdin: string | undefined
   ): Violation | undefined {
     let k = 0;
@@ -1456,9 +2385,9 @@ export class Checker {
         t === '-command' ||
         (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('c'))
       ) {
-        return k + 1 < args.length
-          ? this.check(args[k + 1].text, cwd, depth + 1, files)
-          : undefined;
+        if (k + 1 >= args.length) return undefined;
+        // bash -c 'script' $0 $1 ...: the words after $0 are the script's arguments
+        return this.check(args[k + 1].text, cwd, depth + 1, scope, args.slice(k + 3));
       }
       if (t === '--') {
         k++;
@@ -1476,19 +2405,24 @@ export class Checker {
       }
       break;
     }
-    if (k < args.length && !stdinMode) return this.runFile(args[k], cwd, depth, files); // bash x.sh
-    // The script comes on stdin: a heredoc, a here-string, `< file` or a pipe.
+    if (k < args.length && !stdinMode) {
+      return this.runFile(args[k], cwd, depth, scope, args.slice(k + 1)); // bash x.sh a b
+    }
+    // The script comes on stdin: a heredoc, a here-string, `< file` or a pipe. Its
+    // arguments are known with -s (bash -s -- a b); an unquoted heredoc's $1 is the
+    // outer shell's, so without -s they stay unknown.
+    const argv = stdinMode ? args.slice(k) : undefined;
     const scripts = [...c.heredocs];
     for (const [op, target] of c.redirects) {
       if (op === '<<<') scripts.push(target);
       else if (op === '<') {
-        const content = files.get(this.abs(target, cwd));
+        const content = scope.files.get(this.abs(target, cwd));
         if (content) scripts.push(content);
       }
     }
     if (stdin) scripts.push(stdin);
     for (const body of scripts) {
-      const v = this.check(body.replace(/\\n/g, '\n'), cwd, depth + 1, files);
+      const v = this.check(body.replace(/\\n/g, '\n'), cwd, depth + 1, scope, argv);
       if (v) return v;
     }
     return undefined;
@@ -1498,7 +2432,7 @@ export class Checker {
     c: Command,
     stdin: string | undefined,
     cwd: string,
-    files: Files
+    files: Map<string, string | undefined>
   ): string | undefined {
     if (c.heredocs.length > 0) return c.heredocs[c.heredocs.length - 1] + '\n';
     for (const [op, target] of [...c.redirects].reverse()) {
@@ -1517,7 +2451,7 @@ export class Checker {
     c: Command,
     stdin: string | undefined,
     cwd: string,
-    files: Files
+    files: Map<string, string | undefined>
   ): string | undefined {
     const peeled = this.peel(c.words, cwd);
     const words = peeled.split === undefined ? c.words.slice(peeled.i) : [];
@@ -1552,11 +2486,43 @@ export class Checker {
     return piped;
   }
 
+  /**
+   * Judge the paths a delete gets from a feed like `find ... | xargs rm -r`: a find
+   * (optionally piped through sort/uniq/grep/head/tail) whose printed paths are
+   * narrowed by a -name/-path filter and reach nothing protected. Its Violation when
+   * the find would reach a protected path; true when narrowed and safe; false when
+   * the feed is not such a find (unknown).
+   */
+  private feedOk(feed: Feed, cwd: string): Violation | boolean {
+    let cmds = feed.cmds;
+    if (!cmds) {
+      if (feed.text === undefined) return false;
+      try {
+        cmds = new Lexer(feed.text, { ...TEMP_ENV, HOME: this.r.home, PWD: cwd }).run();
+      } catch (err) {
+        if (err instanceof ParseError) return false;
+        throw err;
+      }
+    }
+    if (cmds.length === 0 || cmds.slice(1).some(c => c.sep !== '|' && c.sep !== '|&')) return false;
+    const peeled = this.peel(cmds[0].words, cwd);
+    const words = cmds[0].words.slice(peeled.i);
+    if (peeled.split !== undefined || words.length === 0 || basename(words[0].text) !== 'find') {
+      return false;
+    }
+    for (const c of cmds.slice(1)) {
+      const p = this.peel(c.words, cwd);
+      if (p.split !== undefined || !narrowsLines(c.words.slice(p.i))) return false;
+    }
+    const [v, filtered] = this.findCheck(words.slice(1), peeled.cwd, true);
+    return v ?? filtered;
+  }
+
   private rm(
     args: Word[],
     cwd: string,
     xargs: boolean,
-    prev: Command | undefined
+    upstream: Command[]
   ): Violation | undefined {
     let recursive = false;
     let opts = true;
@@ -1568,23 +2534,27 @@ export class Checker {
       else if (opts && t.startsWith('-') && t.length > 1) recursive ||= /[rR]/.test(t);
       else targets.push(w);
     }
-    if (!recursive) return undefined;
+    if (!recursive) {
+      for (const w of targets) {
+        const folder = this.vaultGlob(w, cwd);
+        if (folder)
+          return this.r.violation('vault-delete', `rm would delete every note in ${folder}`);
+      }
+      return undefined;
+    }
     for (const w of targets) {
+      if (w.text === '' && w.unknown && !w.alts && w.feed) {
+        const judged = this.feedOk(w.feed, cwd);
+        if (judged instanceof Violation) return judged;
+        if (judged) continue; // the paths come from a narrowed find that reaches nothing protected
+      }
       const hit = this.targetHits(w, cwd);
       if (hit) return this.r.violation('recursive-delete', `rm -r would delete ${hit}`);
     }
-    for (const w of targets) {
-      const v = this.unresolvedDelete(w, cwd, 'rm -r would delete');
-      if (v) return v;
-    }
     if (xargs) {
-      const upstream = prev ? prev.words : [];
-      const ok =
-        upstream.length > 0 &&
-        basename(upstream[0].text) === 'find' &&
-        this.find(upstream.slice(1), cwd, true) === undefined &&
-        upstream.some(w => FIND_FILTERS.has(w.text));
-      if (!ok) {
+      const judged = upstream.length > 0 ? this.feedOk({ cmds: upstream }, cwd) : false;
+      if (judged instanceof Violation) return judged;
+      if (!judged) {
         return this.r.violation(
           'recursive-delete',
           'xargs rm -r deletes paths the guard cannot see (only a find with a -name/-path filter may feed it)'
@@ -1621,60 +2591,123 @@ export class Checker {
     return undefined;
   }
 
-  private find(args: Word[], cwd: string, deleting = false): Violation | undefined {
+  private find(args: Word[], cwd: string): Violation | undefined {
+    return this.findCheck(args, cwd)[0];
+  }
+
+  /**
+   * A find that deletes (-delete, -exec rm), or with `feed` one whose printed paths
+   * are deleted (`find | xargs rm -r`). Each delete is judged by the filters that
+   * must match for it to run: those before it in its -a chain, not negated, not in an
+   * earlier -o branch (`find . -delete -name x` deletes everything, so does `find .
+   * -path ./node_modules -prune -o -delete`). Returns [the violation, whether every
+   * delete is narrowed by a -name/-path filter].
+   */
+  private findCheck(args: Word[], cwd: string, feed = false): [Violation | undefined, boolean] {
+    let k = 0;
+    let follow = false;
+    while (
+      k < args.length &&
+      (['-H', '-L', '-P', '-D'].includes(args[k].text) || /^-O\d*$/.test(args[k].text))
+    ) {
+      if (args[k].text === '-H' || args[k].text === '-L') follow = true;
+      k += args[k].text === '-D' ? 2 : 1;
+    }
     const roots: Word[] = [];
-    for (const w of args) {
-      if (w.text.startsWith('-') || w.text.startsWith('(') || w.text.startsWith('!')) break;
-      roots.push(w);
+    while (
+      k < args.length &&
+      !(args[k].text.startsWith('-') || ['(', '!', ')'].includes(args[k].text))
+    ) {
+      roots.push(args[k]);
+      k++;
     }
-    const texts = args.map(w => w.text);
-    if (!deleting) {
-      deleting =
-        texts.includes('-delete') ||
-        texts.some(
-          (t, k) => FIND_EXEC.includes(t) && k + 1 < texts.length && basename(texts[k + 1]) === 'rm'
-        );
-    }
-    if (!deleting) return undefined;
-    const searched: Word[] = roots.length > 0 ? roots : [{ text: '.', glob: false }];
-    // A filter narrows the delete only when it is not negated and does not match
-    // everything (`-name '*'`, `-path './*'`, `-regex '.*'`).
-    const filters: FindFilter[] = [];
-    texts.forEach((t, k) => {
-      if (FIND_FILTERS.has(t) && k + 1 < texts.length) {
-        filters.push([t, texts[k + 1], k > 0 && (texts[k - 1] === '!' || texts[k - 1] === '-not')]);
-      }
-    });
-    const narrowing = filters.filter(
-      f =>
-        !f[2] &&
-        !matchesAll(
-          f,
-          searched.map(w => w.text)
-        )
+    const actions = findActions(
+      args.slice(k).map(w => w.text),
+      feed
     );
-    const filtered = narrowing.length > 0;
-    const anyBranch = texts.includes('-o') || texts.includes('-or');
-    for (const w of searched) {
-      const p = this.abs(w.text, cwd);
-      if (this.r.aboveSystem(p) || (this.r.hits(p) && !filtered)) {
-        return this.r.violation(
-          'recursive-delete',
-          `find would delete under ${p}` +
-            (filtered ? '' : ' with no -name/-path filter that narrows it')
-        );
-      }
-      if (this.r.hits(p) && this.deletesNotes(p, w.text, narrowing, anyBranch)) {
-        return this.r.violation(
-          'recursive-delete',
-          `find would delete the vault's notes under ${p} (its filter matches *.md files; the vault is not in git)`
-        );
+    if (actions.length === 0) return [undefined, false];
+    const searched: Word[] = roots.length > 0 ? roots : [{ text: '.', glob: false }];
+    const rootTexts = searched.map(w => w.text);
+    let allFiltered = true;
+    for (const [, recursive, dnf] of actions) {
+      const narrowed = dnf.map(conj => conj.filter(f => !matchesAll(f, rootTexts)));
+      const filtered = narrowed.length > 0 && narrowed.every(conj => conj.length > 0);
+      allFiltered &&= filtered;
+      for (const w of searched) {
+        const p = this.abs(w.text, cwd);
+        if (!p.includes(UNRESOLVED)) {
+          for (const q of this.realPaths(p, follow || Checker.follows(w.text))) {
+            const v = this.findRoot(q, w.text, narrowed, filtered, recursive || feed);
+            if (v) return [v, false];
+          }
+        }
+        if (!filtered && (w.unknown || p.includes(UNRESOLVED))) {
+          const hit = w.text || cwd.includes(UNRESOLVED) ? this.targetHits(w, cwd) : undefined;
+          if (hit && hit !== p) {
+            return [
+              this.r.violation('recursive-delete', `find would delete everything under ${hit}`),
+              false,
+            ];
+          }
+        }
       }
     }
-    if (!filtered) {
-      for (const w of searched) {
-        const v = this.unresolvedDelete(w, cwd, 'find would delete everything under');
-        if (v) return v;
+    return [undefined, allFiltered];
+  }
+
+  private findRoot(
+    p: string,
+    rootText: string,
+    narrowed: Dnf,
+    filtered: boolean,
+    recursive: boolean
+  ): Violation | undefined {
+    if (this.r.aboveSystem(p) || (this.r.hits(p) && !filtered)) {
+      return this.r.violation(
+        'recursive-delete',
+        `find would delete under ${p}` +
+          (filtered ? '' : ' with no -name/-path filter that narrows it')
+      );
+    }
+    if (!this.r.hits(p)) return undefined;
+    if (this.deletesNotes(p, rootText, narrowed)) {
+      return this.r.violation(
+        'recursive-delete',
+        `find would delete the vault's notes under ${p} (its filter matches *.md files; the vault is not in git)`
+      );
+    }
+    const hit = this.findReaches(p, rootText, narrowed, recursive);
+    if (hit)
+      return this.r.violation(
+        'recursive-delete',
+        `find would delete ${hit} (its filter matches it)`
+      );
+    return undefined;
+  }
+
+  /**
+   * A protected path under the find root that a narrowed delete still matches: by
+   * name or path for a recursive delete (`-name .git -exec rm -rf`), or all of its
+   * contents for any delete (`-path './.git/*' -delete`).
+   */
+  private findReaches(
+    p: string,
+    rootText: string,
+    narrowed: Dnf,
+    recursive: boolean
+  ): string | undefined {
+    const base = rootText.replace(/\/+$/, '') || (rootText.startsWith('/') ? '/' : '.');
+    // The root itself last, so a match inside it (.git) is the one named.
+    const entries = this.r.protectedUnder(p).sort((a, b) => Number(a === p) - Number(b === p));
+    for (const q of entries) {
+      const rel = q !== p ? q.slice(p.length).replace(/^\/+/, '') : '';
+      const printed = rel ? `${base.replace(/\/+$/, '')}/${rel}` : base;
+      const name = basename(printed) || printed;
+      const child = `${printed.replace(/\/+$/, '')}/\x01`;
+      for (const conj of narrowed) {
+        if (conj.length === 0) continue;
+        if (recursive && conj.every(f => findMatch(f, name, printed))) return q;
+        if (conj.every(f => findMatch(f, '\x01', child))) return `${q}/* (everything in it)`;
       }
     }
     return undefined;
@@ -1684,12 +2717,7 @@ export class Checker {
    * A find rooted at, in or above a vault whose filters can match its notes
    * (`-name '*.md'`, `-name '2026-*.md'`, `-iname '*.MD'`).
    */
-  private deletesNotes(
-    p: string,
-    rootText: string,
-    narrowing: FindFilter[],
-    anyBranch: boolean
-  ): boolean {
+  private deletesNotes(p: string, rootText: string, narrowed: Dnf): boolean {
     const printed: string[] = []; // the vault's path as this find prints it
     const base = rootText.replace(/\/+$/, '') || '/';
     for (const v of this.r.vaults) {
@@ -1699,7 +2727,7 @@ export class Checker {
         printed.push(rel ? `${base.replace(/\/+$/, '')}/${rel}` : base);
       } else if (p.startsWith(v + '/')) printed.push(base);
     }
-    if (printed.length === 0 || narrowing.length === 0) return false;
+    if (printed.length === 0) return false;
     const can = ([kind, pattern]: FindFilter): boolean => {
       if (kind === '-regex' || kind === '-iregex') return true; // cannot tell; the user's to run
       if (!/[*?[]/.test(pattern)) return false; // one named file, not the notes
@@ -1715,8 +2743,7 @@ export class Checker {
       }
       return globCanEndWith(pat, '.md');
     };
-    const results = narrowing.map(can);
-    return anyBranch ? results.some(Boolean) : results.every(Boolean);
+    return narrowed.some(conj => conj.length > 0 && conj.every(can));
   }
 
   private rsync(args: Word[], cwd: string): Violation | undefined {
@@ -1754,11 +2781,18 @@ export class Checker {
         s.endsWith('/.') ||
         s.endsWith('/..');
       const eff: Word = contents
-        ? dest
+        ? {
+            text: dest.text,
+            glob: dest.glob,
+            unknown: dest.unknown,
+            alts: dest.alts,
+            tail: dest.tail,
+          }
         : {
             text: `${dest.text.replace(/\/+$/, '')}/${basename(s.replace(/\/+$/, ''))}`,
             glob: src.glob || dest.glob,
             unknown: dest.unknown || src.unknown,
+            tail: dest.tail,
           };
       const hit = this.targetHits(eff, cwd);
       if (hit) {
@@ -1798,9 +2832,7 @@ export class Checker {
     if (name === 'docker-compose') return this.compose(args);
     let k = 0;
     while (k < texts.length && texts[k].startsWith('-')) {
-      k += ['-H', '--host', '-c', '--context', '--config', '-l', '--log-level'].includes(texts[k])
-        ? 2
-        : 1;
+      k += DOCKER_GLOBAL_ARG.has(texts[k]) ? 2 : 1;
     }
     if (k >= texts.length) return undefined;
     const sub = texts[k];
@@ -1851,18 +2883,20 @@ export class Checker {
     const dry = longs.includes('--dry-run') || flags.some(f => f.slice(1).includes('n'));
     const force = longs.includes('--force') || flags.some(f => f.slice(1).includes('f'));
     const ignored = flags.some(f => /[xX]/.test(f.slice(1)));
-    if (force && ignored && !dry && cwd.includes(UNRESOLVED)) {
-      return new Violation(
-        'unresolved-path',
-        'git clean -x runs in a directory the guard cannot resolve (a variable, $(...) or cd), which could be a project, and deletes ignored data there',
-        'cd to the literal project path first, or remove the specific ignored folder you meant.'
-      );
-    }
-    if (force && ignored && !dry && this.r.inProject(cwd)) {
+    if (!(force && ignored && !dry)) return undefined;
+    if (cwd.includes(UNRESOLVED)) {
       return this.r.violation(
         'git-wipe',
-        `git clean -x in ${cwd} deletes ignored data (databases, .venv, secret links)`
+        'git clean -x runs in a folder the guard cannot resolve, which may be a project, and deletes its ignored data (databases, .venv, secret links)'
       );
+    }
+    for (const p of this.realPaths(cwd, true)) {
+      if (this.r.inProject(p)) {
+        return this.r.violation(
+          'git-wipe',
+          `git clean -x in ${p} deletes ignored data (databases, .venv, secret links)`
+        );
+      }
     }
     return undefined;
   }
@@ -1883,6 +2917,19 @@ export function resolveRulesPath(
 
 let cached: { key: string; checker: Checker } | undefined;
 
+let cachedLog: ReturnType<typeof createLogger> | undefined;
+/**
+ * A command the guard could not read is allowed (bash rejects it too) and recorded
+ * as a log-only entry, so a gap in the parser shows up in the logs, not as a refusal.
+ */
+const logUnparsed: LogOnly = entry => {
+  cachedLog ??= createLogger('provider.destructive-guard');
+  cachedLog.warn(
+    { command: entry.command.slice(0, 2000), cwd: entry.cwd, reason: entry.reason },
+    'destructive_guard.unparsed_allowed_log_only'
+  );
+};
+
 /** Which rules file to use; `rulesPath: null` means the built-in DEFAULT_RULES. */
 export interface CheckOptions {
   /**
@@ -1902,7 +2949,7 @@ function loadChecker(path: string | undefined): Checker | Violation {
     const data = path
       ? (JSON.parse(readFileSync(path, 'utf8')) as DestructiveRulesFile)
       : DEFAULT_RULES;
-    const checker = new Checker(new Rules(data));
+    const checker = new Checker(new Rules(data), logUnparsed);
     cached = { key, checker };
     return checker;
   } catch (err) {
