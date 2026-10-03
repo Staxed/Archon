@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -33,6 +33,14 @@ const SERVER = {
   WEBHOOK_SECRET: 'webhook-secret-value-123',
 };
 
+const fixtures = mkdtempSync(join(tmpdir(), 'agent-env-cwd-'));
+const archonDir = join(fixtures, 'archon');
+const otherDir = join(fixtures, 'trade-claude');
+mkdirSync(join(archonDir, 'packages', 'x'), { recursive: true });
+mkdirSync(otherDir, { recursive: true });
+writeFileSync(join(archonDir, 'package.json'), '{"name":"archon"}');
+writeFileSync(join(otherDir, 'package.json'), '{"name":"trade-claude"}');
+
 describe('scrubServerEnv: what agents lose', () => {
   test('server-only secrets are gone for every CLI', () => {
     for (const cli of ['claude', 'codex', 'grok'] as const) {
@@ -44,10 +52,23 @@ describe('scrubServerEnv: what agents lose', () => {
     }
   });
 
-  test('DATABASE_URL becomes an address that cannot connect (never unset: no SQLite fallback)', () => {
-    const env = scrubServerEnv(SERVER, 'codex');
+  test("in Archon's own repo DATABASE_URL is an address that cannot connect (no SQLite fallback)", () => {
+    const env = scrubServerEnv(SERVER, 'codex', join(archonDir, 'packages', 'x'));
     expect(env.DATABASE_URL).toBe(SCRUBBED_DATABASE_URL);
     expect(new URL(env.DATABASE_URL).hostname.endsWith('.invalid')).toBe(true);
+  });
+
+  test("in another project's cwd DATABASE_URL is unset, so the project's own file can supply it", () => {
+    for (const cli of ['claude', 'codex', 'grok'] as const) {
+      const env = scrubServerEnv(SERVER, cli, otherDir);
+      expect('DATABASE_URL' in env).toBe(false);
+      expect(env.POSTGRES_PASSWORD).toBeUndefined();
+      expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+      expect(Object.values(env)).not.toContain(SERVER.DATABASE_URL);
+      expect(env.GH_TOKEN).toBe(SERVER.GH_TOKEN);
+      expect(env.GITHUB_TOKEN).toBe(SERVER.GITHUB_TOKEN);
+    }
+    expect('DATABASE_URL' in scrubServerEnv(SERVER, 'claude')).toBe(false); // no cwd known
   });
 
   test('DATABASE_URL becomes the operator-set agent URL when there is one', () => {

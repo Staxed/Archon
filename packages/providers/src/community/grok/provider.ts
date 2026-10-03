@@ -506,7 +506,7 @@ export class GrokProvider implements IAgentProvider {
       // Server-only secrets and the Claude login are removed from the inherited
       // layer (shared/agent-env.ts); Grok authenticates from $GROK_HOME/auth.json.
       const env = buildSubscriptionEnv(
-        scrubServerEnv(process.env, 'grok'),
+        scrubServerEnv(process.env, 'grok', cwd),
         dropServerSecretCopies(options?.env, process.env, 'grok'),
         hookRun.env,
         { GROK_HOME: hooksHome }

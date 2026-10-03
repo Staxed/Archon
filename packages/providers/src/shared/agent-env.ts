@@ -12,10 +12,14 @@
  *    (codebase env vars, per-user credentials, delivered in requestOptions.env)
  *    passes through: a project's own DATABASE_URL is the project's to use. A
  *    request-layer entry that merely copies a scrubbed server value is dropped.
- *  - DATABASE_URL is not removed but replaced: with ARCHON_AGENT_DATABASE_URL
- *    when the operator set one (e.g. a read-only role), else with an address
- *    that can never resolve. An unset DATABASE_URL would make an `archon` CLI an
- *    agent runs fall back to SQLite and migrate ~/.archon/archon.db.
+ *  - DATABASE_URL: ARCHON_AGENT_DATABASE_URL (e.g. a read-only role) replaces it
+ *    when the operator set one. Otherwise it is REMOVED, with one exception: in
+ *    Archon's own repo it becomes an address that can never resolve, because an
+ *    unset DATABASE_URL would make an `archon` CLI an agent runs there fall back
+ *    to SQLite and migrate ~/.archon/archon.db. Everywhere else it is unset: a
+ *    placeholder would beat the project's own .env file (bun's auto-load, the
+ *    usual env-file loaders and `node --env-file` never override an existing
+ *    variable) and break its tests.
  *  - The forge tokens agents use for `gh` and `git push` over https (GH_TOKEN,
  *    GITHUB_TOKEN, GITLAB_TOKEN, GITEA_TOKEN) are NOT scrubbed: the bundled PR and
  *    issue workflows run `gh pr create`, `gh issue create` and `git push` from
@@ -28,7 +32,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 /** Server-only secrets no agent tool needs (exact names). */
 export const AGENT_SCRUBBED_ENV_KEYS: readonly string[] = [
@@ -66,13 +70,34 @@ export const CLAUDE_LOGIN_ENV_KEYS: readonly string[] = [
 /** Operator-set replacement for DATABASE_URL in agent envs (e.g. a read-only role). */
 export const AGENT_DATABASE_URL_ENV = 'ARCHON_AGENT_DATABASE_URL';
 
-/** What DATABASE_URL becomes when no replacement is set: fails to connect, never SQLite. */
+/** What DATABASE_URL becomes in Archon's own repo when no replacement is set: fails to connect, never SQLite. */
 export const SCRUBBED_DATABASE_URL =
   'postgresql://removed-by-archon@database-url-not-available-to-agents.invalid:5432/none';
 
 export type AgentCli = 'claude' | 'codex' | 'grok';
 
 type Env = Record<string, string | undefined>;
+
+/**
+ * True when `cwd` is inside Archon's own repo (a package.json named "archon"
+ * at or above it): the one place an `archon` CLI could fall back to SQLite.
+ */
+export function isArchonRepo(cwd: string | undefined): boolean {
+  if (!cwd) return false;
+  let dir = resolve(cwd);
+  for (let i = 0; i < 40; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: unknown };
+      if (pkg.name === 'archon') return true;
+    } catch {
+      // no package.json here, or unreadable: keep climbing
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+  return false;
+}
 
 /** Names scrubbed for `cli` (DATABASE_URL is handled separately: replaced, not dropped). */
 function scrubbedNames(cli: AgentCli): Set<string> {
@@ -84,9 +109,10 @@ function scrubbedNames(cli: AgentCli): Set<string> {
 
 /**
  * The server env with every server-only secret removed, for an agent CLI.
- * `server` is the inherited layer (normally process.env).
+ * `server` is the inherited layer (normally process.env); `cwd` is the node's
+ * working directory (decides what DATABASE_URL becomes, see the header).
  */
-export function scrubServerEnv(server: Env, cli: AgentCli): Record<string, string> {
+export function scrubServerEnv(server: Env, cli: AgentCli, cwd?: string): Record<string, string> {
   const names = scrubbedNames(cli);
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(server)) {
@@ -95,7 +121,8 @@ export function scrubServerEnv(server: Env, cli: AgentCli): Record<string, strin
   }
   if (server.DATABASE_URL !== undefined) {
     const replacement = server[AGENT_DATABASE_URL_ENV];
-    out.DATABASE_URL = replacement ? replacement : SCRUBBED_DATABASE_URL;
+    if (replacement) out.DATABASE_URL = replacement;
+    else if (isArchonRepo(cwd)) out.DATABASE_URL = SCRUBBED_DATABASE_URL;
   }
   return out;
 }

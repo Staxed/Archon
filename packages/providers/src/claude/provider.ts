@@ -218,7 +218,7 @@ function selectResolvedModelId(
  * - stripCwdEnv() at entry point removed CWD .env keys + CLAUDECODE markers
  * - ~/.archon/.env loaded with override:true as the trusted source
  */
-function buildSubprocessEnv(): NodeJS.ProcessEnv {
+function buildSubprocessEnv(cwd?: string): NodeJS.ProcessEnv {
   // Using || intentionally: empty string should be treated as missing credential.
   // Only the subscription token counts: API keys never reach the subprocess.
   const authMode = process.env.CLAUDE_CODE_OAUTH_TOKEN ? 'explicit' : 'global';
@@ -231,7 +231,7 @@ function buildSubprocessEnv(): NodeJS.ProcessEnv {
   // sources CLAUDE_ENV_FILE before every Bash command, which unsets it there.
   const scrubbed = scrubbedKeysIn(process.env, 'claude');
   if (scrubbed.length > 0) getLog().debug({ scrubbed }, 'claude.server_env_scrubbed');
-  return { ...scrubServerEnv(process.env, 'claude'), CLAUDE_ENV_FILE: claudeBashEnvFile() };
+  return { ...scrubServerEnv(process.env, 'claude', cwd), CLAUDE_ENV_FILE: claudeBashEnvFile() };
 }
 
 /**
@@ -257,10 +257,11 @@ function buildContainerBaseEnv(): NodeJS.ProcessEnv {
  * invariant can be unit-tested with a `process.env` canary.
  */
 export function buildRequestSubprocessEnv(
-  requestOptions: SendQueryOptions | undefined
+  requestOptions: SendQueryOptions | undefined,
+  cwd?: string
 ): NodeJS.ProcessEnv {
   const isContainerRun = requestOptions?.execContext?.kind === 'container';
-  const subprocessEnv = isContainerRun ? buildContainerBaseEnv() : buildSubprocessEnv();
+  const subprocessEnv = isContainerRun ? buildContainerBaseEnv() : buildSubprocessEnv(cwd);
   // Subscription only: Claude Code runs on its OAuth login (CLAUDE_CODE_OAUTH_TOKEN
   // or the CLI's own ~/.claude credentials), never an API key. The CLI prefers
   // ANTHROPIC_API_KEY over the OAuth token, so a key anywhere in the merged env
@@ -1597,7 +1598,7 @@ export class ClaudeProvider implements IAgentProvider {
     // container run gets ONLY the Archon-managed bag + a minimal base — host
     // process.env never crosses the boundary (the isolation invariant); the host
     // path inherits the (already-cleaned) process env exactly as before.
-    const env = buildRequestSubprocessEnv(requestOptions);
+    const env = buildRequestSubprocessEnv(requestOptions, cwd);
     const settingSources =
       requestOptions?.nodeConfig?.settingSources ??
       assistantDefaults.settingSources ??

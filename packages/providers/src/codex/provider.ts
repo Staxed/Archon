@@ -265,12 +265,15 @@ function* budgetExceeded(
  * run to an API account instead. Always passed explicitly, because the SDK
  * inherits the whole host env when none is given.
  */
-export function buildCodexEnv(requestEnv?: Record<string, string>): Record<string, string> {
+export function buildCodexEnv(
+  requestEnv?: Record<string, string>,
+  cwd?: string
+): Record<string, string> {
   // Managed project env intentionally overrides inherited process env for project-scoped execution.
   // Server-only secrets and the Claude login are removed from the inherited layer
   // (shared/agent-env.ts); Codex authenticates from $CODEX_HOME/auth.json.
   return buildSubscriptionEnv(
-    scrubServerEnv(process.env, 'codex'),
+    scrubServerEnv(process.env, 'codex', cwd),
     dropServerSecretCopies(requestEnv, process.env, 'codex')
   );
 }
@@ -1037,14 +1040,15 @@ export class CodexProvider implements IAgentProvider {
     configCodexBinaryPath: string | undefined,
     requestEnv?: Record<string, string>,
     codexConfigOverrides?: CodexConfigOverrides,
-    rawConfigOverrides?: string[]
+    rawConfigOverrides?: string[],
+    cwd?: string
   ): Promise<Codex> {
     try {
       const codexOptions: CodexOptions = {
         codexPathOverride: await resolveCodexBinaryPath(configCodexBinaryPath),
         // Always explicit: the SDK would otherwise hand the CLI the whole host
         // env, API keys included.
-        env: buildCodexEnv(requestEnv),
+        env: buildCodexEnv(requestEnv, cwd),
         ...(codexConfigOverrides ? { config: codexConfigOverrides } : {}),
         ...(rawConfigOverrides && rawConfigOverrides.length > 0
           ? { configOverrides: rawConfigOverrides }
@@ -1169,7 +1173,8 @@ export class CodexProvider implements IAgentProvider {
       codexConfig.codexBinaryPath,
       runEnv,
       initialConfigOverrides,
-      setup.configOverrides
+      setup.configOverrides,
+      cwd
     );
     const threadOptions = buildThreadOptions(
       cwd,
@@ -1335,7 +1340,8 @@ export class CodexProvider implements IAgentProvider {
                 codexConfig.codexBinaryPath,
                 runEnv,
                 declaredMcpConfigOverrides,
-                setup.configOverrides
+                setup.configOverrides,
+                cwd
               );
               if (resumeSessionId) {
                 try {
