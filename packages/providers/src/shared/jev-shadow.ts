@@ -41,6 +41,16 @@ const JUDGE_TIMEOUT_S = 30;
 /** Per-string cap on what is sent to the judge, so a payload always fits a pipe buffer. */
 const MAX_TEXT = 24_000;
 const MAX_ENV_VALUE = 2_000;
+/** Judges in flight at once in this process (stixed's host shadow uses 4 slots too). */
+export const MAX_CONCURRENT_JUDGES = 4;
+/** TS-side hard deadline: the judge's own alarm is JUDGE_TIMEOUT_S; this kills it if that fails. */
+const KILL_AFTER_MS = (JUDGE_TIMEOUT_S + 5) * 1000;
+let inFlight = 0;
+
+/** Judges currently running in this process (tests). */
+export function judgesInFlight(): number {
+  return inFlight;
+}
 
 /** Pinned per run by the server (HookRunSpec.jevShadow), or resolved in-process for Claude. */
 export interface JevShadowConfig {
@@ -221,8 +231,23 @@ entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "provider": call.get("provi
          "node_id": call.get("node_id"), "workflow": call.get("workflow"),
          "archon_guard": call.get("archon_guard")}
 redact = lambda s: str(s)
+def write_entry():
+    entry["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+    os.makedirs(cfg["log_dir"], mode=0o700, exist_ok=True)
+    path = os.path.join(cfg["log_dir"], time.strftime("%Y-%m-%d") + ".jsonl")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
+    finally:
+        os.close(fd)
 def _timeout(*_):
-    raise TimeoutError("jev shadow judge timed out")
+    # os._exit, never an exception: jev_guard's broad except blocks would swallow it
+    try:
+        entry.update(decision="error", error="timeout: jev shadow judge timed out")
+        write_entry()
+    except BaseException:
+        pass
+    os._exit(0)
 try:
     signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(int(cfg.get("timeout_s") or 30))
@@ -247,14 +272,7 @@ except BaseException as e:
     entry.update(decision="error", error=redact(type(e).__name__ + ": " + str(e))[:300])
 finally:
     signal.alarm(0)
-entry["elapsed_ms"] = int((time.monotonic() - started) * 1000)
-os.makedirs(cfg["log_dir"], mode=0o700, exist_ok=True)
-path = os.path.join(cfg["log_dir"], time.strftime("%Y-%m-%d") + ".jsonl")
-fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-try:
-    os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
-finally:
-    os.close(fd)
+write_entry()
 `;
 
 /** The judge process's env: enough to run python and reach the gateway, nothing else. */
@@ -281,7 +299,12 @@ function judgeProcessEnv(): Record<string, string> {
 }
 
 /** Append one line from this side (a judge that could not even start). Never throws. */
-export function logShadowFailure(config: JevShadowConfig, call: ShadowCall, error: string): void {
+export function logShadowFailure(
+  config: JevShadowConfig,
+  call: ShadowCall,
+  error: string,
+  decision = 'error'
+): void {
   try {
     mkdirSync(config.logDir, { recursive: true, mode: 0o700 });
     const day = new Date().toISOString().slice(0, 10);
@@ -294,7 +317,7 @@ export function logShadowFailure(config: JevShadowConfig, call: ShadowCall, erro
       node_id: call.nodeId ?? null,
       workflow: call.workflow ?? null,
       archon_guard: call.archonGuard ?? null,
-      decision: 'error',
+      decision,
       error: error.slice(0, 300),
     };
     appendFileSync(join(config.logDir, `${day}.jsonl`), `${JSON.stringify(entry)}\n`, {
@@ -324,14 +347,30 @@ export function shadowJudge(
         resolve();
       }
     };
+    if (inFlight >= MAX_CONCURRENT_JUDGES) {
+      logShadowFailure(config, call, 'skipped: busy', 'skipped');
+      done();
+      return;
+    }
+    let counted = false;
+    const release = (): void => {
+      if (counted) {
+        counted = false;
+        inFlight--;
+      }
+    };
     try {
+      inFlight++;
+      counted = true;
       const child = spawn(config.python, ['-I', '-c', JUDGE_SCRIPT], {
         cwd: '/',
         detached: true,
         stdio: ['pipe', 'ignore', 'ignore'],
         env: judgeProcessEnv(),
       });
+      child.on('exit', release);
       child.on('error', (err: Error) => {
+        release();
         logShadowFailure(config, call, `judge did not start: ${err.message}`);
         done();
       });
@@ -345,7 +384,19 @@ export function shadowJudge(
       });
       const timer = setTimeout(done, waitMs);
       timer.unref?.();
+      // Hard deadline whatever the judge does: kill its process group.
+      const killer = setTimeout(() => {
+        try {
+          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+        release();
+      }, KILL_AFTER_MS);
+      killer.unref?.();
+      child.on('exit', () => clearTimeout(killer));
     } catch (err) {
+      release();
       logShadowFailure(config, call, `judge did not start: ${(err as Error).message}`);
       done();
     }

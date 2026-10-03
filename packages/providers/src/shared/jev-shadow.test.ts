@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEFAULT_JEV_SCRIPTS_DIR,
+  JUDGE_SCRIPT,
+  MAX_CONCURRENT_JUDGES,
+  judgesInFlight,
   claudeShapedCall,
   judgeEnv,
   resolveJevShadowConfig,
@@ -268,6 +271,54 @@ describe('shadowJudge (real python, fake jev_guard)', () => {
     const [entry] = await logLines(logDir);
     expect(entry.decision).toBe('allow');
   });
+});
+
+describe('concurrency cap and timeout (shadow stays log-only)', () => {
+  const SLEEPY = `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    time.sleep(2)\n    return V(decision="allow", reason="", asked=False, triggers=[], facts={}, model="", latency_ms=0, cost=0.0, error="")\n`;
+
+  test('cap reached: the extra call is skipped, logged "skipped: busy", and nothing throws', async () => {
+    const dir = fakeScripts('judge-cap');
+    writeFileSync(join(dir, 'jev_guard.py'), SLEEPY);
+    const logDir = join(root, 'log-cap');
+    const cfg = config(dir, logDir);
+    for (let i = 0; i < MAX_CONCURRENT_JUDGES; i++) await shadowJudge(call('ls'), cfg, 10);
+    expect(judgesInFlight()).toBe(MAX_CONCURRENT_JUDGES);
+    await shadowJudge(call('ls extra'), cfg, 10); // resolves, does not reject
+    const lines = await logLines(logDir);
+    const skipped = lines.filter(l => l.decision === 'skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].error).toBe('skipped: busy');
+    // the slots come back once the judges finish
+    for (let i = 0; i < 100 && judgesInFlight() > 0; i++) await Bun.sleep(100);
+    expect(judgesInFlight()).toBe(0);
+    await logLines(logDir, MAX_CONCURRENT_JUDGES + 1);
+    await shadowJudge(call('ls again'), cfg, 10);
+    expect(judgesInFlight()).toBe(1);
+  }, 20_000);
+
+  test('timeout: the judge logs it and exits even when jev_guard swallows exceptions', async () => {
+    const dir = fakeScripts('judge-timeout');
+    writeFileSync(
+      join(dir, 'jev_guard.py'),
+      `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    while True:\n        try:\n            time.sleep(30)\n        except Exception:\n            pass\n`
+    );
+    const logDir = join(root, 'log-timeout');
+    const payload = JSON.parse(shadowPayload(call('ls'), config(dir, logDir))) as {
+      config: { timeout_s: number };
+    };
+    payload.config.timeout_s = 1;
+    const t = performance.now();
+    const proc = Bun.spawn(['python3', '-I', '-c', JUDGE_SCRIPT], {
+      stdin: new TextEncoder().encode(JSON.stringify(payload)),
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    await proc.exited;
+    expect(performance.now() - t).toBeLessThan(10_000);
+    const [entry] = await logLines(logDir);
+    expect(entry.decision).toBe('error');
+    expect(String(entry.error)).toContain('timeout');
+  }, 20_000);
 });
 
 describe('the real promoted jev_guard (no network: a call with nothing at stake)', () => {
