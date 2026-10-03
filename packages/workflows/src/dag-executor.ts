@@ -68,6 +68,7 @@ import type {
   MessageChunk,
   ExecutionContext,
   OverlayChangeSummary,
+  GuardContext,
 } from '@archon/providers/types';
 import { CONTAINER_ENV_DENYLIST, mergeModelSpend, mergeTokenUsage } from '@archon/providers/types';
 import type { ContainerRunContext } from './container-context';
@@ -2070,6 +2071,22 @@ function observeNodeCheckout(ctx: RunLayersContext): Promise<CheckoutObservation
   });
 }
 
+/**
+ * What the providers' tool-call guards may know about a node's request (the Jev
+ * shadow judge reads it; providers/src/types.ts GuardContext). Never sent to the model.
+ */
+function nodeGuardContext(
+  workflowRun: Pick<WorkflowRun, 'id' | 'user_message'> & { workflow_name?: string },
+  nodeId: string
+): GuardContext {
+  return {
+    runId: workflowRun.id,
+    nodeId,
+    ...(workflowRun.workflow_name ? { workflow: workflowRun.workflow_name } : {}),
+    ...(workflowRun.user_message ? { userRequest: workflowRun.user_message } : {}),
+  };
+}
+
 async function executeNodeInternal(
   ctx: RunLayersContext,
   node: AgentNode,
@@ -2285,6 +2302,7 @@ async function executeNodeInternal(
     abortSignal: nodeAbortController.signal,
     writableRoots,
     ...(shouldForkSession ? { forkSession: true } : {}),
+    guardContext: nodeGuardContext(workflowRun, node.id),
   };
   let nodeIdleTimedOut = false;
   let lastWatchdogReset: WatchdogReset | undefined;
@@ -6144,6 +6162,7 @@ async function executeLoopNode(
             ...resolvedOptions,
             abortSignal: iterationAbortController.signal,
             writableRoots,
+            guardContext: nodeGuardContext(workflowRun, node.id),
           };
 
           // Reask attempts start a FRESH session (mirrors runStreamPass in

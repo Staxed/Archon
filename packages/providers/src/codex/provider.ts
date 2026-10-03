@@ -31,6 +31,7 @@ import {
 } from '../shared/structured-output';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { buildSubscriptionEnv } from '../shared/subscription-env';
+import { dropServerSecretCopies, scrubServerEnv } from '../shared/agent-env';
 import {
   formatBudget,
   loadSkillText,
@@ -202,6 +203,7 @@ function prepareCodexRun(
     ...(nodeConfig?.allowed_tools !== undefined ? { allowedTools: nodeConfig.allowed_tools } : {}),
     ...(nodeConfig?.denied_tools !== undefined ? { deniedTools: nodeConfig.denied_tools } : {}),
     ...(hooks ? { hooks } : {}),
+    ...(requestOptions?.guardContext ? { guardContext: requestOptions.guardContext } : {}),
   });
   return {
     sandbox,
@@ -265,7 +267,12 @@ function* budgetExceeded(
  */
 export function buildCodexEnv(requestEnv?: Record<string, string>): Record<string, string> {
   // Managed project env intentionally overrides inherited process env for project-scoped execution.
-  return buildSubscriptionEnv(process.env, requestEnv);
+  // Server-only secrets and the Claude login are removed from the inherited layer
+  // (shared/agent-env.ts); Codex authenticates from $CODEX_HOME/auth.json.
+  return buildSubscriptionEnv(
+    scrubServerEnv(process.env, 'codex'),
+    dropServerSecretCopies(requestEnv, process.env, 'codex')
+  );
 }
 
 function buildMcpEnvSource(

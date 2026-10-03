@@ -61,10 +61,19 @@ import {
   type QuerySpend,
   type SpendBaseline,
 } from './session-spend';
-import { createLogger } from '@archon/paths';
+import { createLogger, getArchonHome } from '@archon/paths';
 import { loadMcpConfig } from '../mcp/config';
 import { withResumedOutcome, resumedOutcome } from '../shared/resumed';
 import { buildSubscriptionEnv, strippedKeysIn } from '../shared/subscription-env';
+import {
+  claudeBashEnv,
+  claudeBashEnvFile,
+  dropServerSecretCopies,
+  scrubServerEnv,
+  scrubbedKeysIn,
+} from '../shared/agent-env';
+import { JUDGED_TOOLS_MATCHER, resolveJevShadowConfig } from '../shared/jev-shadow';
+import { createPreToolUseJevShadowHook } from './jev-shadow-hook';
 import {
   createPreToolUseDestructiveGuardHook,
   guardRewrittenInput,
@@ -217,7 +226,12 @@ function buildSubprocessEnv(): NodeJS.ProcessEnv {
     { authMode },
     authMode === 'global' ? 'using_global_auth' : 'using_explicit_tokens'
   );
-  return { ...process.env };
+  // Server-only secrets (database URL, bot tokens, webhook secrets) never reach
+  // the CLI or its tools (shared/agent-env.ts). The CLI keeps its own login and
+  // sources CLAUDE_ENV_FILE before every Bash command, which unsets it there.
+  const scrubbed = scrubbedKeysIn(process.env, 'claude');
+  if (scrubbed.length > 0) getLog().debug({ scrubbed }, 'claude.server_env_scrubbed');
+  return { ...scrubServerEnv(process.env, 'claude'), CLAUDE_ENV_FILE: claudeBashEnvFile() };
 }
 
 /**
@@ -258,7 +272,10 @@ export function buildRequestSubprocessEnv(
   if (stripped.length > 0) {
     getLog().info({ stripped }, 'claude.api_key_env_stripped');
   }
-  return buildSubscriptionEnv(subprocessEnv, requestOptions?.env);
+  return buildSubscriptionEnv(
+    subprocessEnv,
+    dropServerSecretCopies(requestOptions?.env, process.env, 'claude')
+  );
 }
 
 /**
@@ -842,6 +859,34 @@ export function shouldPassNoEnvFile(cliPath: string | undefined): boolean {
  * Build base Claude SDK options from cwd, request options, and assistant defaults.
  * Does not include nodeConfig translation — that is handled by applyNodeConfig.
  */
+/** The Jev shadow hook's matcher for this request, or none (switched off, container run). */
+function jevShadowMatchers(
+  cwd: string,
+  requestOptions: SendQueryOptions | undefined,
+  env: NodeJS.ProcessEnv,
+  isContainerRun: boolean
+): HookCallbackMatcher[] {
+  if (isContainerRun) return [];
+  let config;
+  try {
+    config = resolveJevShadowConfig(process.env, getArchonHome());
+  } catch {
+    return [];
+  }
+  if (!config) return [];
+  return [
+    {
+      matcher: JUDGED_TOOLS_MATCHER,
+      hooks: [
+        createPreToolUseJevShadowHook(cwd, config, {
+          env: claudeBashEnv(env),
+          ...(requestOptions?.guardContext ? { guardContext: requestOptions.guardContext } : {}),
+        }),
+      ],
+    },
+  ];
+}
+
 function buildBaseClaudeOptions(
   cwd: string,
   requestOptions: SendQueryOptions | undefined,
@@ -925,6 +970,9 @@ function buildBaseClaudeOptions(
         ...(requestOptions?.writableRoots !== undefined && containerExecContext === undefined
           ? [{ hooks: [createPreToolUsePathGuardHook(cwd, requestOptions.writableRoots)] }]
           : []),
+        // Jev shadow judge (shared/jev-shadow.ts): logs a verdict per call and
+        // always answers "no opinion". Host runs only, like the path guard.
+        ...jevShadowMatchers(cwd, requestOptions, env, containerExecContext !== undefined),
       ],
     },
     stderr: (data: string): void => {

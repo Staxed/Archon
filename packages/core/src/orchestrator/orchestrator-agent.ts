@@ -2424,6 +2424,9 @@ export async function handleMessage(
       protectedEnvKeys: protectedEnvKeys.length > 0 ? protectedEnvKeys : undefined,
       model: chatRequest.model,
       systemPrompt,
+      // For the tool-call guards only (the Jev shadow judge): the chat message
+      // this turn answers. Never sent to the model.
+      guardContext: { userRequest: message },
     };
     if (chatRequest.preset) {
       applyPresetToRequestOptions(providerKey, chatRequest.preset, requestOptions);

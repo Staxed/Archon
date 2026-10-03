@@ -590,6 +590,22 @@ export interface AgentRequestOptions {
    * `nativeTools` capability.
    */
   nativeTools?: NativeTool[];
+  /**
+   * What the tool-call guards may know about the request behind this turn: the
+   * run and node it belongs to and the user's own words (a workflow run's input,
+   * a chat message). Read by the Jev shadow hook (shared/jev-shadow.ts); never
+   * sent to the model and never changes what a provider does.
+   */
+  guardContext?: GuardContext;
+}
+
+/** See AgentRequestOptions.guardContext. */
+export interface GuardContext {
+  runId?: string;
+  nodeId?: string;
+  workflow?: string;
+  /** The user's request, as typed (the run's user_message or the chat message). */
+  userRequest?: string;
 }
 
 /**

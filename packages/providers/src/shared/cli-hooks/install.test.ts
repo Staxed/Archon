@@ -176,6 +176,9 @@ describe('hook run preparation', () => {
     expect(written).toMatchObject({ cwd: '/w' });
     // the guard's rules file is pinned by the server, never left to the CLI's env
     expect(Object.hasOwn(written, 'rulesPath')).toBe(true);
+    // so is the Jev shadow judge (off under bun test: no folder named)
+    expect(Object.hasOwn(written, 'jevShadow')).toBe(true);
+    expect(written.jevShadow).toBeNull();
     run.cleanup();
     run.cleanup();
     expect(existsSync(run.env.ARCHON_HOOK_SPEC)).toBe(false);

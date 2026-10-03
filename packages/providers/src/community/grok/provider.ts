@@ -50,6 +50,7 @@ import type {
 } from '../../types';
 import { loadMcpConfig } from '../../mcp/config';
 import { buildSubscriptionEnv } from '../../shared/subscription-env';
+import { dropServerSecretCopies, scrubServerEnv } from '../../shared/agent-env';
 import {
   ensureGrokDispatcher,
   grokHome,
@@ -495,15 +496,21 @@ export class GrokProvider implements IAgentProvider {
         ...(run.allowedTools !== undefined ? { allowedTools: run.allowedTools } : {}),
         ...(run.deniedTools !== undefined ? { deniedTools: run.deniedTools } : {}),
         ...(hooks ? { hooks } : {}),
+        ...(options?.guardContext ? { guardContext: options.guardContext } : {}),
       });
       cleanups.push(hookRun.cleanup);
       // Subscription only: no API key or base URL ever reaches the CLI.
       // GROK_HOME is forced to the home the dispatcher was installed in, so a
       // HOME or GROK_HOME in the project env cannot hand the CLI a home without
       // Archon's hooks.
-      const env = buildSubscriptionEnv(process.env, options?.env, hookRun.env, {
-        GROK_HOME: hooksHome,
-      });
+      // Server-only secrets and the Claude login are removed from the inherited
+      // layer (shared/agent-env.ts); Grok authenticates from $GROK_HOME/auth.json.
+      const env = buildSubscriptionEnv(
+        scrubServerEnv(process.env, 'grok'),
+        dropServerSecretCopies(options?.env, process.env, 'grok'),
+        hookRun.env,
+        { GROK_HOME: hooksHome }
+      );
 
       const fallback = options?.fallbackModel ?? nodeConfig?.fallbackModel;
       try {

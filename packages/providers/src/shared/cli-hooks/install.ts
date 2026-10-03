@@ -35,6 +35,8 @@ import {
   type HookSpecsByEvent,
 } from './hook-dispatcher';
 import { resolveRulesPath } from '../destructive-guard';
+import { resolveJevShadowConfig, type JevShadowConfig } from '../jev-shadow';
+import { getArchonHome } from '@archon/paths';
 
 /** Claude hook events the Codex CLI fires (codex 0.157), with Codex's snake_case name. */
 export const CODEX_HOOK_EVENTS: Record<string, string> = {
@@ -272,6 +274,15 @@ export function ensureGrokDispatcher(
   return path;
 }
 
+/** The server's Jev shadow config, or null (off, not installed, or unresolvable home). */
+function serverJevShadowConfig(): JevShadowConfig | null {
+  try {
+    return resolveJevShadowConfig(process.env, getArchonHome());
+  } catch {
+    return null;
+  }
+}
+
 export interface PreparedHookRun {
   /** Env vars that switch the dispatcher on for this run. */
   env: Record<string, string>;
@@ -286,9 +297,11 @@ export function prepareHookRun(spec: HookRunSpec): PreparedHookRun {
   const path = join(dir, `${randomUUID()}.json`);
   // The guard's rules file is the server's choice (its own environment), pinned
   // here so the CLI's environment cannot change it.
+  // So is the Jev shadow judge (log-only): which python, which scripts, which log.
   const pinned: HookRunSpec = {
     ...spec,
     rulesPath: 'rulesPath' in spec ? (spec.rulesPath ?? null) : (resolveRulesPath() ?? null),
+    jevShadow: 'jevShadow' in spec ? (spec.jevShadow ?? null) : serverJevShadowConfig(),
   };
   writeFileSync(path, JSON.stringify(pinned), { mode: 0o600 });
   const events = new Set<string>(['PreToolUse']);

@@ -1,6 +1,14 @@
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,9 +16,11 @@ import {
   matcherMatches,
   parseApplyPatch,
   runDispatcher,
+  startShadowJudge,
   toolView,
   type HookRunSpec,
 } from './hook-dispatcher';
+import type { ShadowCall } from '../jev-shadow';
 import { dispatcherCommand } from './install';
 import { trackTempRoots } from '@archon/paths/test-utils';
 
@@ -383,5 +393,129 @@ describe('runDispatcher', () => {
     expect(run('PreToolUse,PostToolUse')).toContain('"permissionDecision":"deny"');
     expect(run('PostToolUse')).toBe('');
     expect(run('')).toBe('');
+  });
+});
+
+describe('Jev shadow judge (log-only)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hook-dispatcher-jev-'));
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const shadow = {
+    python: existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3',
+    scriptsDir: join(dir, 'scripts'),
+    logDir: join(dir, 'log'),
+    caller: 'archon',
+  };
+  const ctx = { runId: 'r1', nodeId: 'n1', workflow: 'w', userRequest: 'go' };
+
+  function judged(
+    spec: HookRunSpec,
+    input: Record<string, unknown>,
+    out?: Record<string, unknown>
+  ) {
+    const calls: ShadowCall[] = [];
+    const p = startShadowJudge(spec, input, out, { PATH: '/usr/bin', X: '1' }, async c => {
+      calls.push(c);
+    });
+    return { calls, p };
+  }
+
+  test('a Codex shell call is judged with the run context; the decision is untouched', () => {
+    const spec = codex({ jevShadow: shadow, guardContext: ctx });
+    const input = {
+      tool_name: 'exec_command',
+      tool_input: { cmd: 'rm -rf build', workdir: 'pkg' },
+    };
+    const { calls, p } = judged(spec, input, undefined);
+    expect(p).toBeDefined();
+    expect(calls[0]).toMatchObject({
+      provider: 'codex',
+      toolName: 'Bash',
+      toolInput: { command: 'rm -rf build' },
+      cwd: '/work/tree/pkg',
+      projectRoot: '/work/tree',
+      env: { PATH: '/usr/bin', X: '1' },
+      runId: 'r1',
+      userRequest: 'go',
+      archonGuard: 'pass',
+    });
+  });
+
+  test("a call Archon's floor refused is judged too, labelled with the rule", () => {
+    const spec = codex({ jevShadow: shadow, pathGuard: false });
+    const input = { tool_name: 'exec_command', tool_input: { cmd: 'rm -rf /' } };
+    const out = dispatchHook(spec, 'PreToolUse', input);
+    expect(decision(out)).toBe('deny');
+    const { calls } = judged(spec, input, out);
+    expect(calls[0].archonGuard).toMatch(/^deny: /);
+    expect(calls[0].archonGuard).not.toBe('deny: node-policy');
+  });
+
+  test('Grok writes are judged; reads, MCP and spec without a judge are not', () => {
+    const g = grok({ jevShadow: shadow });
+    expect(
+      judged(g, { tool_name: 'write', tool_input: { file_path: '/work/tree/a', content: 'x' } })
+        .calls[0]
+    ).toMatchObject({ toolName: 'Write', toolInput: { file_path: '/work/tree/a', content: 'x' } });
+    expect(
+      judged(g, { tool_name: 'read_file', tool_input: { target_file: 'a' } }).p
+    ).toBeUndefined();
+    expect(judged(g, { tool_name: 'use_tool', tool_input: {} }).p).toBeUndefined();
+    expect(
+      judged(codex({ jevShadow: null }), { tool_name: 'exec_command', tool_input: { cmd: 'ls' } }).p
+    ).toBeUndefined();
+  });
+
+  test('end to end: the installed hook prints the same decision with the judge on, and the judge logs', async () => {
+    mkdirSync(shadow.scriptsDir, { recursive: true });
+    writeFileSync(
+      join(shadow.scriptsDir, 'jev_guard.py'),
+      [
+        'CALLER = "stixed"',
+        'def redact(s):',
+        '    return str(s)',
+        'class V:',
+        '    def __init__(self, **kw):',
+        '        self.__dict__.update(kw)',
+        'def decide(tool, ti, ctx):',
+        '    return V(decision="deny", reason="shadow says no", asked=True, triggers=["t"], facts={},',
+        '             model="m", latency_ms=1, cost=0.0, error="")',
+        '',
+      ].join('\n')
+    );
+    const run = (withJudge: boolean): string => {
+      const specPath = join(dir, `spec-${String(withJudge)}.json`);
+      writeFileSync(specPath, JSON.stringify(codex(withJudge ? { jevShadow: shadow } : {})));
+      return spawnSync('/bin/sh', ['-c', dispatcherCommand('PreToolUse')], {
+        input: JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'exec_command',
+          tool_input: { cmd: 'ls -la' },
+        }),
+        env: { ...process.env, ARCHON_HOOK_SPEC: specPath, ARCHON_HOOK_EVENTS: 'PreToolUse' },
+        encoding: 'utf8',
+      }).stdout;
+    };
+    const plain = run(false);
+    const shadowed = run(true);
+    expect(shadowed).toBe(plain); // Jev said deny; the call is still allowed (no output)
+    expect(shadowed).toBe('');
+    let lines: string[] = [];
+    for (let i = 0; i < 100 && lines.length === 0; i++) {
+      await Bun.sleep(50);
+      lines = existsSync(shadow.logDir)
+        ? readdirSync(shadow.logDir).flatMap(f =>
+            readFileSync(join(shadow.logDir, f), 'utf8').trim().split('\n')
+          )
+        : [];
+    }
+    expect(JSON.parse(lines[0])).toMatchObject({
+      provider: 'codex',
+      tool: 'Bash',
+      decision: 'deny',
+      archon_guard: 'pass',
+      call: 'ls -la',
+    });
   });
 });
