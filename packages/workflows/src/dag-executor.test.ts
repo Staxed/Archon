@@ -6816,6 +6816,52 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
     );
   });
 
+  it('records the per-model spend breakdown on node_completed for AI nodes', async () => {
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun('model-breakdown-run');
+    const modelUsage = [
+      { id: 'claude-opus-5', tokens: { input: 90, output: 9 }, costUsd: 0.4 },
+      { id: 'claude-haiku-4-5', tokens: { input: 10, output: 1 }, costUsd: 0.01 },
+    ];
+
+    mockSendQueryDag.mockImplementation(async function* () {
+      yield { type: 'assistant', content: 'done' };
+      yield {
+        type: 'result',
+        sessionId: 'sid',
+        resolvedModel: { id: 'claude-opus-5' },
+        tokens: { input: 100, output: 10 },
+        cost: 0.41,
+        modelUsage,
+      };
+    });
+
+    await executeDagWorkflow(
+      dagOptions({
+        deps: mockDeps,
+        platform,
+        conversationId: 'conv-breakdown',
+        cwd: testDir,
+        workflow: {
+          name: 'single-node',
+          nodes: [{ id: 'step1', kind: 'agent', source: { kind: 'command', name: 'step1' } }],
+        },
+        workflowRun,
+      })
+    );
+
+    const completedEvent = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls.find(
+      (call: unknown[]) =>
+        (call[0] as { event_type: string }).event_type === 'node_completed' &&
+        (call[0] as { step_name: string }).step_name === 'step1'
+    );
+    expect(completedEvent).toBeDefined();
+    const data = (completedEvent![0] as { data: { spend: { models?: unknown } } }).data;
+    expect(data.spend.models).toEqual(modelUsage);
+  });
+
   it('stores node_output in node_completed event data for AI nodes', async () => {
     const store = createMockStore();
     const mockDeps = createMockDeps(store);
@@ -7580,6 +7626,67 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
         resolved: 'claude-opus-5-20260501',
       });
       expect(completedEvent?.[0].data?.tokens).toEqual({ input: 100, output: 10 });
+    });
+
+    it('sums the per-model spend breakdown across loop iterations', async () => {
+      let iteration = 0;
+      mockSendQueryDag.mockImplementation(async function* () {
+        iteration++;
+        yield {
+          type: 'assistant',
+          content: iteration === 2 ? 'Done. <promise>COMPLETE</promise>' : 'Working.',
+        };
+        yield {
+          type: 'result',
+          sessionId: 'loop-breakdown-sid',
+          resolvedModel: { id: 'claude-opus-5' },
+          tokens: { input: 100, output: 10 },
+          cost: 0.5,
+          modelUsage: [
+            { id: 'claude-opus-5', tokens: { input: 80, output: 8 }, costUsd: 0.4 },
+            ...(iteration === 2
+              ? [{ id: 'claude-haiku-4-5', tokens: { input: 20, output: 2 }, costUsd: 0.1 }]
+              : []),
+          ],
+        };
+      });
+
+      const store = createMockStore();
+      const mockDeps = createMockDeps(store);
+      await executeDagWorkflow(
+        dagOptions({
+          deps: mockDeps,
+          platform: createMockPlatform(),
+          cwd: testDir,
+          workflow: {
+            name: 'dag-loop-model-breakdown',
+            nodes: [
+              {
+                id: 'my-loop',
+                kind: 'loop',
+                loop: {
+                  fresh_context: false,
+                  prompt: 'Do a task. When done, output <promise>COMPLETE</promise>.',
+                  until: 'COMPLETE',
+                  max_iterations: 5,
+                },
+              },
+            ],
+          },
+          workflowRun: makeWorkflowRun('loop-breakdown-run'),
+        })
+      );
+
+      const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls as Array<
+        [{ event_type: string; step_name: string; data?: { spend?: { models?: unknown } } }]
+      >;
+      const completedEvent = eventCalls.find(
+        ([arg]) => arg.event_type === 'node_completed' && arg.step_name === 'my-loop'
+      );
+      expect(completedEvent?.[0].data?.spend?.models).toEqual([
+        { id: 'claude-opus-5', tokens: { input: 160, output: 16 }, costUsd: 0.8 },
+        { id: 'claude-haiku-4-5', tokens: { input: 20, output: 2 }, costUsd: 0.1 },
+      ]);
     });
 
     it('omits model_usage on node_completed when the provider reports no resolved model (#2314)', async () => {

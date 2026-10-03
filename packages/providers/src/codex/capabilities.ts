@@ -21,7 +21,7 @@ export const CODEX_CAPABILITIES: ProviderCapabilities = {
   tokenReporting: true,
   stopReasonReporting: false,
   turnCountReporting: false,
-  resolvedModelReporting: false,
+  resolvedModelReporting: true, // the rollout's turn_context names the model that served the turn
   // Codex reads the node-level `effort:` field like every other effort-capable
   // provider and translates it to the SDK's `modelReasoningEffort` internally
   // (#2556). Before that it was `false` — which was read as "Codex cannot do

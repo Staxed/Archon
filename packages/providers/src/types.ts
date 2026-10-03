@@ -253,6 +253,44 @@ export interface ResolvedModel {
 }
 
 /**
+ * One model's share of a result, for providers that break their usage down by model
+ * (a Claude turn whose sub-agent or helper ran on another model). `tokens` uses the
+ * same gross-input convention as {@link TokenUsage}; `costUsd` is the provider's own
+ * figure for that model, absent when it gives none.
+ */
+export interface ModelSpend {
+  id: string;
+  tokens: TokenUsage;
+  costUsd?: number;
+}
+
+/**
+ * Sum per-model spend lists by model id (passes, reasks, loop iterations). Undefined
+ * when neither side has entries, so "not reported" never becomes an empty breakdown.
+ */
+export function mergeModelSpend(
+  a: readonly ModelSpend[] | undefined,
+  b: readonly ModelSpend[] | undefined
+): ModelSpend[] | undefined {
+  if (!a?.length && !b?.length) return undefined;
+  const byId = new Map<string, ModelSpend>();
+  for (const entry of [...(a ?? []), ...(b ?? [])]) {
+    const prev = byId.get(entry.id);
+    if (!prev) {
+      byId.set(entry.id, { ...entry, tokens: { ...entry.tokens } });
+      continue;
+    }
+    const tokens = mergeTokenUsage([prev.tokens, entry.tokens]) ?? prev.tokens;
+    const costUsd =
+      prev.costUsd === undefined && entry.costUsd === undefined
+        ? undefined
+        : (prev.costUsd ?? 0) + (entry.costUsd ?? 0);
+    byId.set(entry.id, { id: entry.id, tokens, ...(costUsd !== undefined ? { costUsd } : {}) });
+  }
+  return [...byId.values()];
+}
+
+/**
  * Message chunk from AI assistant.
  * Discriminated union with per-type required fields for type safety.
  */
@@ -282,6 +320,13 @@ export type MessageChunk =
       numTurns?: number;
       /** Concrete model reported by the provider; omitted when its SDK does not expose one. */
       resolvedModel?: ResolvedModel;
+      /**
+       * This result's usage per model, when the provider reports a breakdown. Every model
+       * that did work is listed, so a sub-agent on a cheaper model is not billed under
+       * `resolvedModel`. Omitted when unknown (for example a resumed session whose earlier
+       * totals this process never saw).
+       */
+      modelUsage?: ModelSpend[];
       /**
        * Outcome of a session-resume attempt, so a failed resume is observable
        * instead of silently continuing with a fresh (cold) session:

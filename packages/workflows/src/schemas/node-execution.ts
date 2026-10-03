@@ -1,5 +1,5 @@
 import { z } from '@hono/zod-openapi';
-import type { TokenUsage } from '@archon/providers/types';
+import type { ModelSpend, TokenUsage } from '@archon/providers/types';
 import {
   agentNodeSchema,
   execNodeSchema,
@@ -45,11 +45,23 @@ export function reportedMeasurementSchema<T extends z.ZodType>(
     unavailableMeasurementSchema,
   ]);
 }
+/** One model's share of a node's spend (see ModelSpend in @archon/providers/types). */
+export const executionModelSpendSchema = z.object({
+  id: z.string(),
+  tokens: executionTokenUsageSchema,
+  costUsd: z.number().optional(),
+}) satisfies z.ZodType<ModelSpend>;
+
 export const executionSpendSchema = z.object({
   tokens: reportedMeasurementSchema(executionTokenUsageSchema),
   costUsd: reportedMeasurementSchema(z.number()),
   stopReason: reportedMeasurementSchema(z.string()),
   numTurns: reportedMeasurementSchema(z.number()),
+  /**
+   * Per-model spend when the provider breaks it down (absent otherwise, and on records
+   * written before this field existed). Sums to `tokens`/`costUsd` for the same node.
+   */
+  models: z.array(executionModelSpendSchema).optional(),
 });
 
 export const nodeDescriptorSchema = z.discriminatedUnion('kind', [

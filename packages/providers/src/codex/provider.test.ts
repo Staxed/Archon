@@ -108,7 +108,7 @@ describe('CodexProvider', () => {
         tokenReporting: true,
         stopReasonReporting: false,
         turnCountReporting: false,
-        resolvedModelReporting: false,
+        resolvedModelReporting: true,
         effortControl: true,
         fallbackModel: true,
         sandbox: true,

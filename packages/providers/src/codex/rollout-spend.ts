@@ -1,9 +1,10 @@
 /**
- * maxBudgetUsd for Codex: the CLI has no spend cap and the SDK's events carry no
- * per-call usage, but Codex appends a `token_count` record to the thread's
- * rollout file after every model call, plus a `turn_context` record naming the
- * model. Archon prices those mid-turn (API-equivalent rates) and stops the turn
- * once the cap is passed.
+ * maxBudgetUsd and the resolved model for Codex: the CLI has no spend cap and the
+ * SDK's events carry neither per-call usage nor the model, but Codex appends a
+ * `token_count` record to the thread's rollout file after every model call, plus a
+ * `turn_context` record naming the model. Archon prices those mid-turn
+ * (API-equivalent rates) and stops the turn once a cap is passed, and reads the
+ * model from them when the turn ends.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -56,6 +57,12 @@ export function findRolloutFile(threadId: string, codexHome: string): string | u
 export class RolloutSpend {
   readonly tokens: PricedTokens = { uncached: 0, cached: 0, output: 0 };
   model: string | undefined;
+  /**
+   * The model the rollout's `turn_context` says served this turn, never the configured
+   * one: what Archon records as the node's resolved model. Undefined until Codex writes
+   * the record (it does so before the first model call).
+   */
+  observedModel: string | undefined;
   private file: string | undefined;
   private offset: number | undefined;
   private partial = '';
@@ -116,6 +123,7 @@ export class RolloutSpend {
         };
         if (rec.type === 'turn_context' && typeof rec.payload?.model === 'string') {
           this.model = rec.payload.model;
+          this.observedModel = rec.payload.model;
         } else if (rec.payload?.type === 'token_count' && rec.payload.info?.last_token_usage) {
           const u = rec.payload.info.last_token_usage;
           const cached = u.cached_input_tokens ?? 0;

@@ -218,6 +218,20 @@ function prepareCodexRun(
   };
 }
 
+/**
+ * Stamp the model the rollout says served the turn onto its result. Codex's SDK reports
+ * none, and the configured model is only a request (an unset one means Codex's own
+ * default), so nothing is stamped when the rollout has not named one.
+ */
+function withObservedModel(
+  chunk: Extract<MessageChunk, { type: 'result' }>,
+  spend: RolloutSpend,
+  threadId: string | null | undefined
+): MessageChunk {
+  spend.poll(threadId);
+  return spend.observedModel ? { ...chunk, resolvedModel: { id: spend.observedModel } } : chunk;
+}
+
 /** The error result a spend cap produces, as Claude's SDK reports one. */
 function* budgetExceeded(
   spend: RolloutSpend,
@@ -238,6 +252,7 @@ function* budgetExceeded(
     isError: true,
     errorSubtype: 'error_max_budget_usd',
     errors: [`maxBudgetUsd of $${formatBudget(budget)} exceeded`],
+    ...(spend.observedModel ? { resolvedModel: { id: spend.observedModel } } : {}),
   };
 }
 
@@ -1252,13 +1267,12 @@ export class CodexProvider implements IAgentProvider {
           // lazily while events are iterated, so compatibility errors must be
           // caught around both runStreamed() and event consumption.
           let providerEventEmitted = false;
-          // maxBudgetUsd: priced from the rollout's per-call token counts, between events.
+          // The rollout names the model that served the turn (stamped on the result) and,
+          // under maxBudgetUsd, prices each call between events. Without a budget it is
+          // read once, at the result, and only from where the turn started.
           const budget = setup.budget;
-          const spend =
-            budget !== undefined
-              ? new RolloutSpend(threadOptions.model, setup.codexHome)
-              : undefined;
-          spend?.markStart(thread.id);
+          const spend = new RolloutSpend(threadOptions.model, setup.codexHome);
+          spend.markStart(thread.id);
           while (true) {
             try {
               const result = await thread.runStreamed(effectivePrompt, turnOptions);
@@ -1275,7 +1289,7 @@ export class CodexProvider implements IAgentProvider {
                 // session context is lost even when the initial resumeThread succeeded.
                 resumedOutcome(resumeSessionId, !sessionResumeFailed && attempt === 0)
               )) {
-                if (spend && budget !== undefined) {
+                if (budget !== undefined) {
                   spend.poll(thread.id);
                   if (spend.exceeds(budget)) {
                     // Stops the CLI; the result below is the error a spend cap gives on Claude.
@@ -1285,7 +1299,7 @@ export class CodexProvider implements IAgentProvider {
                   }
                 }
                 providerEventEmitted = true;
-                yield chunk;
+                yield chunk.type === 'result' ? withObservedModel(chunk, spend, thread.id) : chunk;
               }
               return;
             } catch (error) {

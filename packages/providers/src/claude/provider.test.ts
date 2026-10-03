@@ -386,6 +386,102 @@ describe('ClaudeProvider', () => {
         expect(resolved).toBe('claude-haiku-4-5-20251001');
       });
 
+      test('every model a query used is listed with its own tokens and cost', async () => {
+        mockQuery.mockImplementationOnce(async function* () {
+          yield {
+            type: 'result',
+            session_id: 'spend-breakdown',
+            total_cost_usd: 0.51,
+            modelUsage: {
+              'claude-opus-5-5': {
+                inputTokens: 10,
+                outputTokens: 4000,
+                cacheReadInputTokens: 900,
+                cacheCreationInputTokens: 100,
+                costUSD: 0.5,
+              },
+              'claude-haiku-4-5-20251001': { inputTokens: 300, outputTokens: 60, costUSD: 0.01 },
+            },
+          };
+        });
+
+        const results: MessageChunk[] = [];
+        for await (const chunk of client.sendQuery('test', '/workspace')) {
+          if (chunk.type === 'result') results.push(chunk);
+        }
+        expect(results[0]).toMatchObject({
+          resolvedModel: { id: 'claude-opus-5-5' },
+          modelUsage: [
+            {
+              id: 'claude-opus-5-5',
+              tokens: { input: 1010, output: 4000, cacheRead: 900, cacheWrite: 100 },
+              costUsd: 0.5,
+            },
+            {
+              id: 'claude-haiku-4-5-20251001',
+              tokens: { input: 300, output: 60, cacheRead: 0, cacheWrite: 0 },
+              costUsd: 0.01,
+            },
+          ],
+        });
+      });
+
+      test('a resumed query’s breakdown is its own share of every axis', async () => {
+        mockQuery.mockImplementationOnce(async function* () {
+          yield {
+            type: 'result',
+            session_id: 'spend-breakdown-resume',
+            total_cost_usd: 0.5,
+            modelUsage: {
+              'claude-opus-5-5': { inputTokens: 10, outputTokens: 4000, costUSD: 0.5 },
+            },
+          };
+        });
+        await costOf();
+        mockQuery.mockImplementationOnce(async function* () {
+          yield {
+            type: 'result',
+            session_id: 'spend-breakdown-resume',
+            total_cost_usd: 0.53,
+            modelUsage: {
+              'claude-opus-5-5': { inputTokens: 15, outputTokens: 4100, costUSD: 0.52 },
+              'claude-haiku-4-5-20251001': { inputTokens: 300, outputTokens: 60, costUSD: 0.01 },
+            },
+          };
+        });
+
+        const results: MessageChunk[] = [];
+        for await (const chunk of client.sendQuery(
+          'test',
+          '/workspace',
+          'spend-breakdown-resume'
+        )) {
+          if (chunk.type === 'result') results.push(chunk);
+        }
+        const result = results[0] as Extract<MessageChunk, { type: 'result' }>;
+        expect(result.modelUsage).toHaveLength(2);
+        const opus = result.modelUsage?.find(m => m.id === 'claude-opus-5-5');
+        expect(opus?.tokens).toMatchObject({ input: 5, output: 100 });
+        expect(opus?.costUsd).toBeCloseTo(0.02, 10);
+        expect(result.modelUsage?.find(m => m.id === 'claude-haiku-4-5-20251001')).toMatchObject({
+          tokens: { input: 300, output: 60 },
+          costUsd: 0.01,
+        });
+      });
+
+      test('without a baseline there is no breakdown (cumulative figures would over-count)', async () => {
+        resultFor('spend-unseen-breakdown', 0.0356233, 103);
+        const results: MessageChunk[] = [];
+        for await (const chunk of client.sendQuery(
+          'test',
+          '/workspace',
+          'spend-unseen-breakdown'
+        )) {
+          if (chunk.type === 'result') results.push(chunk);
+        }
+        expect(results[0]).not.toHaveProperty('modelUsage');
+      });
+
       test('a resumed query with no new output names no model from earlier turns', async () => {
         // A crash or startup-error result can carry the session's totals unchanged.
         const totals = {

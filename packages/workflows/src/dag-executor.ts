@@ -64,11 +64,12 @@ import type {
   ProviderCapabilities,
   TokenUsage,
   ResolvedModel,
+  ModelSpend,
   MessageChunk,
   ExecutionContext,
   OverlayChangeSummary,
 } from '@archon/providers/types';
-import { CONTAINER_ENV_DENYLIST, mergeTokenUsage } from '@archon/providers/types';
+import { CONTAINER_ENV_DENYLIST, mergeModelSpend, mergeTokenUsage } from '@archon/providers/types';
 import type { ContainerRunContext } from './container-context';
 import { WRITEBACK_GATE_NODE_ID } from './container-context';
 import {
@@ -2147,6 +2148,7 @@ async function executeNodeInternal(
   let nodeStopReason: string | undefined;
   let nodeNumTurns: number | undefined;
   let nodeResolvedModel: ResolvedModel | undefined;
+  let nodeModelUsage: ModelSpend[] | undefined;
   const nodeKey = `${workflowRun.id}:${node.id}`;
 
   const failAgentNode = async (
@@ -2166,6 +2168,7 @@ async function executeNodeInternal(
           stopReason: nodeStopReason,
           numTurns: nodeNumTurns,
           resolvedModel: nodeResolvedModel?.id,
+          modelUsage: nodeModelUsage,
         }
       )
     );
@@ -2305,6 +2308,7 @@ async function executeNodeInternal(
       : 0;
   let accumulatedCostUsd: number | undefined;
   let accumulatedTokens: TokenUsage | undefined;
+  let accumulatedModelUsage: ModelSpend[] | undefined;
 
   // One sendQuery stream pass. Resets the per-attempt accumulators it mutates
   // (output text, structured output, the batched-message buffer, per-pass cost,
@@ -2322,6 +2326,7 @@ async function executeNodeInternal(
     batchMessages.length = 0; // else a failed attempt's prose flushes during reask
     nodeCostUsd = undefined;
     nodeTokens = undefined;
+    nodeModelUsage = undefined;
     nodeIdleTimedOut = false;
     lastWatchdogReset = undefined;
     watchdogResets = createWatchdogResetRecorder(logDir, workflowRun.id, node.id);
@@ -2596,6 +2601,8 @@ async function executeNodeInternal(
         // model would be persisted as the final attempt's answer. Fabricated attribution
         // is the exact defect #2314 exists to prevent; absence must stay absence.
         nodeResolvedModel = msg.resolvedModel;
+        // Same rule: this pass's breakdown is the last result's, or none.
+        nodeModelUsage = msg.modelUsage;
         if (msg.structuredOutput !== undefined) structuredOutput = msg.structuredOutput;
         // Fail the node if the SDK reports a cost cap exceeded error
         if (msg.isError && msg.errorSubtype === 'error_max_budget_usd') {
@@ -2973,9 +2980,11 @@ async function executeNodeInternal(
             { nodeId: node.id }
           );
         }
+        accumulatedModelUsage = mergeModelSpend(accumulatedModelUsage, nodeModelUsage);
         // Keep cumulative usage on the node result even when this pass throws.
         nodeCostUsd = accumulatedCostUsd;
         nodeTokens = accumulatedTokens;
+        nodeModelUsage = accumulatedModelUsage;
       }
 
       // When output_format is set and the provider returned structured_output, use
@@ -3216,6 +3225,7 @@ async function executeNodeInternal(
         stopReason: nodeStopReason,
         numTurns: nodeNumTurns,
         resolvedModel: nodeResolvedModel?.id,
+        modelUsage: nodeModelUsage,
         sessionId: result.sessionId,
         resumed: result.resumed,
         durationMs: duration,
@@ -5683,6 +5693,8 @@ async function executeLoopNode(
   let loopTotalNumTurns: number | undefined =
     execution.spend.numTurns.source === 'provider' ? execution.spend.numTurns.value : undefined;
   let loopResolvedModel: ResolvedModel | undefined;
+  // Per-model spend across iterations; a resumed loop continues from its saved record.
+  let loopModelUsage: ModelSpend[] | undefined = execution.spend.models;
   const failLoopNode = async (
     error: string,
     extras: {
@@ -5710,6 +5722,7 @@ async function executeLoopNode(
           stopReason: loopFinalStopReason,
           numTurns: loopTotalNumTurns,
           resolvedModel: loopResolvedModel?.id,
+          modelUsage: loopModelUsage,
           diagnostics: { ...extras.data, loopIterations: extras.loopIterations },
         }
       )
@@ -6031,6 +6044,7 @@ async function executeLoopNode(
       let backgroundTasks = createBackgroundTaskTracker();
       let iterationCost: number | undefined;
       let iterationTokens: TokenUsage | undefined;
+      let iterationModelUsage: ModelSpend[] | undefined;
       let iterationNumTurns: number | undefined;
       // Fold the last-seen per-attempt values into the loop totals exactly once per
       // ATTEMPT — called on both the normal exit and the catch path (an SDK-error
@@ -6053,6 +6067,7 @@ async function executeLoopNode(
         if (iterationNumTurns !== undefined) {
           loopTotalNumTurns = (loopTotalNumTurns ?? 0) + iterationNumTurns;
         }
+        loopModelUsage = mergeModelSpend(loopModelUsage, iterationModelUsage);
       };
 
       // Structured payload accepted for THIS iteration (validated); hoisted above so it
@@ -6083,6 +6098,7 @@ async function executeLoopNode(
         lastStreamStatusCheckAt = Date.now();
         iterationCost = undefined;
         iterationTokens = undefined;
+        iterationModelUsage = undefined;
         iterationNumTurns = undefined;
         iterationUsageFolded = false;
         const watchdogResets = createWatchdogResetRecorder(
@@ -6293,6 +6309,7 @@ async function executeLoopNode(
               // iteration or result chunk that reports no resolved model must clear the
               // previous one rather than leave it to be recorded as this node's answer.
               loopResolvedModel = msg.resolvedModel;
+              iterationModelUsage = msg.modelUsage;
               if (msg.structuredOutput !== undefined) {
                 attemptStructured = msg.structuredOutput;
               }
@@ -7021,6 +7038,7 @@ async function executeLoopNode(
             stopReason: loopFinalStopReason,
             numTurns: loopTotalNumTurns,
             resolvedModel: loopResolvedModel?.id,
+            modelUsage: loopModelUsage,
             sessionId: currentSessionId,
             diagnostics: {
               loopIterations: i,
@@ -7093,6 +7111,7 @@ async function executeLoopNode(
           stopReason: loopFinalStopReason,
           numTurns: loopTotalNumTurns,
           resolvedModel: loopResolvedModel?.id,
+          modelUsage: loopModelUsage,
           sessionId: currentSessionId,
           diagnostics: { loopIterations: i },
         }

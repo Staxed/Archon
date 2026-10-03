@@ -44,6 +44,7 @@ import type {
   IAgentProvider,
   SendQueryOptions,
   MessageChunk,
+  ModelSpend,
   TokenUsage,
   ProviderCapabilities,
   NodeConfig,
@@ -137,6 +138,30 @@ function normalizeClaudeUsage(usage?: {
     ...(typeof cacheWrite === 'number' ? { cacheWrite } : {}),
     ...(typeof total === 'number' ? { total } : {}),
   };
+}
+
+/**
+ * The SDK's per-model record as Archon's per-model spend: gross input (cache reads and
+ * writes included, as {@link normalizeClaudeUsage} reports it) and the SDK's own cost per
+ * model. Models with no tokens and no cost are dropped. Undefined when nothing is left.
+ */
+function toModelSpend(breakdown: Record<string, ModelUsage> | undefined): ModelSpend[] | undefined {
+  if (!breakdown) return undefined;
+  const out: ModelSpend[] = [];
+  for (const [id, u] of Object.entries(breakdown)) {
+    const cacheRead = Number.isFinite(u.cacheReadInputTokens) ? u.cacheReadInputTokens : 0;
+    const cacheWrite = Number.isFinite(u.cacheCreationInputTokens) ? u.cacheCreationInputTokens : 0;
+    const input = (Number.isFinite(u.inputTokens) ? u.inputTokens : 0) + cacheRead + cacheWrite;
+    const output = Number.isFinite(u.outputTokens) ? u.outputTokens : 0;
+    const cost = Number.isFinite(u.costUSD) ? u.costUSD : undefined;
+    if (input + output === 0 && !cost) continue;
+    out.push({
+      id,
+      tokens: { input, output, cacheRead, cacheWrite },
+      ...(cost !== undefined ? { costUsd: cost } : {}),
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 /**
@@ -1234,6 +1259,7 @@ async function* streamClaudeMessages(
         }
       }
       const resolvedModelId = selectResolvedModelId(spend.modelUsage);
+      const modelSpend = toModelSpend(spend.breakdown);
       // The terminal result resolves any recorded synthetic error message.
       const syntheticError = pendingSdkError;
       pendingSdkError = undefined;
@@ -1324,6 +1350,7 @@ async function* streamClaudeMessages(
         ...(resultMsg.stop_reason != null ? { stopReason: resultMsg.stop_reason } : {}),
         ...(resultMsg.num_turns !== undefined ? { numTurns: resultMsg.num_turns } : {}),
         ...(resolvedModelId ? { resolvedModel: { id: resolvedModelId } } : {}),
+        ...(modelSpend ? { modelUsage: modelSpend } : {}),
       };
     }
   }

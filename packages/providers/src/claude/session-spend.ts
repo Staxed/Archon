@@ -38,8 +38,43 @@ export interface QuerySpend {
   /**
    * Per-model usage of this query when the baseline is known (models with no new output
    * omitted). With an unknown baseline, the cumulative record if it names one model, else empty.
+   * Only `outputTokens` is differenced: this feeds resolved-model selection.
    */
   modelUsage: Record<string, ModelUsage>;
+  /**
+   * This query's full per-model spend, every axis differenced (models that spent nothing
+   * omitted). Undefined when the baseline is unknown or any axis went backwards: a
+   * cumulative figure would over-count, so no breakdown is better than a wrong one.
+   */
+  breakdown?: Record<string, ModelUsage>;
+}
+
+/** The numeric ModelUsage axes that add up across turns. */
+const ADDITIVE_AXES = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'webSearchRequests',
+  'costUSD',
+] as const;
+
+function usageSince(
+  cumulative: Record<string, ModelUsage>,
+  base: Record<string, ModelUsage>
+): Record<string, ModelUsage> | undefined {
+  const out: Record<string, ModelUsage> = {};
+  for (const [model, usage] of Object.entries(cumulative)) {
+    const prev = base[model];
+    const diff: ModelUsage = { ...usage };
+    for (const axis of ADDITIVE_AXES) {
+      const value = (usage[axis] ?? 0) - (prev?.[axis] ?? 0);
+      if (value < 0) return undefined;
+      diff[axis] = value;
+    }
+    if (ADDITIVE_AXES.some(axis => diff[axis] > 0)) out[model] = diff;
+  }
+  return out;
 }
 
 /** Sessions the ledger remembers; a resume of an evicted session reports cost as unknown. */
@@ -74,7 +109,7 @@ export class SessionSpendLedger {
 }
 
 export function spendSince(baseline: SpendBaseline, cumulative: SessionSpend): QuerySpend {
-  if (baseline.kind === 'fresh') return cumulative;
+  if (baseline.kind === 'fresh') return { ...cumulative, breakdown: cumulative.modelUsage };
   if (baseline.kind === 'unknown') {
     // Without a baseline, only a session that has used a single model can name this query's.
     const single = Object.keys(cumulative.modelUsage).length === 1;
@@ -95,5 +130,6 @@ export function spendSince(baseline: SpendBaseline, cumulative: SessionSpend): Q
     // Empty when no model produced output in this query (a zeroed crash or startup result):
     // no model is named then, rather than one from the session's earlier turns.
     modelUsage,
+    breakdown: usageSince(cumulative.modelUsage, base.modelUsage),
   };
 }

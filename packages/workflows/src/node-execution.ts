@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { ProviderCapabilities, TokenUsage } from '@archon/providers/types';
+import type { ModelSpend, ProviderCapabilities, TokenUsage } from '@archon/providers/types';
 import type { DagNode } from './schemas/dag-node';
 import type { EffortLevel } from './schemas/effort';
 import type { TierName } from './schemas/model-binding';
 import type { CheckoutObservation } from './schemas/checkout-observation';
 import {
+  executionModelSpendSchema,
   executionTokenUsageSchema,
   nodeExecutionMetadataSchema,
   type ExecutionBinding,
@@ -143,6 +144,8 @@ export interface ExecutionObservations {
   stopReason?: string;
   numTurns?: number;
   resolvedModel?: string;
+  /** Per-model spend, when the provider broke this node's usage down by model. */
+  modelUsage?: ModelSpend[];
 }
 
 /** Close or suspend a captured start; omitted observations never become zero. */
@@ -184,6 +187,7 @@ export function finishNodeExecution(
         }
       : {}),
   };
+  const models = validModelSpend(result.modelUsage) ?? start.spend.models;
   return {
     ...start,
     binding,
@@ -201,10 +205,17 @@ export function finishNodeExecution(
       costUsd: observed(result.costUsd, start.spend.costUsd, Number.isFinite),
       stopReason: observed(result.stopReason, start.spend.stopReason),
       numTurns: observed(result.numTurns, start.spend.numTurns, Number.isFinite),
+      ...(models !== undefined ? { models } : {}),
     },
     ...(result.output !== undefined ? { output: result.output } : {}),
     ...(result.diagnostics !== undefined ? { diagnostics: result.diagnostics } : {}),
   };
+}
+
+/** A breakdown worth recording: non-empty and in the schema's shape (else dropped). */
+function validModelSpend(models: ModelSpend[] | undefined): ModelSpend[] | undefined {
+  if (!models?.length) return undefined;
+  return models.every(m => executionModelSpendSchema.safeParse(m).success) ? models : undefined;
 }
 
 /** Excludes output bodies and diagnostics from the shared public execution facts. */

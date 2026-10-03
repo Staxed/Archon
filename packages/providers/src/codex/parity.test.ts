@@ -294,3 +294,43 @@ describe('Codex maxBudgetUsd', () => {
     );
   });
 });
+
+describe('Codex resolved model', () => {
+  const rollout = join(
+    codexHome,
+    'sessions',
+    '2026',
+    '10',
+    '01',
+    'rollout-2026-10-01T00-00-00-thr-1.jsonl'
+  );
+  const turn = (lines: object[]): void => {
+    mockRunStreamed.mockImplementation(() =>
+      Promise.resolve({
+        events: (async function* () {
+          for (const line of lines) appendFileSync(rollout, JSON.stringify(line) + '\n');
+          yield { type: 'item.completed', item: { id: 'i1', type: 'agent_message', text: 'hi' } };
+          yield { type: 'turn.completed', usage };
+        })(),
+      })
+    );
+  };
+  beforeEach(() => {
+    mkdirSync(join(codexHome, 'sessions', '2026', '10', '01'), { recursive: true });
+    writeFileSync(rollout, '');
+  });
+
+  test('the result names the model the rollout says served the turn, with no budget set', async () => {
+    // No model configured: Codex picks its own default, which only the rollout names.
+    turn([{ type: 'turn_context', payload: { model: 'gpt-6-astra' } }]);
+    const result = (await run({})).find(c => c.type === 'result');
+    expect(result).toMatchObject({ type: 'result', resolvedModel: { id: 'gpt-6-astra' } });
+  });
+
+  test('a configured model is not reported as resolved when the rollout names none', async () => {
+    turn([]);
+    const result = (await run({ model: 'gpt-6-astra' })).find(c => c.type === 'result');
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('resolvedModel');
+  });
+});
