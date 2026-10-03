@@ -152,7 +152,26 @@ the host's managed Claude settings.
 ## Destructive-command guard
 
 `packages/providers/src/shared/destructive-guard.ts` is a port of Stixed's Python
-guard and shares its rules file and test list. Where it is stricter:
+guard and shares its rules file and test list. It is the deterministic floor:
+catastrophic cases only, and a block from a rule is a hard stop whose message tells
+the agent to ask the user, not to find another way.
+
+Rules come from `ARCHON_DESTRUCTIVE_RULES` (the deployment's env), else Stixed's
+root-owned promoted copy `/usr/local/lib/stixed/.claude/scripts/destructive_rules.json`
+(read directly on the host; the container needs that folder mounted read-only at the
+same path), else a built-in copy of the same strict rules (`DEFAULT_RULES`, kept in
+step with Stixed's file by a test), which is what the Archon VM uses. The
+agent-writable `~/.archon/destructive-rules.json` is no longer read.
+
+It follows a script fed to a shell on stdin (`bash -euo pipefail <<EOF`,
+`printf ... | sh`, `cat <<EOF | bash`, `bash < x.sh`), a script written and run in
+the same command (`cat > x.sh <<EOF ... EOF; bash x.sh`, `./x.sh`, `source x.sh`),
+process substitution and the substitutions in an unquoted heredoc body. `find`
+filters that match everything or are negated do not count as narrowing, a `find`
+over the vault whose filter can match its `.md` notes is refused, and so is
+`rsync --delete` into a protected folder.
+
+Where it is stricter than the Python guard:
 
 - A command it cannot parse is searched as raw text and refused when it holds a
   command the rules cover (`unparsed-destructive`, "rewrite it more simply"). A
@@ -169,5 +188,6 @@ guard and shares its rules file and test list. Where it is stricter:
   spec, not their own env. A node hook that rewrites a call (`updatedInput`) has
   the rewritten call checked again, on every provider with hooks.
 
-Still not covered: a script written to a file and then run, and shells fed by
-anything other than echo/printf, a heredoc or a here-string (`curl ... | sh`).
+Still not covered: a script already on disk before the command (written by an
+earlier call), and shells fed by anything whose output the guard cannot know
+(`curl ... | sh`). Those are for the judged layer (Jev) above the floor.

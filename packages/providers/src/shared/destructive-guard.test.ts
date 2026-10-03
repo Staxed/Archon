@@ -1,15 +1,26 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { trackTempRoots } from '@archon/paths/test-utils';
 import {
   Checker,
   DEFAULT_RULES,
+  HARD_STOP,
+  ROOT_OWNED_RULES_PATH,
   RULES_ENV,
   Rules,
   checkCommand,
   resetDestructiveGuardCache,
+  resolveRulesPath,
   type DestructiveRulesFile,
 } from './destructive-guard';
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
@@ -29,13 +40,6 @@ const SHARED_RULES_PATH =
   process.env.ARCHON_DESTRUCTIVE_RULES_TEST ?? `${STIXED}/destructive_rules.json`;
 const haveShared = existsSync(CASES_PATH) && existsSync(SHARED_RULES_PATH);
 const trackTempRoot = trackTempRoots();
-
-/**
- * Shared cases this guard deliberately decides differently from the Python guard,
- * pending an update of the shared list: a recursive delete of a path the guard
- * cannot resolve is refused (security review 2026-10).
- */
-const DIVERGES_FROM_SHARED = new Set(['while read f; do rm -rf "$f"; done < list.txt']);
 
 interface Case {
   cmd: string;
@@ -69,7 +73,6 @@ describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () 
   it('allows every allow case', () => {
     const wrong: string[] = [];
     for (const c of cases?.allow ?? []) {
-      if (DIVERGES_FROM_SHARED.has(c.cmd)) continue;
       const v = checker?.check(c.cmd, c.cwd ?? cases?.default_cwd ?? '/');
       if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
     }
@@ -81,15 +84,11 @@ describe('Archon regressions (destructive-guard.regressions.json)', () => {
   const regressions = JSON.parse(
     readFileSync(new URL('./destructive-guard.regressions.json', import.meta.url), 'utf8')
   ) as Cases;
-  // Stixed's rules when present; otherwise the same paths inline, so the cases
+  // Stixed's rules when present; otherwise the built-in copy of them, so the cases
   // run on a machine without Stixed too.
   const rules: DestructiveRulesFile = existsSync(SHARED_RULES_PATH)
     ? (JSON.parse(readFileSync(SHARED_RULES_PATH, 'utf8')) as DestructiveRulesFile)
-    : {
-        protected_paths: ['/etc', '/usr', '/boot', '/var/lib/docker', '~', '/mnt/volumes/projects'],
-        project_parent: '/mnt/volumes/projects',
-        rules: DEFAULT_RULES.rules,
-      };
+    : DEFAULT_RULES;
   const checker = new Checker(new Rules(rules, '/home/staxed'));
 
   it('blocks every block case with the expected rule', () => {
@@ -111,23 +110,94 @@ describe('Archon regressions (destructive-guard.regressions.json)', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('asks for a literal path when it cannot resolve one', () => {
+  it('judges an unresolved path as the Python guard does: a protected name is a hard stop', () => {
     const v = checker.check('rm -rf "$ROOT/stixed"', '/tmp/work');
-    expect(v?.message()).toContain('Write the path out literally');
+    expect(v?.rule).toBe('recursive-delete');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(checker.check('rm -rf "$ROOT/build"', '/tmp/work')).toBeUndefined();
   });
 
-  it('asks for a simpler command when it cannot parse a destructive one', () => {
-    const v = checker.check('echo "oops && rm -rf ~', '/tmp/work');
-    expect(v?.message()).toContain('Rewrite it more simply');
+  it('allows a command it cannot parse and writes a log-only entry', () => {
+    const entries: { command: string; reason: string }[] = [];
+    const logging = new Checker(new Rules(rules, '/home/staxed'), e => entries.push(e));
+    expect(logging.check('echo "oops && rm -rf ~', '/tmp/work')).toBeUndefined();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].command).toBe('echo "oops && rm -rf ~');
+    expect(entries[0].reason).toContain('unbalanced');
+    expect(logging.check('rm -rf node_modules', '/tmp/work')).toBeUndefined();
+    expect(entries).toHaveLength(1);
   });
 });
 
-describe('default rules (no rules file configured)', () => {
+describe('symlinks: a followed path is judged where it really leads', () => {
+  // An Archon workspace's `source` is a link to the project: `rm -rf source/` (which
+  // follows it) deletes the project's contents; `rm -rf source` removes only the link.
+  const fixture = (): { tmp: string; source: string; checker: Checker } => {
+    const tmp = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-links-')));
+    const projects = join(tmp, 'projects');
+    mkdirSync(join(projects, 'app', 'src'), { recursive: true });
+    const ws = join(tmp, 'ws', 'o', 'app');
+    mkdirSync(ws, { recursive: true });
+    const source = join(ws, 'source');
+    symlinkSync(join(projects, 'app'), source);
+    const rules = new Rules({ ...DEFAULT_RULES, project_parent: projects }, '/home/staxed');
+    return { tmp, source, checker: new Checker(rules) };
+  };
+
+  it('refuses a delete that follows the link into the project', () => {
+    const { tmp, source, checker } = fixture();
+    const wrong: string[] = [];
+    for (const [cmd, cwd] of [
+      [`rm -rf ${source}/`, tmp],
+      [`rm -rf ${source}/*`, tmp],
+      [`rm -rf ${source}/.`, tmp],
+      [`find ${source}/ -delete`, tmp],
+      [`find -L ${source} -delete`, tmp],
+      ['rm -rf .git', source],
+      ['rm -rf ./*', source],
+      ['git clean -fdx', source],
+      [`mv ${source}/ /tmp/elsewhere`, tmp],
+    ]) {
+      if (!checker.check(cmd, cwd)) wrong.push(`${cmd} (cwd ${cwd}) allowed`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('allows removing the link itself and work inside the project', () => {
+    const { tmp, source, checker } = fixture();
+    const wrong: string[] = [];
+    for (const [cmd, cwd] of [
+      [`rm -rf ${source}`, tmp],
+      [`rm ${source}`, tmp],
+      [`find ${source} -delete`, tmp],
+      [`rm -rf ${source}/src`, tmp],
+      ['rm -rf node_modules dist', source],
+    ]) {
+      const v = checker.check(cmd, cwd);
+      if (v) wrong.push(`${cmd} -> ${v.message()}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+});
+
+describe('default rules (no rules file, or the root-owned copy missing)', () => {
   const checker = new Checker(new Rules(DEFAULT_RULES, '/home/u'));
 
   it('blocks system roots and home', () => {
     for (const cmd of ['rm -rf /', 'rm -rf ~', 'sudo rm -rf /etc', 'docker volume prune -f']) {
       expect(checker.check(cmd, '/work')).toBeDefined();
+    }
+  });
+
+  it('is as strict as the shared rules: projects, the vault and Archon home', () => {
+    for (const cmd of [
+      'rm -rf /mnt/volumes/projects/Dashed',
+      'rm -rf /mnt/volumes/projects/stixed/SecondBrain/Memory/knowledge/concepts',
+      'rm -rf /home/staxed/.archon/worktrees',
+      'rm -rf ~/.archon',
+      'git -C /mnt/volumes/projects/Dashed clean -fdx',
+    ]) {
+      expect(checker.check(cmd, '/work')?.rule).toBeDefined();
     }
   });
 
@@ -137,9 +207,42 @@ describe('default rules (no rules file configured)', () => {
       'git clean -fdx',
       'docker compose down',
       'grep -r "rm -rf /" .',
+      'rm -rf /home/staxed/.archon/workspaces/Staxed/stixed/worktrees/archon/fix-x',
     ]) {
       expect(checker.check(cmd, '/work/repo')).toBeUndefined();
     }
+  });
+
+  it.skipIf(!existsSync(SHARED_RULES_PATH))("matches Stixed's rules file", () => {
+    const shared = JSON.parse(readFileSync(SHARED_RULES_PATH, 'utf8')) as DestructiveRulesFile;
+    expect(DEFAULT_RULES.protected_paths).toEqual(shared.protected_paths);
+    expect(DEFAULT_RULES.project_parent).toEqual(shared.project_parent);
+    expect(DEFAULT_RULES.protected_children_of).toEqual(shared.protected_children_of);
+    expect(DEFAULT_RULES.vaults).toEqual(shared.vaults);
+    expect(DEFAULT_RULES.rules).toEqual(shared.rules.map(r => ({ id: r.id, instead: r.instead })));
+  });
+});
+
+describe('floor messages', () => {
+  const checker = new Checker(new Rules(DEFAULT_RULES, '/home/staxed'));
+
+  it('a floor block is a hard stop: ask the user, do not find another way', () => {
+    const v = checker.check('docker volume rm pgdata', '/tmp');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(v?.message()).toContain('without -v is a different command and is fine');
+  });
+
+  it("the guard's own failures ask for a fix, not a hard stop", () => {
+    const v = checkCommand('ls', '/tmp', { rulesPath: '/nonexistent/destructive-rules.json' });
+    expect(v?.rule).toBe('rules-unreadable');
+    expect(v?.message()).not.toContain(HARD_STOP);
+  });
+
+  it('a vault-delete is a hard stop that names Obsidian Sync', () => {
+    const v = checker.check('rm SecondBrain/Memory/*.md', '/mnt/volumes/projects/stixed');
+    expect(v?.rule).toBe('vault-delete');
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(v?.message()).toContain('Obsidian Sync');
   });
 });
 
@@ -253,6 +356,38 @@ describe('checkCommand rules resolution', () => {
       'recursive-delete'
     );
   });
+
+  it('prefers the configured file, then the root-owned copy, then the built-in rules', () => {
+    const dir = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-rules-')));
+    const rootOwned = join(dir, 'destructive_rules.json');
+    writeFileSync(rootOwned, JSON.stringify(DEFAULT_RULES));
+    expect(resolveRulesPath({ [RULES_ENV]: '/x/rules.json' }, rootOwned)).toBe('/x/rules.json');
+    expect(resolveRulesPath({}, rootOwned)).toBe(rootOwned);
+    // Missing (the Archon VM): no path, so the built-in strict rules apply.
+    expect(resolveRulesPath({}, join(dir, 'missing.json'))).toBeUndefined();
+    expect(
+      checkCommand('rm -rf /mnt/volumes/projects/Dashed', '/tmp', { rulesPath: null })?.rule
+    ).toBe('recursive-delete');
+  });
+
+  it('never reads the agent-writable <ARCHON_HOME>/destructive-rules.json', () => {
+    expect(resolveRulesPath({ ARCHON_HOME: '/tmp/anything' }, '/nonexistent/rules.json')).toBe(
+      undefined
+    );
+  });
+
+  it.skipIf(!existsSync(ROOT_OWNED_RULES_PATH))(
+    "reads Stixed's root-owned copy on this host",
+    () => {
+      delete process.env[RULES_ENV];
+      resetDestructiveGuardCache();
+      expect(resolveRulesPath()).toBe(ROOT_OWNED_RULES_PATH);
+      expect(checkCommand('rm -rf /mnt/volumes/projects/Dashed', '/tmp')?.rule).toBe(
+        'recursive-delete'
+      );
+      expect(checkCommand('rm -rf node_modules', '/mnt/volumes/projects/Dashed')).toBeUndefined();
+    }
+  );
 
   it.skipIf(!existsSync(SHARED_RULES_PATH))('uses the configured rules file', () => {
     process.env[RULES_ENV] = SHARED_RULES_PATH;
