@@ -81,6 +81,10 @@ RUN apt-get update && apt-get install -y \
     # code-search tool; jq powers JSON handling in bash workflow nodes) — see #1836
     ripgrep \
     jq \
+    # python3: runs the Jev shadow judge (stixed's jev_guard.py, mounted read-only
+    # from the host's root-owned promoted copy; standard library only). Named here
+    # rather than relied on as a dependency of another package.
+    python3 \
     # Chromium for agent-browser E2E testing (drives browser via CDP)
     chromium \
     && rm -rf /var/lib/apt/lists/*
@@ -190,6 +194,15 @@ USER root
 
 # Create .codex directory for Codex authentication
 RUN mkdir -p /home/appuser/.codex && chown appuser:appuser /home/appuser/.codex
+
+# Codex CLI on PATH: the same native binary @openai/codex-sdk spawns (installed
+# with the production deps above), so a `codex login --device-auth` run in the
+# container writes the login Archon's Codex nodes use, and a dependency bump
+# moves both together. Fails the build if the SDK's binary is missing.
+RUN CODEX_BIN="$(ls /app/node_modules/@openai/codex-linux-*/vendor/*/bin/codex 2>/dev/null | head -n 1)" \
+    && [ -n "$CODEX_BIN" ] \
+    && ln -sf "$CODEX_BIN" /usr/local/bin/codex \
+    && codex --version
 
 # Configure git to trust Archon directories (as appuser)
 RUN gosu appuser git config --global --add safe.directory '/.archon/workspaces' && \
