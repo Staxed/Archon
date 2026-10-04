@@ -71,13 +71,26 @@ describe('scrubServerEnv: what agents lose', () => {
     expect('DATABASE_URL' in scrubServerEnv(SERVER, 'claude')).toBe(false); // no cwd known
   });
 
-  test('DATABASE_URL becomes the operator-set agent URL when there is one', () => {
-    const env = scrubServerEnv(
-      { ...SERVER, [AGENT_DATABASE_URL_ENV]: 'postgresql://archon_ro@archon-postgres/x' },
-      'claude'
-    );
+  test("in Archon's own repo DATABASE_URL becomes the operator-set agent URL when there is one", () => {
+    const server = {
+      ...SERVER,
+      [AGENT_DATABASE_URL_ENV]: 'postgresql://archon_ro@archon-postgres/x',
+    };
+    const env = scrubServerEnv(server, 'claude', join(archonDir, 'packages', 'x'));
     expect(env.DATABASE_URL).toBe('postgresql://archon_ro@archon-postgres/x');
     expect(env[AGENT_DATABASE_URL_ENV]).toBeUndefined();
+  });
+
+  test("elsewhere the agent URL never fills DATABASE_URL: the project's own file supplies it", () => {
+    const server = {
+      ...SERVER,
+      [AGENT_DATABASE_URL_ENV]: 'postgresql://archon_ro@archon-postgres/x',
+    };
+    for (const cwd of [undefined, '/mnt/volumes/projects/trade-claude']) {
+      const env = scrubServerEnv(server, 'codex', cwd);
+      expect('DATABASE_URL' in env).toBe(false);
+      expect(Object.values(env)).not.toContain('postgresql://archon_ro@archon-postgres/x');
+    }
   });
 
   test('no DATABASE_URL on the server: none is invented', () => {

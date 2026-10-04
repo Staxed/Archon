@@ -12,14 +12,14 @@
  *    (codebase env vars, per-user credentials, delivered in requestOptions.env)
  *    passes through: a project's own DATABASE_URL is the project's to use. A
  *    request-layer entry that merely copies a scrubbed server value is dropped.
- *  - DATABASE_URL: ARCHON_AGENT_DATABASE_URL (e.g. a read-only role) replaces it
- *    when the operator set one. Otherwise it is REMOVED, with one exception: in
- *    Archon's own repo it becomes an address that can never resolve, because an
- *    unset DATABASE_URL would make an `archon` CLI an agent runs there fall back
- *    to SQLite and migrate ~/.archon/archon.db. Everywhere else it is unset: a
- *    placeholder would beat the project's own .env file (bun's auto-load, the
+ *  - DATABASE_URL is REMOVED, except in Archon's own repo: there it becomes
+ *    ARCHON_AGENT_DATABASE_URL (e.g. a read-only role) when the operator set one,
+ *    else an address that can never resolve, because an unset DATABASE_URL would
+ *    make an `archon` CLI an agent runs there fall back to SQLite and migrate
+ *    ~/.archon/archon.db. Everywhere else it is unset, the agent URL included:
+ *    any value would beat the project's own .env file (bun's auto-load, the
  *    usual env-file loaders and `node --env-file` never override an existing
- *    variable) and break its tests.
+ *    variable) and point its tests and migrations at Archon's database.
  *  - The forge tokens agents use for `gh` and `git push` over https (GH_TOKEN,
  *    GITHUB_TOKEN, GITLAB_TOKEN, GITEA_TOKEN) are NOT scrubbed: the bundled PR and
  *    issue workflows run `gh pr create`, `gh issue create` and `git push` from
@@ -120,9 +120,9 @@ export function scrubServerEnv(server: Env, cli: AgentCli, cwd?: string): Record
     out[key] = value;
   }
   if (server.DATABASE_URL !== undefined) {
-    const replacement = server[AGENT_DATABASE_URL_ENV];
-    if (replacement) out.DATABASE_URL = replacement;
-    else if (isArchonRepo(cwd)) out.DATABASE_URL = SCRUBBED_DATABASE_URL;
+    if (isArchonRepo(cwd)) {
+      out.DATABASE_URL = server[AGENT_DATABASE_URL_ENV] || SCRUBBED_DATABASE_URL;
+    }
   }
   return out;
 }
