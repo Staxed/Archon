@@ -4,7 +4,8 @@
  * Why this exists: an agent can, by mistake, run a shell command that destroys
  * something no git remote brings back -- a recursive delete or move of a project,
  * the folder that holds the projects, a system root; a disk wipe; `docker volume rm`;
- * `git clean -x` inside a project. This refuses those commands before they run, for
+ * `git clean -x` inside a project; a force-push of the repo's default branch. This
+ * refuses those commands before they run, for
  * Claude (a PreToolUse hook, claude/destructive-guard-hook.ts), Codex and Grok
  * (shared/cli-hooks/hook-dispatcher.ts) and Copilot (its shell permission request).
  * Pi and OpenCode run their shell tools with no Archon hook point, so they are NOT
@@ -31,9 +32,16 @@
  * shell on stdin (`bash -euo pipefail <<EOF`, `printf ... | sh`) and a script written
  * and run in the same command (`cat > x.sh <<EOF ... EOF; bash x.sh`) are seen
  * through, as are a script's and a shell function's arguments, `trap` strings, and a
- * command run in a container (`docker exec`, `docker compose exec`, `stixctl compose
- * <project> exec`). Threat model: mistakes, not a hostile agent. A script already on
- * disk is not read.
+ * command run in a container or sandbox (`docker exec`, `docker compose exec`,
+ * `stixctl compose <project> exec`, `sbx exec`, `stixctl sbx exec`). Threat model:
+ * mistakes, not a hostile agent. A script already on disk is not read.
+ *
+ * Force-push is the one place Archon's rule differs from Stixed's: Stixed refuses every
+ * force-push (rule `force-push`, for the interactive CLIs); Archon, the unattended
+ * orchestrator whose workflows rebase and force-push their own branches, reads
+ * `force-push-default-branch` and refuses only a force-push of the default branch
+ * (main, master, the remote's HEAD) or of a ref it cannot name. Both read the same
+ * `force_push` definition of what a forced push is.
  *
  * A path the guard cannot resolve (a variable, `$(...)`, a `cd -` or `popd` with no
  * earlier folder in the command) is judged as the Python guard judges it: refused
@@ -59,6 +67,21 @@ export interface DestructiveRulesFile {
   /** Notes folders not in git: a find deleting their .md notes is refused. */
   vaults?: string[];
   rules: { id: string; instead: string }[];
+  /** What a forced `git push` is (the shared definition); missing: DEFAULT_RULES'. */
+  force_push?: ForcePushSpec;
+}
+
+/** The rules file's `force_push`: what makes `git push` a force-push, and the default branches. */
+export interface ForcePushSpec {
+  force_options: string[];
+  force_short: string;
+  dry_run_options: string[];
+  dry_run_short: string;
+  value_options: string[];
+  value_short: string;
+  refspec_force_prefix: string;
+  every_branch_options: string[];
+  default_branches: string[];
 }
 
 /**
@@ -66,7 +89,7 @@ export interface DestructiveRulesFile {
  * strict rules as Stixed's destructive_rules.json (a test keeps them in step), so a
  * missing file never loosens the guard.
  */
-export const DEFAULT_RULES: DestructiveRulesFile = {
+export const DEFAULT_RULES: DestructiveRulesFile & { force_push: ForcePushSpec } = {
   protected_paths: [
     '/etc',
     '/usr',
@@ -129,7 +152,28 @@ export const DEFAULT_RULES: DestructiveRulesFile = {
       instead:
         "Wiping a project's ignored data is the user's to do. git clean -fd (without -x), or removing the one ignored folder you meant (rm -rf dist .venv), is a different command and is fine.",
     },
+    {
+      id: 'force-push',
+      instead:
+        "Force-pushing is the user's to do: they run it themselves in a terminal. A plain git push (or stixctl git-push <project>) that only adds commits is a different command and is fine.",
+    },
+    {
+      id: 'force-push-default-branch',
+      instead:
+        "Force-pushing the default branch, or a ref the guard cannot name, is the user's to do. Force-pushing this run's own branch or a rebased feature branch, named explicitly (git push --force-with-lease origin <branch>), is a different command and is fine.",
+    },
   ],
+  force_push: {
+    force_options: ['--force', '--force-with-lease', '--mirror'],
+    force_short: 'f',
+    dry_run_options: ['--dry-run'],
+    dry_run_short: 'n',
+    value_options: ['--repo', '--push-option', '--receive-pack', '--exec'],
+    value_short: 'o',
+    refspec_force_prefix: '+',
+    every_branch_options: ['--all', '--branches', '--mirror', '--tags'],
+    default_branches: ['main', 'master'],
+  },
 };
 
 /** What a floor block tells the agent: stop and ask, never route around it. */
@@ -256,6 +300,8 @@ export class Rules {
    * `"$X"/projects/*` may be projects, `"$X"/dist/*` may not.
    */
   readonly childNames: Map<string, Set<string>>;
+  /** What a forced `git push` is (the rules file's force_push, else the built-in copy). */
+  readonly forcePush: ForcePushSpec;
   private readonly instead: Map<string, string>;
 
   constructor(data: DestructiveRulesFile, home: string = homedir()) {
@@ -270,7 +316,10 @@ export class Rules {
     this.system = this.protectedPaths.filter(
       p => (!pp || !p.startsWith(pp + '/')) && !p.startsWith(homePrefix)
     );
-    this.instead = new Map(data.rules.map(r => [r.id, r.instead]));
+    // A rules file older than a rule (Stixed's promoted copy before its next promote)
+    // keeps the built-in message and definition for it, never a looser one.
+    this.instead = new Map([...DEFAULT_RULES.rules, ...data.rules].map(r => [r.id, r.instead]));
+    this.forcePush = data.force_push ?? DEFAULT_RULES.force_push;
     this.names = this.protectedNames();
     this.childNames = this.buildChildNames();
   }
@@ -1960,6 +2009,169 @@ function deadAfterTrue(cmds: Command[]): Set<number> {
   return dead;
 }
 
+// ---------------------------------------------------------------- force-push
+
+/** `name` is one of `options`, or a prefix git would expand to one (--force-w). */
+function longOption(name: string, options: string[]): boolean {
+  return options.includes(name) || (name.length > 2 && options.some(o => o.startsWith(name)));
+}
+
+interface PushArgs {
+  /** The force option as written (--force, -uf, --mirror). */
+  force?: string;
+  dryRun: boolean;
+  /** An option that pushes every branch or every tag (--all, --mirror, --tags). */
+  every?: string;
+  /** The repository, then the refspecs. */
+  positionals: Word[];
+}
+
+/** What `git push <words>` asks for, by the rules file's force_push definition (as the Python guard's parse_push). */
+function parsePush(words: Word[], spec: ForcePushSpec): PushArgs {
+  const out: PushArgs = { dryRun: false, positionals: [] };
+  let k = 0;
+  while (k < words.length) {
+    const a = words[k].text;
+    k++;
+    if (a === '--') {
+      out.positionals.push(...words.slice(k));
+      break;
+    }
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const name = eq >= 0 ? a.slice(0, eq) : a;
+      if (spec.value_options.includes(name) && eq < 0) k++;
+      else if (longOption(name, spec.dry_run_options)) out.dryRun = true;
+      else if (longOption(name, spec.force_options)) out.force ??= a;
+      if (longOption(name, spec.every_branch_options)) out.every ??= a;
+      continue;
+    }
+    if (a.startsWith('-') && a.length > 1) {
+      for (let i = 1; i < a.length; i++) {
+        const ch = a[i];
+        if (spec.value_short.includes(ch)) {
+          if (i === a.length - 1) k++; // -o value; -ovalue holds its own
+          break;
+        }
+        if (spec.force_short.includes(ch)) out.force ??= a;
+        else if (spec.dry_run_short.includes(ch)) out.dryRun = true;
+      }
+      continue;
+    }
+    out.positionals.push(words[k - 1]);
+  }
+  return out;
+}
+
+interface GitRepo {
+  /** This worktree's git dir (HEAD lives here). */
+  gitDir: string;
+  /** The repository's common dir (config, refs/remotes). */
+  commonDir: string;
+}
+
+function readText(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The git repo `cwd` is in (a .git folder, or a worktree's .git file), or undefined. */
+function gitRepoAt(cwd: string): GitRepo | undefined {
+  if (cwd.includes(UNRESOLVED) || !cwd.startsWith('/')) return undefined;
+  for (let dir = normPath(cwd); ; dir = dirname(dir)) {
+    const dotGit = joinPath(dir, '.git');
+    let gitDir: string | undefined;
+    try {
+      if (statSync(dotGit).isDirectory()) gitDir = dotGit;
+      else {
+        const m = /^gitdir:\s*(.+?)\s*$/m.exec(readText(dotGit) ?? '');
+        if (m) gitDir = m[1].startsWith('/') ? normPath(m[1]) : normPath(joinPath(dir, m[1]));
+      }
+    } catch {
+      // no .git here: look higher
+    }
+    if (gitDir) {
+      const common = readText(joinPath(gitDir, 'commondir'))?.trim();
+      const commonDir = common
+        ? common.startsWith('/')
+          ? normPath(common)
+          : normPath(joinPath(gitDir, common))
+        : gitDir;
+      return { gitDir, commonDir };
+    }
+    if (dir === '/') return undefined;
+  }
+}
+
+const BRANCH_NAME = /^(?!-)[A-Za-z0-9._/-]+$/;
+
+/** The branch HEAD names in `repo`, or undefined (detached, unreadable). */
+function currentBranch(repo: GitRepo): string | undefined {
+  const m = /^ref:\s*refs\/heads\/(\S+)\s*$/.exec(readText(joinPath(repo.gitDir, 'HEAD')) ?? '');
+  return m?.[1];
+}
+
+/** `branch.<name>.merge` from the repo's config: where a bare push of `name` may go. */
+function upstreamOf(repo: GitRepo, name: string): string | undefined {
+  const config = readText(joinPath(repo.commonDir, 'config'));
+  if (!config) return undefined;
+  let inSection = false;
+  for (const line of config.split('\n')) {
+    const section = /^\s*\[\s*branch\s+"([^"]*)"\s*\]/.exec(line);
+    if (section) {
+      inSection = section[1] === name;
+      continue;
+    }
+    if (/^\s*\[/.test(line)) {
+      inSection = false;
+      continue;
+    }
+    const merge = inSection ? /^\s*merge\s*=\s*refs\/heads\/(\S+)\s*$/i.exec(line) : null;
+    if (merge) return merge[1];
+  }
+  return undefined;
+}
+
+/** The branch `refs/remotes/<remote>/HEAD` names (the remote's default branch), or undefined. */
+function remoteHead(repo: GitRepo, remote: string): string | undefined {
+  if (!/^[A-Za-z0-9._-]+$/.test(remote)) return undefined;
+  const text = readText(joinPath(repo.commonDir, `refs/remotes/${remote}/HEAD`)) ?? '';
+  const m = new RegExp(`^ref:\\s*refs/remotes/${remote.replace(/[.]/g, '\\.')}/(\\S+)\\s*$`).exec(
+    text
+  );
+  return m?.[1];
+}
+
+/**
+ * The branches a forced refspec overwrites on the remote, or a reason it cannot be
+ * named. `HEAD`/`@` is the current branch; `src` alone pushes to the same name.
+ */
+function refspecTargets(w: Word, plus: string, repo: GitRepo | undefined): string[] | string {
+  if (w.unknown) return `${w.text || 'a variable'} holds a value the guard cannot see`;
+  const text = w.text.startsWith(plus) ? w.text.slice(plus.length) : w.text;
+  if (text.includes('*')) return `${w.text} is a wildcard`;
+  const colon = text.indexOf(':');
+  const dst = colon >= 0 ? text.slice(colon + 1) : text;
+  if (dst === 'HEAD' || dst === '@') return currentTargets(repo);
+  const branch = dst.startsWith('refs/heads/') ? dst.slice('refs/heads/'.length) : dst;
+  if (branch.startsWith('refs/')) return `${dst} is not a branch`;
+  if (!BRANCH_NAME.test(branch)) return `${w.text} does not name a branch`;
+  return [branch];
+}
+
+/** What a push with no refspec (or of HEAD) overwrites: the current branch and its upstream. */
+function currentTargets(repo: GitRepo | undefined): string[] | string {
+  const branch = repo ? currentBranch(repo) : undefined;
+  if (!repo || !branch) {
+    return "the current branch cannot be read from the repo at the command's folder";
+  }
+  const upstream = upstreamOf(repo, branch);
+  return upstream && upstream !== branch ? [branch, upstream] : [branch];
+}
+
 export class Checker {
   /** `logOnly` receives the commands the guard could not read (they are allowed). */
   constructor(
@@ -2276,11 +2488,12 @@ export class Checker {
     ) {
       return [this.disk(name, args), undefined];
     }
-    if (['docker', 'docker-compose', 'podman', 'stixctl'].includes(name)) {
+    if (['docker', 'docker-compose', 'podman', 'stixctl', 'sbx'].includes(name)) {
       const inner = this.execInner(name, args);
       if (inner) {
-        // docker exec, docker compose exec, stixctl compose <p> exec: the command inside
-        // the container is judged; its folder is the container's own.
+        // docker exec, docker compose exec, stixctl compose <p> exec, (stixctl) sbx exec:
+        // the command inside the container or sandbox is judged; its folder is the
+        // container's own.
         const [iwords, icwd] = inner;
         const cmd: Command = { ...newCommand(), words: [...iwords] };
         return [
@@ -2335,13 +2548,19 @@ export class Checker {
   }
 
   /**
-   * [the command, its folder] that docker/podman exec, docker compose exec or
-   * `stixctl compose <project> exec [-T] <svc>` runs in a container; undefined if not exec.
+   * [the command, its folder] that docker/podman exec, docker compose exec,
+   * `stixctl compose <project> exec [-T] <svc>`, `sbx exec` or `stixctl sbx exec` runs in
+   * a container or sandbox; undefined if not exec.
    */
   private execInner(name: string, args: Word[]): [Word[], string] | undefined {
     const t = args.map(w => w.text);
     let k = 0;
+    if (name === 'sbx') {
+      return t[0] === 'exec' ? this.execArgs(args, 1, DOCKER_EXEC_ARG) : undefined;
+    }
     if (name === 'stixctl') {
+      // sbx exec's flags match docker exec's (`sbx exec --help`).
+      if (t[0] === 'sbx' && t[1] === 'exec') return this.execArgs(args, 2, DOCKER_EXEC_ARG);
       if (t.length >= 3 && t[0] === 'compose' && t[2] === 'exec') {
         return this.execArgs(args, 3, COMPOSE_EXEC_ARG);
       }
@@ -2379,6 +2598,7 @@ export class Checker {
       k += takes ? 2 : 1;
     }
     k++; // the container or service
+    if (args[k]?.text === '--') k++; // sbx exec <name> -- <command>
     if (k >= args.length) return undefined;
     return [args.slice(k), cwd];
   }
@@ -2959,13 +3179,22 @@ export class Checker {
   private git(args: Word[], cwd: string): Violation | undefined {
     const texts = args.map(w => w.text);
     let k = 0;
+    // --git-dir / --work-tree name another repo than the folder's: its branch is not read.
+    let repoCwd = true;
     while (k < texts.length && texts[k].startsWith('-')) {
       if (texts[k] === '-C' && k + 1 < texts.length) {
         cwd = this.chdir(args[k + 1], cwd);
         k += 2;
-      } else if (['-c', '--git-dir', '--work-tree', '--namespace'].includes(texts[k])) k += 2;
-      else k++;
+      } else if (['-c', '--git-dir', '--work-tree', '--namespace'].includes(texts[k])) {
+        if (texts[k] === '--git-dir' || texts[k] === '--work-tree') repoCwd = false;
+        k += 2;
+      } else {
+        if (/^--(git-dir|work-tree)=/.test(texts[k])) repoCwd = false;
+        k++;
+      }
     }
+    if (texts[k] === 'push')
+      return this.forcePush(args.slice(k + 1), repoCwd ? cwd : UNRESOLVED_CWD);
     if (k >= texts.length || texts[k] !== 'clean') return undefined;
     const longs = texts.slice(k + 1);
     const flags = longs.filter(t => t.startsWith('-') && !t.startsWith('--'));
@@ -2987,6 +3216,57 @@ export class Checker {
         );
       }
     }
+    return undefined;
+  }
+
+  /**
+   * Archon's force-push rule (force-push-default-branch): a forced push is refused when
+   * a ref it forces is the default branch (force_push.default_branches or the remote's
+   * HEAD) or cannot be named; any other branch (archon/thread-*, a rebased feature
+   * branch) passes. Stixed's own guard refuses every force-push (rule force-push).
+   */
+  private forcePush(words: Word[], cwd: string): Violation | undefined {
+    const spec = this.r.forcePush;
+    const p = parsePush(words, spec);
+    if (p.dryRun) return undefined;
+    const plus = spec.refspec_force_prefix;
+    const [repoWord, ...refspecs] = p.positionals;
+    const forced = p.force ? refspecs : refspecs.filter(w => w.text.startsWith(plus));
+    if (!p.force && forced.length === 0 && !repoWord?.text.startsWith(plus)) return undefined;
+    const rule = 'force-push-default-branch';
+    const how = p.force ?? forced[0]?.text ?? repoWord.text;
+    const unnamed = (why: string): Violation =>
+      this.r.violation(
+        rule,
+        `git push ${how}: the guard cannot tell which branch it overwrites (${why})`
+      );
+    if (p.force && p.every) {
+      const flags = p.force === p.every ? p.every : `${p.every} ${p.force}`;
+      return this.r.violation(
+        rule,
+        `git push ${flags} force-updates every branch or tag, the default branch among them`
+      );
+    }
+    if (repoWord?.text.startsWith(plus))
+      return unnamed(`${repoWord.text} stands where the remote goes`);
+    const repo = gitRepoAt(cwd);
+    const defaults = new Set(spec.default_branches);
+    const remote = repoWord && !repoWord.unknown ? repoWord.text : 'origin';
+    const head = repo ? remoteHead(repo, remote) : undefined;
+    if (head) defaults.add(head);
+    const targets: string[] = [];
+    for (const t of forced.length > 0
+      ? forced.map(w => refspecTargets(w, plus, repo))
+      : [currentTargets(repo)]) {
+      if (typeof t === 'string') return unnamed(t);
+      targets.push(...t);
+    }
+    const hit = targets.find(t => defaults.has(t));
+    if (hit)
+      return this.r.violation(
+        rule,
+        `git push ${how} force-updates ${hit}, the repo's default branch`
+      );
     return undefined;
   }
 }
