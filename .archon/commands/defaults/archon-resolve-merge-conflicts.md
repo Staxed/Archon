@@ -268,8 +268,10 @@ Fix any lint issues.
 
 ### 5.1 Force Push the Resolved Branch
 
+Confirm you're on `$PR_HEAD` (`git branch --show-current`), then push the checked-out branch:
+
 ```bash
-git push --force-with-lease origin $PR_HEAD
+git push --force-with-lease origin HEAD
 ```
 
 **Note**: `--force-with-lease` is safer than `--force` as it fails if someone else pushed.

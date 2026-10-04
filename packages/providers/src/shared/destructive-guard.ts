@@ -2147,13 +2147,21 @@ function remoteHead(repo: GitRepo, remote: string): string | undefined {
 
 /**
  * The branches a forced refspec overwrites on the remote, or a reason it cannot be
- * named. `HEAD`/`@` is the current branch; `src` alone pushes to the same name.
+ * named. `src` alone pushes to the same name, so a bare `HEAD`/`@` is the current
+ * branch's own name (git: a missing `:<dst>` updates the same ref as `<src>`), never
+ * its upstream; only a push with no refspec follows push.default to the upstream.
  */
 function refspecTargets(w: Word, plus: string, repo: GitRepo | undefined): string[] | string {
   if (w.unknown) return `${w.text || 'a variable'} holds a value the guard cannot see`;
   const text = w.text.startsWith(plus) ? w.text.slice(plus.length) : w.text;
   if (text.includes('*')) return `${w.text} is a wildcard`;
   const colon = text.indexOf(':');
+  if (colon < 0 && (text === 'HEAD' || text === '@')) {
+    const branch = repo ? currentBranch(repo) : undefined;
+    return branch
+      ? [branch]
+      : `${text} is detached or the repo at the command's folder is unreadable`;
+  }
   const dst = colon >= 0 ? text.slice(colon + 1) : text;
   if (dst === 'HEAD' || dst === '@') return currentTargets(repo);
   const branch = dst.startsWith('refs/heads/') ? dst.slice('refs/heads/'.length) : dst;
@@ -2162,7 +2170,7 @@ function refspecTargets(w: Word, plus: string, repo: GitRepo | undefined): strin
   return [branch];
 }
 
-/** What a push with no refspec (or of HEAD) overwrites: the current branch and its upstream. */
+/** What a push with no refspec (or to `<src>:HEAD`) overwrites: the current branch and its upstream. */
 function currentTargets(repo: GitRepo | undefined): string[] | string {
   const branch = repo ? currentBranch(repo) : undefined;
   if (!repo || !branch) {

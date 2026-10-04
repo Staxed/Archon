@@ -276,9 +276,9 @@ describe('force-push: Archon refuses only the default branch or a ref it cannot 
     for (const cmd of [
       'git push --force-with-lease', // archon-pr-review-scope's advice, run bare
       'git push -u origin HEAD --force-with-lease', // archon-implement-issue
-      'git push --force-with-lease origin HEAD', // archon-finalize-pr
-      'git push --force-with-lease origin archon/thread-1a2b3c', // archon-sync-pr-with-main
-      'PR_HEAD=feat/x; git push --force-with-lease origin $PR_HEAD', // archon-resolve-merge-conflicts
+      'git push --force-with-lease origin HEAD', // finalize-pr, sync-pr-with-main, resolve-merge-conflicts
+      'git push --force-with-lease origin archon/thread-1a2b3c',
+      'PR_HEAD=feat/x; git push --force-with-lease origin $PR_HEAD',
       'git push origin +HEAD:feat/x',
     ]) {
       expect([cmd, rule(cmd, wt)]).toEqual([cmd, undefined]);
@@ -297,6 +297,19 @@ describe('force-push: Archon refuses only the default branch or a ref it cannot 
     expect(rule('git push -f origin develop', dev)).toBe('force-push-default-branch');
     expect(rule('git push -f origin feat', dev)).toBeUndefined();
     expect(rule('git push -f upstream develop', dev)).toBeUndefined(); // another remote's HEAD is unknown
+  });
+
+  it('a bare HEAD refspec is the current branch by its own name, never its upstream', () => {
+    const tracksMain = repo('feat/x', { upstream: 'main', worktree: true });
+    expect(rule('git push -u origin HEAD --force-with-lease', tracksMain)).toBeUndefined();
+    expect(rule('git push --force origin @', tracksMain)).toBeUndefined();
+    expect(rule('git push origin +HEAD', tracksMain)).toBeUndefined();
+    expect(rule('git push --force-with-lease origin HEAD', repo('feat/y'))).toBeUndefined();
+    // With no refspec, push.default may still send it to the upstream.
+    expect(rule('git push --force', tracksMain)).toBe('force-push-default-branch');
+    expect(rule('git push origin HEAD:main --force', tracksMain)).toBe('force-push-default-branch');
+    expect(rule('git push --force origin HEAD', repo('main'))).toBe('force-push-default-branch');
+    expect(rule('git push -f origin HEAD', repo(null))).toBe('force-push-default-branch');
   });
 
   it('refuses what it cannot name: detached HEAD, no repo, a variable, a wildcard, a tag', () => {
