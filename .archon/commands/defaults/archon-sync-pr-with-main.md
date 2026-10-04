@@ -211,10 +211,10 @@ bun run lint
 
 ### 5.1 Confirm Branch and Push
 
-Confirm you're on `$PR_HEAD`, then push:
+Confirm you're on `$PR_HEAD` (`git branch --show-current`), then push the checked-out branch:
 
 ```bash
-git push --force-with-lease origin $PR_HEAD
+git push --force-with-lease origin HEAD
 ```
 
 **Note**: `--force-with-lease` is safer - fails if someone else pushed.

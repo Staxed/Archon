@@ -45,6 +45,11 @@ interface Case {
   cmd: string;
   cwd?: string;
   rule?: string;
+  /**
+   * What Archon answers when its rule differs from Stixed's (force-push: Archon reads the
+   * looser force-push-default-branch): a rule id, or "allow".
+   */
+  archon?: string;
 }
 interface Cases {
   default_cwd: string;
@@ -59,20 +64,22 @@ describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () 
     : undefined;
   // Pin home so the cases mean the same thing on any machine and inside the VM.
   const checker = haveShared && rules ? new Checker(new Rules(rules, '/home/staxed')) : undefined;
+  const blockCases = (cases?.block ?? []).filter(c => (c.archon ?? c.rule) !== 'allow');
+  const archonAllows = (cases?.block ?? []).filter(c => c.archon === 'allow');
 
   it('blocks every block case with the expected rule', () => {
     const wrong: string[] = [];
-    for (const c of cases?.block ?? []) {
+    for (const c of blockCases) {
+      const want = c.archon ?? c.rule;
       const v = checker?.check(c.cmd, c.cwd ?? cases?.default_cwd ?? '/');
-      if (!v || v.rule !== c.rule)
-        wrong.push(`${c.cmd} -> ${v ? v.rule : 'allowed'} (want ${c.rule})`);
+      if (!v || v.rule !== want) wrong.push(`${c.cmd} -> ${v ? v.rule : 'allowed'} (want ${want})`);
     }
     expect(wrong).toEqual([]);
   });
 
-  it('allows every allow case', () => {
+  it('allows every allow case, and the block cases Archon marks "allow"', () => {
     const wrong: string[] = [];
-    for (const c of cases?.allow ?? []) {
+    for (const c of [...(cases?.allow ?? []), ...archonAllows]) {
       const v = checker?.check(c.cmd, c.cwd ?? cases?.default_cwd ?? '/');
       if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
     }
@@ -220,6 +227,124 @@ describe('default rules (no rules file, or the root-owned copy missing)', () => 
     expect(DEFAULT_RULES.protected_children_of).toEqual(shared.protected_children_of);
     expect(DEFAULT_RULES.vaults).toEqual(shared.vaults);
     expect(DEFAULT_RULES.rules).toEqual(shared.rules.map(r => ({ id: r.id, instead: r.instead })));
+    const { _comment: _c, ...forcePush } = (shared.force_push ?? {}) as Record<string, unknown>;
+    expect(DEFAULT_RULES.force_push as unknown).toEqual(forcePush);
+  });
+});
+
+describe('force-push: Archon refuses only the default branch or a ref it cannot name', () => {
+  const checker = new Checker(new Rules(DEFAULT_RULES, '/home/staxed'));
+  /** A repo whose HEAD is `branch`; `worktree` lays it out as a linked worktree (.git file). */
+  const repo = (
+    branch: string | null,
+    opts: { remoteHead?: string; upstream?: string; worktree?: boolean } = {}
+  ): string => {
+    const tmp = trackTempRoot(mkdtempSync(join(tmpdir(), 'guard-push-')));
+    const common = join(tmp, 'main', '.git');
+    mkdirSync(join(common, 'refs', 'remotes', 'origin'), { recursive: true });
+    let config = '[core]\n\tbare = false\n';
+    if (opts.upstream && branch) {
+      config += `[branch "${branch}"]\n\tremote = origin\n\tmerge = refs/heads/${opts.upstream}\n`;
+    }
+    writeFileSync(join(common, 'config'), config);
+    if (opts.remoteHead) {
+      writeFileSync(
+        join(common, 'refs', 'remotes', 'origin', 'HEAD'),
+        `ref: refs/remotes/origin/${opts.remoteHead}\n`
+      );
+    }
+    const head = branch ? `ref: refs/heads/${branch}\n` : 'a'.repeat(40) + '\n';
+    if (!opts.worktree) {
+      writeFileSync(join(common, 'HEAD'), head);
+      mkdirSync(join(tmp, 'main', 'src'));
+      return join(tmp, 'main', 'src');
+    }
+    writeFileSync(join(common, 'HEAD'), 'ref: refs/heads/main\n');
+    const wtGit = join(common, 'worktrees', 'run');
+    mkdirSync(wtGit, { recursive: true });
+    writeFileSync(join(wtGit, 'HEAD'), head);
+    writeFileSync(join(wtGit, 'commondir'), '../..\n');
+    const wt = join(tmp, 'wt', 'run');
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), `gitdir: ${wtGit}\n`);
+    return wt;
+  };
+  const rule = (cmd: string, cwd: string): string | undefined => checker.check(cmd, cwd)?.rule;
+
+  it("passes a force-push of the run's own branch, as Archon's workflows do", () => {
+    const wt = repo('archon/thread-1a2b3c', { worktree: true });
+    for (const cmd of [
+      'git push --force-with-lease', // archon-pr-review-scope's advice, run bare
+      'git push -u origin HEAD --force-with-lease', // archon-implement-issue
+      'git push --force-with-lease origin HEAD', // finalize-pr, sync-pr-with-main, resolve-merge-conflicts
+      'git push --force-with-lease origin archon/thread-1a2b3c',
+      'PR_HEAD=feat/x; git push --force-with-lease origin $PR_HEAD',
+      'git push origin +HEAD:feat/x',
+    ]) {
+      expect([cmd, rule(cmd, wt)]).toEqual([cmd, undefined]);
+    }
+  });
+
+  it('refuses the default branch, by name, by HEAD, by upstream and by the remote HEAD', () => {
+    expect(rule('git push --force-with-lease', repo('main'))).toBe('force-push-default-branch');
+    expect(rule('git push -f origin HEAD', repo('master', { worktree: true }))).toBe(
+      'force-push-default-branch'
+    );
+    expect(rule('git push --force', repo('fix', { upstream: 'main' }))).toBe(
+      'force-push-default-branch'
+    );
+    const dev = repo('feat', { remoteHead: 'develop' });
+    expect(rule('git push -f origin develop', dev)).toBe('force-push-default-branch');
+    expect(rule('git push -f origin feat', dev)).toBeUndefined();
+    expect(rule('git push -f upstream develop', dev)).toBeUndefined(); // another remote's HEAD is unknown
+  });
+
+  it('a bare HEAD refspec is the current branch by its own name, never its upstream', () => {
+    const tracksMain = repo('feat/x', { upstream: 'main', worktree: true });
+    expect(rule('git push -u origin HEAD --force-with-lease', tracksMain)).toBeUndefined();
+    expect(rule('git push --force origin @', tracksMain)).toBeUndefined();
+    expect(rule('git push origin +HEAD', tracksMain)).toBeUndefined();
+    expect(rule('git push --force-with-lease origin HEAD', repo('feat/y'))).toBeUndefined();
+    // With no refspec, push.default may still send it to the upstream.
+    expect(rule('git push --force', tracksMain)).toBe('force-push-default-branch');
+    expect(rule('git push origin HEAD:main --force', tracksMain)).toBe('force-push-default-branch');
+    expect(rule('git push --force origin HEAD', repo('main'))).toBe('force-push-default-branch');
+    expect(rule('git push -f origin HEAD', repo(null))).toBe('force-push-default-branch');
+  });
+
+  it('refuses what it cannot name: detached HEAD, no repo, a variable, a wildcard, a tag', () => {
+    const detached = repo(null);
+    for (const [cmd, cwd] of [
+      ['git push --force', detached],
+      ['git push --force-with-lease origin HEAD', detached],
+      ['git push --force', '/nonexistent/repo'],
+      ['git push -f origin "$BRANCH"', repo('feat')],
+      ['git push -f origin "refs/heads/*:refs/heads/*"', repo('feat')],
+      ['git push -f origin v1:refs/tags/v1', repo('feat')],
+      ['git --git-dir=/elsewhere/.git push --force', repo('feat')],
+    ] as const) {
+      expect([cmd, rule(cmd, cwd)]).toEqual([cmd, 'force-push-default-branch']);
+    }
+  });
+
+  it('says why, and keeps the hard stop', () => {
+    const v = checker.check('git push --force origin main', '/tmp');
+    expect(v?.message()).toContain("force-updates main, the repo's default branch");
+    expect(v?.message()).toContain(HARD_STOP);
+    expect(checker.check('git push --dry-run --force origin main', '/tmp')).toBeUndefined();
+  });
+
+  it('an older rules file without force_push keeps the built-in definition', () => {
+    const { force_push: _fp, ...older } = DEFAULT_RULES;
+    const old = new Checker(
+      new Rules(
+        { ...older, rules: older.rules.filter(r => !r.id.startsWith('force-push')) },
+        '/home/staxed'
+      )
+    );
+    const v = old.check('git push -f origin main', '/tmp');
+    expect(v?.rule).toBe('force-push-default-branch');
+    expect(v?.instead).toContain('Force-pushing the default branch');
   });
 });
 
