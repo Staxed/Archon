@@ -194,6 +194,10 @@ USER root
 
 # Create .codex directory for Codex authentication
 RUN mkdir -p /home/appuser/.codex && chown appuser:appuser /home/appuser/.codex
+# Local deployment runs the app as 1000:1000 (bun, HOME=/home/bun) with the
+# archon_codex_home volume on /home/bun/.codex: a new named volume takes this
+# folder's owner, so it exists here owned by bun or `codex login` can't write it.
+RUN mkdir -p /home/bun/.codex && chown bun:bun /home/bun/.codex
 
 # Codex CLI on PATH: the same native binary @openai/codex-sdk spawns (installed
 # with the production deps above), so a `codex login --device-auth` run in the
