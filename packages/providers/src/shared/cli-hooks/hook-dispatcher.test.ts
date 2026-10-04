@@ -505,9 +505,9 @@ describe('Jev shadow judge (log-only)', () => {
     for (let i = 0; i < 100 && lines.length === 0; i++) {
       await Bun.sleep(50);
       lines = existsSync(shadow.logDir)
-        ? readdirSync(shadow.logDir).flatMap(f =>
-            readFileSync(join(shadow.logDir, f), 'utf8').trim().split('\n')
-          )
+        ? readdirSync(shadow.logDir)
+            .filter(f => f.endsWith('.jsonl'))
+            .flatMap(f => readFileSync(join(shadow.logDir, f), 'utf8').trim().split('\n'))
         : [];
     }
     expect(JSON.parse(lines[0])).toMatchObject({

@@ -26,7 +26,7 @@
  *
  * This file imports node built-ins only (the CLI hook dispatcher imports it).
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -222,8 +222,14 @@ export function shadowPayload(call: ShadowCall, config: JevShadowConfig): string
  * in the payload is importable besides the standard library.
  */
 export const JUDGE_SCRIPT = String.raw`
-import json, os, signal, sys, time
+import json, os, signal, sys, threading, time
 started = time.monotonic()
+# Backstop that does not depend on the parent or the main thread: a daemon timer
+# works while the main thread is stuck reading stdin or in a C call. The env var
+# is only ever set by tests (the judge process env is pinned by the parent).
+_backstop = threading.Timer(float(os.environ.get("ARCHON_JEV_BACKSTOP_S") or ${JUDGE_TIMEOUT_S + 5}), os._exit, (0,))
+_backstop.daemon = True
+_backstop.start()
 payload = json.load(sys.stdin)
 cfg, call = payload["config"], payload["call"]
 entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "provider": call.get("provider"),
@@ -240,6 +246,31 @@ def write_entry():
         os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
     finally:
         os.close(fd)
+def _take_slot():
+    # One of SLOTS non-blocking flock slots, shared by every judge on this host
+    # (the dispatcher is a fresh process per Codex/Grok hook call, so no in-process
+    # counter can cap them). Held until the process dies, SIGKILL included.
+    try:
+        import fcntl
+        folder = os.path.join(cfg["log_dir"], "slots")
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        for n in range(${MAX_CONCURRENT_JUDGES}):
+            fd = os.open(os.path.join(folder, "slot-%d.lock" % n), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                os.close(fd)
+        return False
+    except BaseException:
+        return True  # no usable slot folder: judge anyway, the backstop still bounds it
+if not _take_slot():
+    entry.update(decision="skipped", error="skipped: busy")
+    try:
+        write_entry()
+    except BaseException:
+        pass
+    os._exit(0)
 def _timeout(*_):
     # os._exit, never an exception: jev_guard's broad except blocks would swallow it
     try:
@@ -352,7 +383,16 @@ export function shadowJudge(
       done();
       return;
     }
+    let payload: string;
+    try {
+      payload = shadowPayload(call, config);
+    } catch (err) {
+      logShadowFailure(config, call, `judge did not start: ${(err as Error).message}`);
+      done();
+      return;
+    }
     let counted = false;
+    let child: ChildProcess | undefined;
     const release = (): void => {
       if (counted) {
         counted = false;
@@ -362,24 +402,25 @@ export function shadowJudge(
     try {
       inFlight++;
       counted = true;
-      const child = spawn(config.python, ['-I', '-c', JUDGE_SCRIPT], {
+      child = spawn(config.python, ['-I', '-c', JUDGE_SCRIPT], {
         cwd: '/',
         detached: true,
         stdio: ['pipe', 'ignore', 'ignore'],
         env: judgeProcessEnv(),
       });
-      child.on('exit', release);
-      child.on('error', (err: Error) => {
+      const proc = child;
+      proc.on('exit', release);
+      proc.on('error', (err: Error) => {
         release();
         logShadowFailure(config, call, `judge did not start: ${err.message}`);
         done();
       });
-      child.stdin?.on('error', () => {
+      proc.stdin?.on('error', () => {
         // EPIPE: the judge died before reading; it logs its own failure if it can
         done();
       });
-      child.unref();
-      child.stdin?.end(shadowPayload(call, config), () => {
+      proc.unref();
+      proc.stdin?.end(payload, () => {
         done();
       });
       const timer = setTimeout(done, waitMs);
@@ -387,16 +428,21 @@ export function shadowJudge(
       // Hard deadline whatever the judge does: kill its process group.
       const killer = setTimeout(() => {
         try {
-          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+          if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
         } catch {
           // already gone
         }
         release();
       }, KILL_AFTER_MS);
       killer.unref?.();
-      child.on('exit', () => clearTimeout(killer));
+      proc.on('exit', () => clearTimeout(killer));
     } catch (err) {
       release();
+      try {
+        if (child?.pid) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
       logShadowFailure(config, call, `judge did not start: ${(err as Error).message}`);
       done();
     }

@@ -84,18 +84,29 @@ function call(command: string, extra: Partial<ShadowCall> = {}): ShadowCall {
   };
 }
 
-/** Wait for the detached judge to append its line. */
+/** Wait for the detached judge to append its line (judge logs local days, the TS side UTC days: read both). */
 async function logLines(logDir: string, n = 1): Promise<Record<string, unknown>[]> {
   for (let i = 0; i < 100; i++) {
     const day = new Date();
-    for (const d of [day, new Date(day.getTime() - 86_400_000)]) {
-      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const p = join(logDir, `${local}.jsonl`);
-      if (existsSync(p)) {
-        const lines = readFileSync(p, 'utf8').trim().split('\n').filter(Boolean);
-        if (lines.length >= n) return lines.map(l => JSON.parse(l) as Record<string, unknown>);
-      }
+    const names = new Set<string>();
+    for (const d of [
+      day,
+      new Date(day.getTime() - 86_400_000),
+      new Date(day.getTime() + 86_400_000),
+    ]) {
+      names.add(
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      );
+      names.add(d.toISOString().slice(0, 10));
     }
+    const all: Record<string, unknown>[] = [];
+    for (const name of names) {
+      const p = join(logDir, `${name}.jsonl`);
+      if (existsSync(p))
+        for (const l of readFileSync(p, 'utf8').trim().split('\n').filter(Boolean))
+          all.push(JSON.parse(l) as Record<string, unknown>);
+    }
+    if (all.length >= n) return all;
     await Bun.sleep(50);
   }
   throw new Error(`no ${n} log line(s) in ${logDir}`);
@@ -319,6 +330,61 @@ describe('concurrency cap and timeout (shadow stays log-only)', () => {
     expect(entry.decision).toBe('error');
     expect(String(entry.error)).toContain('timeout');
   }, 20_000);
+});
+
+describe('cross-process slots, backstop and payload errors', () => {
+  const PY = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
+  const SLEEPY = `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    time.sleep(2.5)\n    return V(decision="allow", reason="", asked=False, triggers=[], facts={}, model="", latency_ms=0, cost=0.0, error="")\n`;
+
+  test('separate processes share the 4 slots: at most 4 judge, the rest log "skipped: busy"', async () => {
+    const dir = fakeScripts('judge-slots');
+    writeFileSync(join(dir, 'jev_guard.py'), SLEEPY);
+    const logDir = join(root, 'log-slots');
+    const payload = shadowPayload(call('ls'), config(dir, logDir));
+    const procs = Array.from({ length: 8 }, () =>
+      Bun.spawn([PY, '-I', '-c', JUDGE_SCRIPT], {
+        stdin: new TextEncoder().encode(payload),
+        stdout: 'ignore',
+        stderr: 'ignore',
+      })
+    );
+    await Promise.all(procs.map(p => p.exited));
+    const lines = await logLines(logDir, 8);
+    expect(lines).toHaveLength(8);
+    expect(lines.filter(l => l.decision === 'allow')).toHaveLength(MAX_CONCURRENT_JUDGES);
+    const skipped = lines.filter(l => l.decision === 'skipped');
+    expect(skipped).toHaveLength(8 - MAX_CONCURRENT_JUDGES);
+    for (const l of skipped) expect(l.error).toBe('skipped: busy');
+  }, 30_000);
+
+  test('a judge whose stdin never closes exits by the backstop', async () => {
+    const dir = fakeScripts('judge-backstop');
+    const t = performance.now();
+    const proc = Bun.spawn([PY, '-I', '-c', JUDGE_SCRIPT], {
+      stdin: 'pipe', // never written, never ended
+      stdout: 'ignore',
+      stderr: 'ignore',
+      env: { ...process.env, ARCHON_JEV_BACKSTOP_S: '1' },
+    });
+    const code = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => 'hung')]);
+    if (code === 'hung') proc.kill('SIGKILL');
+    expect(code).toBe(0);
+    expect(performance.now() - t).toBeLessThan(10_000);
+    expect(existsSync(dir)).toBe(true);
+  }, 30_000);
+
+  test('a payload that cannot be built starts no judge and is logged', async () => {
+    const dir = fakeScripts('judge-badpayload');
+    const logDir = join(root, 'log-badpayload');
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const before = judgesInFlight();
+    await shadowJudge(call('ls', { toolInput: cyclic }), config(dir, logDir), 10);
+    expect(judgesInFlight()).toBe(before);
+    const [entry] = await logLines(logDir);
+    expect(entry.decision).toBe('error');
+    expect(String(entry.error)).toContain('judge did not start');
+  });
 });
 
 describe('the real promoted jev_guard (no network: a call with nothing at stake)', () => {
