@@ -1873,6 +1873,93 @@ function emptyScope(): Scope {
   return { files: new Map(), funcs: new Map(), called: new Set() };
 }
 
+// Dead code after `true ||` / `: ||` (the Python guard's `_dead_after_true`). The lexer's
+// commands are flat (each records the operator before it), so a compound command is
+// delimited by its reserved words.
+/** The rest of the command is its header. */
+const BLOCK_OPEN = new Set(['for', 'select', 'case']);
+/** A condition command follows. */
+const BLOCK_OPEN_COND = new Set(['while', 'until', 'if']);
+const BLOCK_CLOSE = new Set(['done', 'fi', 'esac']);
+const BLOCK_INNER = new Set(['do', 'then', 'else', 'elif', '!']);
+
+/**
+ * How a command's leading reserved words change the compound-command depth; undefined
+ * when it opens a block whose end the lexer does not keep (`{ ... }`, a function).
+ */
+function depthStep(c: Command): number | undefined {
+  let d = 0;
+  for (const w of c.words) {
+    const t = w.text;
+    if (w.unknown || w.alts || w.glob) break;
+    if (BLOCK_CLOSE.has(t)) d -= 1;
+    else if (BLOCK_OPEN.has(t)) return d + 1;
+    else if (BLOCK_OPEN_COND.has(t)) d += 1;
+    else if (t === '{' || t === 'function') return undefined;
+    else if (!BLOCK_INNER.has(t)) break;
+  }
+  return d;
+}
+
+/**
+ * The index after the and-or list member that starts at `j`: a pipeline of simple or
+ * compound commands (`for ... done | sort`). Undefined when its end is not certain.
+ */
+function memberEnd(cmds: Command[], j: number): number | undefined {
+  let k = j;
+  for (;;) {
+    let depth = 0;
+    for (;;) {
+      if (k >= cmds.length || cmds[k].func) return undefined;
+      const step = depthStep(cmds[k]);
+      if (step === undefined) return undefined;
+      depth += step;
+      k += 1;
+      if (depth < 0) return undefined;
+      if (depth === 0) break;
+    }
+    if (k < cmds.length && (cmds[k].sep === '|' || cmds[k].sep === '|&')) continue;
+    return k;
+  }
+}
+
+/** A bare `true` or `:`: no arguments, redirects or substitutions that could fail. */
+function alwaysTrue(c: Command): boolean {
+  const w = c.words[0];
+  return (
+    c.words.length === 1 &&
+    (w.text === 'true' || w.text === ':') &&
+    !w.unknown &&
+    !w.alts &&
+    !w.glob &&
+    c.redirects.length === 0 &&
+    c.subs.length === 0 &&
+    c.heredocs.length === 0 &&
+    !c.func
+  );
+}
+
+/**
+ * Commands that can't run: the members after `true ||` (`true || for d in *\/; do rm -rf
+ * "$d"; done`). `true` must start its and-or list or follow `||` (`x && true || y` runs y
+ * when x fails) and not end a pipeline (pipefail). Anything whose extent is unsure runs.
+ * Matches the Python guard's `_dead_after_true`; both run the shared case list.
+ */
+function deadAfterTrue(cmds: Command[]): Set<number> {
+  const dead = new Set<number>();
+  cmds.forEach((c, i) => {
+    if (!alwaysTrue(c) || c.sep === '&&' || c.sep === '|' || c.sep === '|&') return;
+    let j = i + 1;
+    while (j < cmds.length && cmds[j].sep === '||') {
+      const k = memberEnd(cmds, j);
+      if (k === undefined) break;
+      for (let n = j; n < k; n++) dead.add(n);
+      j = k;
+    }
+  });
+  return dead;
+}
+
 export class Checker {
   /** `logOnly` receives the commands the guard could not read (they are allowed). */
   constructor(
@@ -1916,8 +2003,10 @@ export class Checker {
     const dirs: Dirs = { stack: [] };
     let upstream: Command[] = [];
     let prevOut: string | undefined;
-    for (const c of cmds) {
-      if (c.func) continue; // a function body runs when the function is called
+    const dead = deadAfterTrue(cmds);
+    for (const [idx, c] of cmds.entries()) {
+      // a function body runs when the function is called; dead code never
+      if (c.func || dead.has(idx)) continue;
       env.PWD = cwd;
       for (const body of c.subs) {
         const v = this.check(body, cwd, depth + 1, scope, undefined, c.vars);
