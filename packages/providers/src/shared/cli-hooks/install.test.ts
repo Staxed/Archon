@@ -8,6 +8,7 @@ import {
   codexHookTrustOverride,
   ensureCodexDispatcher,
   ensureGrokDispatcher,
+  PRE_TOOL_USE_TIMEOUT_S,
   prepareHookRun,
   unsupportedHookEvents,
 } from './install';
@@ -66,6 +67,17 @@ describe('codex hook trust hash', () => {
     );
   });
 
+  test('reproduces a trusted_hash Codex wrote for a handler with an explicit timeout (codex 0.161)', () => {
+    // ~/.codex/hooks.json, PreToolUse group 2: Dashed's live-state hook, `"timeout": 3`.
+    expect(
+      codexHookHash(
+        'pre_tool_use',
+        '/usr/bin/python3 /mnt/volumes/projects/Dashed/integrations/live_state/live_state.py codex',
+        3
+      )
+    ).toBe('sha256:6ccd384f2456312fc46be35b6e559d0a88d88cdeea97489897a1cda120296f0d');
+  });
+
   test('canonicalJson sorts keys at every level and drops undefined', () => {
     expect(canonicalJson({ b: 1, a: { d: [1, { z: 1, y: 2 }], c: undefined } })).toBe(
       '{"a":{"d":[1,{"y":2,"z":1}]},"b":1}'
@@ -103,6 +115,25 @@ describe('ensureCodexDispatcher', () => {
       true,
     ]);
     expect(trust1[`${hooksPath()}:stop:1:0`]).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  test('PreToolUse carries a 45 s timeout and its trust hash covers it; other events keep the default', () => {
+    const trust = ensureCodexDispatcher(undefined, '/bin/bun', __filename);
+    const doc = JSON.parse(readFileSync(hooksPath(), 'utf8')) as {
+      hooks: Record<string, { hooks: { command: string; timeout?: number }[] }[]>;
+    };
+    const pre = doc.hooks.PreToolUse[0].hooks[0];
+    expect(pre.timeout).toBe(PRE_TOOL_USE_TIMEOUT_S);
+    expect(PRE_TOOL_USE_TIMEOUT_S).toBe(45);
+    expect(trust[`${hooksPath()}:pre_tool_use:0:0`]).toBe(
+      codexHookHash('pre_tool_use', pre.command, 45)
+    );
+    expect(trust[`${hooksPath()}:pre_tool_use:0:0`]).not.toBe(
+      codexHookHash('pre_tool_use', pre.command)
+    );
+    const stop = doc.hooks.Stop[0].hooks[0];
+    expect(stop.timeout).toBeUndefined();
+    expect(trust[`${hooksPath()}:stop:0:0`]).toBe(codexHookHash('stop', stop.command));
   });
 
   test('refuses to clobber a hooks.json it cannot parse', () => {
@@ -150,6 +181,16 @@ describe('ensureGrokDispatcher', () => {
     expect(doc.hooks.PostToolUseFailure).toBeDefined();
     expect(doc.hooks.PermissionRequest).toBeUndefined();
   });
+
+  test("PreToolUse waits 45 s (Grok's default is 5 s, then it fails open); other events keep Grok's defaults", () => {
+    const path = ensureGrokDispatcher(undefined, '/bin/bun', __filename);
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+      hooks: Record<string, { hooks: { timeout?: number }[] }[]>;
+    };
+    expect(doc.hooks.PreToolUse[0].hooks[0].timeout).toBe(45);
+    expect(doc.hooks.Stop[0].hooks[0].timeout).toBeUndefined();
+    expect(doc.hooks.PostToolUse[0].hooks[0].timeout).toBeUndefined();
+  });
 });
 
 describe('hook run preparation', () => {
@@ -176,7 +217,7 @@ describe('hook run preparation', () => {
     expect(written).toMatchObject({ cwd: '/w' });
     // the guard's rules file is pinned by the server, never left to the CLI's env
     expect(Object.hasOwn(written, 'rulesPath')).toBe(true);
-    // so is the Jev shadow judge (off under bun test: no folder named)
+    // so is the Jev guard (off under bun test: no folder named)
     expect(Object.hasOwn(written, 'jevShadow')).toBe(true);
     expect(written.jevShadow).toBeNull();
     run.cleanup();
