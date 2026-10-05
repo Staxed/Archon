@@ -14,13 +14,26 @@
  * folders, then `~/.archon/commands/`, then the bundled defaults) to bytes identical to
  * the shipped bundle's copy (BUNDLED_COMMANDS). A project or home override of one of
  * those commands leaves the YAML untouched but runs a project-written prompt, so the
- * workflow is then `repo`; an unresolvable command is `repo` too.
+ * workflow is then `repo`; an unresolvable command is `repo` too. The same holds for the
+ * named scripts the workflows' exec nodes run (BUNDLED_SCRIPT_PACKS): each must resolve,
+ * through the run's own script lookup (discoverScriptsForCwd), to the shipped script, with
+ * every file of its pack (the `.shared` modules scripts import by relative path) holding
+ * the shipped bytes. That lookup merges repo and home `.archon/scripts/` files over the
+ * bundled ones by name, so a file named after a bundled script's qualified key replaces it.
  *
  * Discovery marks the expanded workflows that qualify (markShippedBundle); the executor
  * records the answer in the run's dispatch metadata once, so a resume never re-derives it.
  */
 import { createHash } from 'crypto';
-import { BUNDLED_COMMANDS, BUNDLED_WORKFLOWS } from './defaults/bundled-defaults';
+import { readFile } from 'fs/promises';
+import {
+  BUNDLED_COMMANDS,
+  BUNDLED_SCRIPT_PACKS,
+  BUNDLED_WORKFLOWS,
+} from './defaults/bundled-defaults';
+import { isInlineScript } from './executor-shared';
+import { isExecNode, isIncludeDirective, isLoopGroupNode } from './schemas';
+import type { DagNode, IncludeDirective } from './schemas';
 import type { ResolvedWorkflow } from './schemas/workflow';
 
 function sha256(text: string): string {
@@ -47,6 +60,62 @@ export function isShippedBundledCommand(name: string, content: string): boolean 
   );
   const want = shippedCommandHashes.get(name);
   return want !== undefined && want === sha256(content);
+}
+
+/**
+ * The named scripts a raw workflow's exec nodes run (loop bodies included), or
+ * `undefined` when one cannot be known before the run: a single-line script whose only
+ * inline marker is a `$` substitution may become a script name only at run time.
+ */
+export function namedScriptRefs(
+  nodes: readonly (DagNode | IncludeDirective)[]
+): Set<string> | undefined {
+  const refs = new Set<string>();
+  let unknowable = false;
+  const visit = (node: DagNode | IncludeDirective): void => {
+    if (isIncludeDirective(node)) return;
+    if (isExecNode(node) && node.runtime !== 'sh') {
+      if (!isInlineScript(node.script)) refs.add(node.script);
+      else if (!isInlineScript(node.script.replaceAll('$', ''))) unknowable = true;
+    }
+    if (isLoopGroupNode(node)) for (const child of node.loop_group.nodes) visit(child);
+  };
+  for (const node of nodes) visit(node);
+  return unknowable ? undefined : refs;
+}
+
+/**
+ * True when `resolved` (what the run's script lookup returns for `name`) is the shipped
+ * bundle's script `name`: the same runtime, at a pack root where every file the pack
+ * ships holds the shipped bytes. Anything else, an unreadable file included, is false.
+ * `packChecks` caches the per-root pack comparison across calls of one discovery.
+ */
+export async function isShippedBundledScript(
+  name: string,
+  resolved: { readonly path: string; readonly runtime: string } | undefined,
+  packChecks: Map<string, Promise<boolean>> = new Map()
+): Promise<boolean> {
+  if (resolved === undefined) return false;
+  for (const [pack, bundled] of Object.entries(BUNDLED_SCRIPT_PACKS)) {
+    const entry = bundled.scripts[name];
+    if (entry === undefined) continue;
+    const path = resolved.path.replaceAll('\\', '/');
+    if (resolved.runtime !== entry.runtime || !path.endsWith(`/${entry.path}`)) return false;
+    const root = path.slice(0, path.length - entry.path.length);
+    const key = `${pack}\0${root}`;
+    let check = packChecks.get(key);
+    if (check === undefined) {
+      check = (async (): Promise<boolean> => {
+        for (const [relative, content] of Object.entries(bundled.files)) {
+          if ((await readFile(`${root}${relative}`, 'utf-8')) !== content) return false;
+        }
+        return true;
+      })().catch(() => false);
+      packChecks.set(key, check);
+    }
+    return check;
+  }
+  return false;
 }
 
 /** The `include:` targets anywhere in a raw workflow's node lists (loop bodies included). */

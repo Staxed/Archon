@@ -58,7 +58,9 @@ import {
   includeTargets,
   isShippedBundledCommand,
   isShippedBundledContent,
+  isShippedBundledScript,
   markShippedBundle,
+  namedScriptRefs,
 } from './shipped-bundle';
 import {
   bundledDefaultCommandPath,
@@ -952,6 +954,35 @@ export async function discoverWorkflows(
       }
       return true;
     };
+    // ... and every named script their exec nodes run resolves, through the run's own
+    // lookup (discoverScriptsForCwd with the same roots), to the shipped script and pack:
+    // a repo/home script file named after a bundled script's qualified key replaces it
+    // there. An unresolvable script, or a lookup that throws, leaves the workflow unmarked.
+    let scriptLookup: Promise<Map<string, { path: string; runtime: string }> | undefined>;
+    const shippedScript = new Map<string, Promise<boolean>>();
+    const packChecks = new Map<string, Promise<boolean>>();
+    const scriptsShipped = async (name: string): Promise<boolean> => {
+      for (const raw of closureOf(name).values()) {
+        const refs = namedScriptRefs(raw.nodes);
+        if (refs === undefined) return false;
+        if (refs.size === 0) continue;
+        scriptLookup ??= discoverScriptsForCwd(
+          projectRoot ?? cwd ?? archonPaths.getArchonHome(),
+          roots
+        ).catch(() => undefined);
+        const scripts = await scriptLookup;
+        if (scripts === undefined) return false;
+        for (const ref of refs) {
+          let ok = shippedScript.get(ref);
+          if (ok === undefined) {
+            ok = isShippedBundledScript(ref, scripts.get(ref), packChecks);
+            shippedScript.set(ref, ok);
+          }
+          if (!(await ok)) return false;
+        }
+      }
+      return true;
+    };
 
     const result: WorkflowWithSource[] = [];
     for (const { workflow, source, parseWarnings } of files.values()) {
@@ -976,7 +1007,8 @@ export async function discoverWorkflows(
       if (
         source === 'bundled' &&
         shippedClosure(workflow.name) &&
-        (await commandsShipped(workflow.name))
+        (await commandsShipped(workflow.name)) &&
+        (await scriptsShipped(workflow.name))
       )
         markShippedBundle(expanded);
       result.push({

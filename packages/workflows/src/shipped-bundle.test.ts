@@ -2,13 +2,18 @@ import { describe, expect, it } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { BUNDLED_COMMANDS, BUNDLED_WORKFLOWS } from './defaults/bundled-defaults';
+import {
+  BUNDLED_COMMANDS,
+  BUNDLED_SCRIPT_PACKS,
+  BUNDLED_WORKFLOWS,
+} from './defaults/bundled-defaults';
 import {
   includeTargets,
   isShippedBundle,
   isShippedBundledCommand,
   isShippedBundledContent,
 } from './shipped-bundle';
+import { discoverScriptsForCwd } from './script-discovery';
 import { discoverWorkflows } from './workflow-discovery';
 import { liveSourceRoots } from './workflow-source';
 
@@ -44,23 +49,34 @@ describe('isShippedBundledContent (byte-identical to the shipped bundle)', () =>
 });
 
 describe('discovery marks only byte-identical bundled workflows (the guard`s `bundled`)', () => {
-  async function discoverIn(files: Record<string, string>, commands: Record<string, string> = {}) {
+  async function discoverIn(
+    files: Record<string, string>,
+    commands: Record<string, string> = {},
+    scripts: Record<string, string> = {}
+  ) {
     const tmp = await mkdtemp(join(tmpdir(), 'shipped-bundle-'));
     const wfDir = join(tmp, '.archon', 'workflows');
     const cmdDir = join(tmp, '.archon', 'commands');
+    const scriptDir = join(tmp, '.archon', 'scripts');
     await mkdir(wfDir, { recursive: true });
     await mkdir(cmdDir, { recursive: true });
+    await mkdir(scriptDir, { recursive: true });
     for (const [name, text] of Object.entries(files)) await writeFile(join(wfDir, name), text);
     for (const [name, text] of Object.entries(commands)) await writeFile(join(cmdDir, name), text);
+    for (const [name, text] of Object.entries(scripts))
+      await writeFile(join(scriptDir, name), text);
     try {
       const roots = {
         ...liveSourceRoots(tmp),
         globalWorkflows: join(tmp, '.empty-global'),
         globalCommands: join(tmp, '.empty-global-commands'),
+        globalScripts: join(tmp, '.empty-global-scripts'),
       };
       const { workflows } = await discoverWorkflows(tmp, { sourceRoots: roots });
       const of = (name: string) => workflows.find(w => w.workflow.name === name);
-      return { of, workflows };
+      // what a run of these roots would execute for a script key (the runtime's lookup)
+      const runtimeScripts = await discoverScriptsForCwd(tmp, roots);
+      return { of, workflows, runtimeScripts };
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -135,5 +151,39 @@ describe('discovery marks only byte-identical bundled workflows (the guard`s `bu
     expect(isShippedBundledCommand('archon-assist', `${text}\n`)).toBe(false);
     expect(isShippedBundledCommand('archon-code-review-agent', text)).toBe(false);
     expect(isShippedBundledCommand('my-command', text)).toBe(false);
+  });
+
+  // archon-pr's one script node runs the sdlc pack's `pr` script `publish-pr`; the triage
+  // pack script `verdict` is run by archon-triage, not by archon-pr.
+  const publishPr = '__archon_pack__bundled:sdlc:pr::publish-pr';
+  const triageVerdict = '__archon_pack__bundled:sdlc:triage::verdict';
+
+  it('an untouched bundled workflow running shipped scripts stays marked', async () => {
+    expect(BUNDLED_SCRIPT_PACKS.sdlc?.scripts[publishPr]).toBeDefined();
+    const { of } = await discoverIn({});
+    expect(of('archon-pr')?.source).toBe('bundled');
+    expect(isShippedBundle(of('archon-pr')!.workflow)).toBe(true);
+    expect(isShippedBundle(of('archon-triage')!.workflow)).toBe(true);
+  });
+
+  it('a project script named after a bundled script key replaces it at run time and unmarks the workflow', async () => {
+    const { of, runtimeScripts } = await discoverIn(
+      {},
+      {},
+      {
+        [`${publishPr}.ts`]: "console.log('push to main');\n",
+      }
+    );
+    // the run's own lookup now executes the project file for archon-pr's node
+    expect(runtimeScripts.get(publishPr)?.path).toContain('/.archon/scripts/');
+    expect(of('archon-pr')?.source).toBe('bundled');
+    expect(isShippedBundle(of('archon-pr')!.workflow)).toBe(false);
+    expect(isShippedBundle(of('archon-triage')!.workflow)).toBe(true);
+  });
+
+  it('a project override of a script the workflow does not run leaves it marked', async () => {
+    const { of } = await discoverIn({}, {}, { [`${triageVerdict}.ts`]: 'console.log(1);\n' });
+    expect(isShippedBundle(of('archon-pr')!.workflow)).toBe(true);
+    expect(isShippedBundle(of('archon-triage')!.workflow)).toBe(false);
   });
 });
