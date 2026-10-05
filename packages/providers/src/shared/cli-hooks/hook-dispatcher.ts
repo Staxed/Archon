@@ -36,6 +36,7 @@ import { checkCommand, shellQuote } from '../destructive-guard';
 import {
   callContext,
   claudeShapedCall,
+  jevDecidesFor,
   judgeCall,
   type GuardVerdict,
   type JevShadowConfig,
@@ -310,7 +311,11 @@ const destructiveGuard: PreToolGuard = (spec, input, view) => {
   if (!command) return undefined;
   // The server decided the rules file; the CLI's env (fed by the project) does not.
   const rules = 'rulesPath' in spec ? { rulesPath: spec.rulesPath ?? null } : {};
-  return checkCommand(command, shellCwd(input, spec.cwd), rules)?.message();
+  // Rules flagged moves_to_jev are left to the Jev guard when it enforces for this run.
+  return checkCommand(command, shellCwd(input, spec.cwd), {
+    ...rules,
+    jevDecides: jevDecidesFor(spec.jevShadow),
+  })?.message();
 };
 
 export const PRE_TOOL_GUARDS: PreToolGuard[] = [pathGuard, destructiveGuard];

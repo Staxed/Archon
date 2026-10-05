@@ -8,7 +8,9 @@
  * and path guards and the SDK's permission mode decide as before.
  *
  * A Bash call Archon's destructive floor already refuses is not sent: the floor
- * hook denies it on its own and the guard has nothing to add.
+ * hook denies it on its own and the guard has nothing to add. The floor is asked as
+ * the floor hook asks it: in `enforce` it leaves the rules flagged `moves_to_jev` to
+ * this guard, so those calls are sent.
  */
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { checkCommand } from '../shared/destructive-guard';
@@ -16,8 +18,11 @@ import {
   JUDGED_TOOLS,
   RecentBlocks,
   callContext,
+  jevDecidesFor,
   judgeCall,
+  readArchonGuardMode,
   type GuardVerdict,
+  type JevGuardMode,
   type JevShadowConfig,
   type ShadowCall,
 } from '../shared/jev-shadow';
@@ -36,6 +41,8 @@ export interface ClaudeShadowContext {
   blocks?: RecentBlocks;
   /** Test seam: replaces shared/jev-shadow.ts judgeCall. */
   judge?: (call: ShadowCall, config: JevShadowConfig) => Promise<GuardVerdict>;
+  /** Test seam: replaces readArchonGuardMode. */
+  mode?: () => JevGuardMode;
 }
 
 /** The PreToolUse deny the SDK reads. */
@@ -50,9 +57,9 @@ export function claudeDeny(reason: string): Record<string, unknown> {
 }
 
 /** Archon's destructive floor on a Bash command: undefined = pass, else the rule. */
-function floorRule(command: string, cwd: string): string | undefined {
+function floorRule(command: string, cwd: string, jevDecides: boolean): string | undefined {
   try {
-    return checkCommand(command, cwd)?.rule;
+    return checkCommand(command, cwd, { jevDecides })?.rule;
   } catch {
     return 'guard-error';
   }
@@ -66,6 +73,7 @@ export function createPreToolUseJevShadowHook(
   const judge = ctx.judge ?? judgeCall;
   // This node session's own refusals, so the guard sees a retry as one (recent_blocked_calls).
   const blocks = ctx.blocks ?? new RecentBlocks();
+  const mode = ctx.mode ?? readArchonGuardMode;
   return (async (input: Record<string, unknown>) => {
     let call: ShadowCall;
     try {
@@ -76,7 +84,11 @@ export function createPreToolUseJevShadowHook(
       const hookCwd = (input as { cwd?: unknown }).cwd;
       const effectiveCwd = typeof hookCwd === 'string' && hookCwd ? hookCwd : cwd;
       const command = typeof toolInput.command === 'string' ? toolInput.command : '';
-      if (toolName === 'Bash' && command && floorRule(command, effectiveCwd) !== undefined) {
+      if (
+        toolName === 'Bash' &&
+        command &&
+        floorRule(command, effectiveCwd, jevDecidesFor(config, mode)) !== undefined
+      ) {
         return NO_OPINION; // the destructive-guard hook refuses it
       }
       call = {

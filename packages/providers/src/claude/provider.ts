@@ -74,6 +74,7 @@ import {
 } from '../shared/agent-env';
 import {
   JUDGED_TOOLS_MATCHER,
+  jevDecidesFor,
   readArchonGuardMode,
   resolveJevShadowConfig,
   type JevGuardMode,
@@ -999,7 +1000,11 @@ function buildBaseClaudeOptions(
       // list`) cannot steer writes into the source repo. Host runs only: inside
       // a container the paths are the container's and the container is the wall.
       PreToolUse: [
-        { matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] },
+        {
+          matcher: 'Bash',
+          // Rules flagged moves_to_jev are left to the Jev guard when it enforces here.
+          hooks: [createPreToolUseDestructiveGuardHook(cwd, () => jevDecidesFor(jevConfig))],
+        },
         ...(requestOptions?.writableRoots !== undefined && containerExecContext === undefined
           ? [{ hooks: [createPreToolUsePathGuardHook(cwd, requestOptions.writableRoots)] }]
           : []),

@@ -84,6 +84,18 @@ export function readArchonGuardMode(
   }
 }
 
+/**
+ * Whether the Jev guard decides this call: it is wired for the node (`config`) and
+ * Archon's mode is `enforce`. Archon's destructive floor then leaves the rules flagged
+ * `moves_to_jev` to it (Stixed's jev_decides_for). Read per call, like the mode.
+ */
+export function jevDecidesFor(
+  config: JevShadowConfig | null | undefined,
+  mode: () => JevGuardMode = readArchonGuardMode
+): boolean {
+  return !!config && mode() === 'enforce';
+}
+
 /** Pinned per run by the server (HookRunSpec.jevShadow), or resolved in-process for Claude. */
 export interface JevShadowConfig {
   python: string;

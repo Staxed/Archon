@@ -66,7 +66,12 @@ export interface DestructiveRulesFile {
   protected_children_of?: string[];
   /** Notes folders not in git: a find deleting their .md notes is refused. */
   vaults?: string[];
-  rules: { id: string; instead: string }[];
+  /**
+   * `moves_to_jev: true`: a rule the Jev guard judges in the floor's place. The floor
+   * skips it only for a call whose Jev decides (Archon's mode `enforce` with the guard
+   * wired); a rule without the key keeps the built-in copy's flag.
+   */
+  rules: { id: string; instead: string; moves_to_jev?: boolean }[];
   /** What a forced `git push` is (the shared definition); missing: DEFAULT_RULES'. */
   force_push?: ForcePushSpec;
 }
@@ -146,6 +151,7 @@ export const DEFAULT_RULES: DestructiveRulesFile & { force_push: ForcePushSpec }
       id: 'docker-volume-delete',
       instead:
         "Volumes hold databases, so deleting one is the user's to do. `docker compose down` without -v is a different command and is fine.",
+      moves_to_jev: true,
     },
     {
       id: 'git-wipe',
@@ -303,6 +309,12 @@ export class Rules {
   /** What a forced `git push` is (the rules file's force_push, else the built-in copy). */
   readonly forcePush: ForcePushSpec;
   private readonly instead: Map<string, string>;
+  /**
+   * Rules flagged `moves_to_jev`: skipped by a Checker whose Jev decides, kept by every
+   * other. From the rules file; a rule the file does not flag either way keeps the
+   * built-in copy's flag (an older promoted copy).
+   */
+  readonly movesToJev: ReadonlySet<string>;
 
   constructor(data: DestructiveRulesFile, home: string = homedir()) {
     this.home = home;
@@ -319,6 +331,11 @@ export class Rules {
     // A rules file older than a rule (Stixed's promoted copy before its next promote)
     // keeps the built-in message and definition for it, never a looser one.
     this.instead = new Map([...DEFAULT_RULES.rules, ...data.rules].map(r => [r.id, r.instead]));
+    const moves = new Map<string, boolean>();
+    for (const r of [...DEFAULT_RULES.rules, ...data.rules]) {
+      if (typeof r.moves_to_jev === 'boolean') moves.set(r.id, r.moves_to_jev);
+    }
+    this.movesToJev = new Set([...moves].filter(([, on]) => on).map(([id]) => id));
     this.forcePush = data.force_push ?? DEFAULT_RULES.force_push;
     this.names = this.protectedNames();
     this.childNames = this.buildChildNames();
@@ -2181,11 +2198,22 @@ function currentTargets(repo: GitRepo | undefined): string[] | string {
 }
 
 export class Checker {
-  /** `logOnly` receives the commands the guard could not read (they are allowed). */
+  /**
+   * `logOnly` receives the commands the guard could not read (they are allowed).
+   * `jevDecides`: this call's Jev guard judges the rules flagged `moves_to_jev`, so
+   * the floor skips them (Stixed's Checker(jev_decides)); false keeps every rule.
+   */
   constructor(
     private readonly r: Rules,
-    private readonly logOnly?: LogOnly
+    private readonly logOnly?: LogOnly,
+    private readonly jevDecides = false
   ) {}
+
+  /** The rule's violation, or undefined when the rule has moved to Jev and Jev decides here. */
+  private violation(rule: string, reason: string): Violation | undefined {
+    if (this.jevDecides && this.r.movesToJev.has(rule)) return undefined;
+    return this.r.violation(rule, reason);
+  }
 
   /**
    * `argv`: the positional parameters when this is a script or function run with
@@ -2234,7 +2262,7 @@ export class Checker {
       }
       for (const [op, target] of c.redirects) {
         if (['>', '>>', '>|', '<>', '>&'].includes(op) && DEVICE.test(target)) {
-          return this.r.violation('disk-wipe', `writes to the disk device ${target}`);
+          return this.violation('disk-wipe', `writes to the disk device ${target}`);
         }
       }
       const piped = c.sep === '|' || c.sep === '|&';
@@ -2855,7 +2883,7 @@ export class Checker {
       for (const w of targets) {
         const folder = this.vaultGlob(w, cwd);
         if (folder)
-          return this.r.violation('vault-delete', `rm would delete every note in ${folder}`);
+          return this.violation('vault-delete', `rm would delete every note in ${folder}`);
       }
       return undefined;
     }
@@ -2866,13 +2894,13 @@ export class Checker {
         if (judged) continue; // the paths come from a narrowed find that reaches nothing protected
       }
       const hit = this.targetHits(w, cwd);
-      if (hit) return this.r.violation('recursive-delete', `rm -r would delete ${hit}`);
+      if (hit) return this.violation('recursive-delete', `rm -r would delete ${hit}`);
     }
     if (xargs) {
       const judged = upstream.length > 0 ? this.feedOk({ cmds: upstream }, cwd) : false;
       if (judged instanceof Violation) return judged;
       if (!judged) {
-        return this.r.violation(
+        return this.violation(
           'recursive-delete',
           'xargs rm -r deletes paths the guard cannot see (only a find with a -name/-path filter may feed it)'
         );
@@ -2903,7 +2931,7 @@ export class Checker {
     const sources = targetDir ? paths : paths.slice(0, -1);
     for (const w of sources) {
       const hit = this.targetHits(w, cwd);
-      if (hit) return this.r.violation('move-protected', `mv would move ${hit}`);
+      if (hit) return this.violation('move-protected', `mv would move ${hit}`);
     }
     return undefined;
   }
@@ -2961,10 +2989,11 @@ export class Checker {
         if (!filtered && (w.unknown || p.includes(UNRESOLVED))) {
           const hit = w.text || cwd.includes(UNRESOLVED) ? this.targetHits(w, cwd) : undefined;
           if (hit && hit !== p) {
-            return [
-              this.r.violation('recursive-delete', `find would delete everything under ${hit}`),
-              false,
-            ];
+            const v = this.violation(
+              'recursive-delete',
+              `find would delete everything under ${hit}`
+            );
+            if (v) return [v, false];
           }
         }
       }
@@ -2980,7 +3009,7 @@ export class Checker {
     recursive: boolean
   ): Violation | undefined {
     if (this.r.aboveSystem(p) || (this.r.hits(p) && !filtered)) {
-      return this.r.violation(
+      return this.violation(
         'recursive-delete',
         `find would delete under ${p}` +
           (filtered ? '' : ' with no -name/-path filter that narrows it')
@@ -2988,17 +3017,14 @@ export class Checker {
     }
     if (!this.r.hits(p)) return undefined;
     if (this.deletesNotes(p, rootText, narrowed)) {
-      return this.r.violation(
+      return this.violation(
         'recursive-delete',
         `find would delete the vault's notes under ${p} (its filter matches *.md files; the vault is not in git)`
       );
     }
     const hit = this.findReaches(p, rootText, narrowed, recursive);
     if (hit)
-      return this.r.violation(
-        'recursive-delete',
-        `find would delete ${hit} (its filter matches it)`
-      );
+      return this.violation('recursive-delete', `find would delete ${hit} (its filter matches it)`);
     return undefined;
   }
 
@@ -3113,7 +3139,7 @@ export class Checker {
           };
       const hit = this.targetHits(eff, cwd);
       if (hit) {
-        return this.r.violation(
+        return this.violation(
           'recursive-delete',
           `rsync --delete into ${hit} deletes everything there that the source lacks`
         );
@@ -3127,7 +3153,7 @@ export class Checker {
     if (name === 'dd') {
       for (const t of texts) {
         if (t.startsWith('of=') && DEVICE.test(t.slice(3))) {
-          return this.r.violation('disk-wipe', `dd writes to the disk device ${t.slice(3)}`);
+          return this.violation('disk-wipe', `dd writes to the disk device ${t.slice(3)}`);
         }
       }
       return undefined;
@@ -3139,7 +3165,7 @@ export class Checker {
       return undefined;
     }
     for (const t of texts) {
-      if (DEVICE.test(t)) return this.r.violation('disk-wipe', `${name} on the disk device ${t}`);
+      if (DEVICE.test(t)) return this.violation('disk-wipe', `${name} on the disk device ${t}`);
     }
     return undefined;
   }
@@ -3156,13 +3182,10 @@ export class Checker {
     const rest = texts.slice(k + 1);
     if (sub === 'compose') return this.compose(args.slice(k + 1));
     if (sub === 'volume' && rest.length > 0 && ['rm', 'remove', 'prune'].includes(rest[0])) {
-      return this.r.violation(
-        'docker-volume-delete',
-        `docker volume ${rest[0]} deletes volume data`
-      );
+      return this.violation('docker-volume-delete', `docker volume ${rest[0]} deletes volume data`);
     }
     if (sub === 'system' && rest[0] === 'prune' && rest.includes('--volumes')) {
-      return this.r.violation(
+      return this.violation(
         'docker-volume-delete',
         'docker system prune --volumes deletes volume data'
       );
@@ -3176,10 +3199,7 @@ export class Checker {
     if (at < 0) return undefined;
     const after = texts.slice(at + 1);
     if (after.includes('--volumes') || after.some(t => /^-[a-zA-Z]*v[a-zA-Z]*$/.test(t))) {
-      return this.r.violation(
-        'docker-volume-delete',
-        "compose down -v deletes the stack's volumes"
-      );
+      return this.violation('docker-volume-delete', "compose down -v deletes the stack's volumes");
     }
     return undefined;
   }
@@ -3211,14 +3231,14 @@ export class Checker {
     const ignored = flags.some(f => /[xX]/.test(f.slice(1)));
     if (!(force && ignored && !dry)) return undefined;
     if (cwd.includes(UNRESOLVED)) {
-      return this.r.violation(
+      return this.violation(
         'git-wipe',
         'git clean -x runs in a folder the guard cannot resolve, which may be a project, and deletes its ignored data (databases, .venv, secret links)'
       );
     }
     for (const p of this.realPaths(cwd, true)) {
       if (this.r.inProject(p)) {
-        return this.r.violation(
+        return this.violation(
           'git-wipe',
           `git clean -x in ${p} deletes ignored data (databases, .venv, secret links)`
         );
@@ -3243,14 +3263,14 @@ export class Checker {
     if (!p.force && forced.length === 0 && !repoWord?.text.startsWith(plus)) return undefined;
     const rule = 'force-push-default-branch';
     const how = p.force ?? forced[0]?.text ?? repoWord.text;
-    const unnamed = (why: string): Violation =>
-      this.r.violation(
+    const unnamed = (why: string): Violation | undefined =>
+      this.violation(
         rule,
         `git push ${how}: the guard cannot tell which branch it overwrites (${why})`
       );
     if (p.force && p.every) {
       const flags = p.force === p.every ? p.every : `${p.every} ${p.force}`;
-      return this.r.violation(
+      return this.violation(
         rule,
         `git push ${flags} force-updates every branch or tag, the default branch among them`
       );
@@ -3271,7 +3291,7 @@ export class Checker {
     }
     const hit = targets.find(t => defaults.has(t));
     if (hit)
-      return this.r.violation(
+      return this.violation(
         rule,
         `git push ${how} force-updates ${hit}, the repo's default branch`
       );
@@ -3292,7 +3312,7 @@ export function resolveRulesPath(
   return existsSync(rootOwned) ? rootOwned : undefined;
 }
 
-let cached: { key: string; checker: Checker } | undefined;
+let cached: { key: string; rules: Rules } | undefined;
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 /**
@@ -3315,20 +3335,26 @@ export interface CheckOptions {
    * Omitted: resolved from this process's environment (resolveRulesPath).
    */
   rulesPath?: string | null;
+  /**
+   * This call's Jev guard decides (Archon's mode `enforce` and the guard wired for the
+   * node; see jevDecidesFor): the rules flagged `moves_to_jev` are left to it. Omitted
+   * or false: every rule, as before.
+   */
+  jevDecides?: boolean;
 }
 
-function loadChecker(path: string | undefined): Checker | Violation {
+function loadChecker(path: string | undefined, jevDecides: boolean): Checker | Violation {
   let key = path ?? '<default>';
   try {
     // The file's mtime is part of the key, so an edited rules file is reloaded.
     if (path) key = `${path}@${statSync(path).mtimeMs}`;
-    if (cached?.key === key) return cached.checker;
-    const data = path
-      ? (JSON.parse(readFileSync(path, 'utf8')) as DestructiveRulesFile)
-      : DEFAULT_RULES;
-    const checker = new Checker(new Rules(data), logUnparsed);
-    cached = { key, checker };
-    return checker;
+    if (cached?.key !== key) {
+      const data = path
+        ? (JSON.parse(readFileSync(path, 'utf8')) as DestructiveRulesFile)
+        : DEFAULT_RULES;
+      cached = { key, rules: new Rules(data) };
+    }
+    return new Checker(cached.rules, logUnparsed, jevDecides);
   } catch (err) {
     // Not cached: the next check retries, so a fixed file takes effect at once.
     return new Violation(
@@ -3351,7 +3377,7 @@ export function checkCommand(
 ): Violation | undefined {
   const path =
     options.rulesPath === undefined ? resolveRulesPath() : (options.rulesPath ?? undefined);
-  const checker = loadChecker(path);
+  const checker = loadChecker(path, options.jevDecides === true);
   if (checker instanceof Violation) return checker;
   try {
     return checker.check(command, normPath(cwd));

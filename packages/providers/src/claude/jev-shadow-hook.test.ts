@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { JEV_GUARD_HOOK_TIMEOUT_S, createPreToolUseJevShadowHook } from './jev-shadow-hook';
-import type { GuardVerdict, JevShadowConfig, ShadowCall } from '../shared/jev-shadow';
+import type { GuardVerdict, JevGuardMode, JevShadowConfig, ShadowCall } from '../shared/jev-shadow';
 
 const CONFIG: JevShadowConfig = {
   python: 'python3',
@@ -13,7 +13,7 @@ const ALLOW: GuardVerdict = { decision: 'allow', reason: 'nothing at stake', sta
 
 type Judge = (c: ShadowCall, cfg: JevShadowConfig) => Promise<GuardVerdict>;
 
-function hookWith(judge: Judge) {
+function hookWith(judge: Judge, mode?: () => JevGuardMode) {
   return createPreToolUseJevShadowHook('/work/tree', CONFIG, {
     env: { PATH: '/usr/bin', GH_TOKEN: 't' },
     guardContext: {
@@ -25,6 +25,7 @@ function hookWith(judge: Judge) {
       workflowSource: 'repo',
     },
     judge,
+    ...(mode ? { mode } : {}),
   });
 }
 
@@ -122,6 +123,22 @@ describe('Claude Jev guard hook', () => {
     });
     expect(out).toEqual({ continue: true });
     expect(judge).not.toHaveBeenCalled();
+  });
+
+  test('a volume delete is sent to the guard only in enforce (the floor leaves it to Jev)', async () => {
+    for (const [mode, sent] of [
+      ['enforce', true],
+      ['log-only', false],
+      ['off', false],
+    ] as const) {
+      const judge = mock(async (_c: ShadowCall, _cfg: JevShadowConfig) => ALLOW);
+      const hook = hookWith(judge, () => mode);
+      await run(hook, { tool_name: 'Bash', tool_input: { command: 'docker volume rm pgdata' } });
+      expect(judge).toHaveBeenCalledTimes(sent ? 1 : 0);
+      // Another floor rule still keeps the call from the guard in every mode.
+      await run(hook, { tool_name: 'Bash', tool_input: { command: 'rm -rf /' } });
+      expect(judge).toHaveBeenCalledTimes(sent ? 1 : 0);
+    }
   });
 
   test('writes and fetches are judged; reads and searches are not', async () => {
