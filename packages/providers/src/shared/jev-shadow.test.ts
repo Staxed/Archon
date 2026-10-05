@@ -198,6 +198,24 @@ describe('readArchonGuardMode (the root-owned mode file)', () => {
     expect(readArchonGuardMode(file('m4.json', 'not json'), false)).toBe('log-only');
     expect(readArchonGuardMode(file('m5.json', '{"archon":"ENFORCE"}'), false)).toBe('log-only');
     expect(readArchonGuardMode(file('m6.json', '["enforce"]'), false)).toBe('log-only');
+    expect(readArchonGuardMode(root, false)).toBe('log-only'); // a folder, not a file
+  });
+
+  test('a present archon key wins even when null or unknown, as session_guard.read_mode reads it', () => {
+    // Python: data.get("archon", data.get("default")) -> None -> log-only, never the default.
+    expect(readArchonGuardMode(file('m9.json', '{"archon":null,"default":"enforce"}'), false)).toBe(
+      'log-only'
+    );
+    expect(
+      readArchonGuardMode(file('m10.json', '{"archon":"bogus","default":"enforce"}'), false)
+    ).toBe('log-only');
+  });
+
+  test('an unreadable file is log-only', () => {
+    const p = file('m11.json', '{"archon":"enforce"}');
+    chmodSync(p, 0o000);
+    if (process.getuid?.() !== 0) expect(readArchonGuardMode(p, false)).toBe('log-only');
+    chmodSync(p, 0o644);
   });
 
   test("a file that is not root's is ignored: log-only (an agent cannot switch it on or off)", () => {

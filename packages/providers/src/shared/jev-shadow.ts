@@ -74,7 +74,10 @@ export function readArchonGuardMode(
     const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
     if (!data || typeof data !== 'object' || Array.isArray(data)) return DEFAULT_MODE;
     const d = data as Record<string, unknown>;
-    const value = d.archon ?? d.default ?? DEFAULT_MODE;
+    // Python's data.get("archon", data.get("default")): a present key wins even when it
+    // is null or unknown (log-only), so this side never reads `enforce` where the guard
+    // reads log-only (and switches Claude's sandbox off without the guard enforcing).
+    const value = 'archon' in d ? d.archon : 'default' in d ? d.default : DEFAULT_MODE;
     return MODES.includes(value as JevGuardMode) ? (value as JevGuardMode) : DEFAULT_MODE;
   } catch {
     return DEFAULT_MODE;

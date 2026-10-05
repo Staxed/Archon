@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
@@ -27,6 +27,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 import { ClaudeProvider, classifySubprocessError, shouldPassNoEnvFile } from './provider';
 import * as claudeModule from './provider';
 import * as binaryResolver from './binary-resolver';
+import { readArchonGuardMode } from '../shared/jev-shadow';
 
 describe('shouldPassNoEnvFile', () => {
   test('returns false when cliPath is undefined (dev mode — SDK 0.2.x resolves a native binary)', () => {
@@ -3624,6 +3625,26 @@ describe('Jev guard wiring (Claude)', () => {
     expect(claudeModule.claudeSandboxOverride(guardConfig, () => 'off')).toEqual({});
     // no guard (switched off, not installed, a container run): never, whatever the mode
     expect(claudeModule.claudeSandboxOverride(null, () => 'enforce')).toEqual({});
+  });
+
+  test('a missing or unreadable mode file keeps the sandbox on (log-only: nothing is set)', () => {
+    const missing = join(tmpdir(), 'no-such-dir-jev', 'jev-guard-mode.json');
+    expect(
+      claudeModule.claudeSandboxOverride(guardConfig, () => readArchonGuardMode(missing))
+    ).toEqual({});
+    const dir = mkdtempSync(join(tmpdir(), 'claude-jev-mode-'));
+    try {
+      const p = join(dir, 'mode.json');
+      writeFileSync(p, '{"archon":"enforce"}');
+      chmodSync(p, 0o000);
+      if (process.getuid?.() !== 0) {
+        expect(
+          claudeModule.claudeSandboxOverride(guardConfig, () => readArchonGuardMode(p, false))
+        ).toEqual({});
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('the guard hook is registered for the judged tools with a 45 s timeout; the sandbox is untouched outside enforce', async () => {
