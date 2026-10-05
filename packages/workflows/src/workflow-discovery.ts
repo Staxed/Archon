@@ -54,7 +54,12 @@ import {
   BUNDLED_WORKFLOW_PATHS,
   isBinaryBuild,
 } from './defaults/bundled-defaults';
-import { includeTargets, isShippedBundledContent, markShippedBundle } from './shipped-bundle';
+import {
+  includeTargets,
+  isShippedBundledCommand,
+  isShippedBundledContent,
+  markShippedBundle,
+} from './shipped-bundle';
 import {
   bundledDefaultCommandPath,
   bundlesPackagedResources,
@@ -916,6 +921,37 @@ export async function discoverWorkflows(
       if (!raw || shippedByName.get(name) !== true) return false;
       return includeTargets(raw.nodes).every(target => shippedClosure(target, seen));
     };
+    // ... and every command file those workflows' nodes name resolves, in the runtime's
+    // lookup order, to the shipped bundle's bytes: a repo/home override of a command (or
+    // one that does not resolve) runs a prompt the bundle did not ship.
+    const closureOf = (
+      name: string,
+      out = new Map<string, WorkflowDefinition>()
+    ): Map<string, WorkflowDefinition> => {
+      const raw = rawByName.get(name);
+      if (!raw || out.has(name)) return out;
+      out.set(name, raw);
+      for (const target of includeTargets(raw.nodes)) closureOf(target, out);
+      return out;
+    };
+    const shippedCommand = new Map<string, boolean>();
+    const commandsShipped = async (name: string): Promise<boolean> => {
+      for (const raw of closureOf(name).values()) {
+        for (const commandName of collectFileBackedCommandNames(raw.nodes)) {
+          let ok = shippedCommand.get(commandName);
+          if (ok === undefined) {
+            const content = await resolveCommandContentForScan(roots, commandName, {
+              commandFolder: options?.commandFolder,
+              loadDefaultCommands: options?.loadDefaultCommands,
+            });
+            ok = typeof content === 'string' && isShippedBundledCommand(commandName, content);
+            shippedCommand.set(commandName, ok);
+          }
+          if (!ok) return false;
+        }
+      }
+      return true;
+    };
 
     const result: WorkflowWithSource[] = [];
     for (const { workflow, source, parseWarnings } of files.values()) {
@@ -937,7 +973,12 @@ export async function discoverWorkflows(
       // expansion, so it is reported here exactly once too.
       const warnings = [...parseWarnings];
       collectLoopGroupSinkWarnings(expanded.nodes, warnings);
-      if (source === 'bundled' && shippedClosure(workflow.name)) markShippedBundle(expanded);
+      if (
+        source === 'bundled' &&
+        shippedClosure(workflow.name) &&
+        (await commandsShipped(workflow.name))
+      )
+        markShippedBundle(expanded);
       result.push({
         workflow: expanded,
         source,

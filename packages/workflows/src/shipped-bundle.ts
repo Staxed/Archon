@@ -9,13 +9,18 @@
  * its bundled defaults from files on disk. So the guard's label is decided here, by
  * content: a workflow file counts only when its bytes hash to the shipped bundle's copy
  * of the same name (BUNDLED_WORKFLOWS, generated from the files Archon ships), and a
- * workflow only when it and every workflow it `include:`s count.
+ * workflow only when it and every workflow it `include:`s count, and every command file
+ * those workflows' nodes name resolves (in the run's own lookup order: repo command
+ * folders, then `~/.archon/commands/`, then the bundled defaults) to bytes identical to
+ * the shipped bundle's copy (BUNDLED_COMMANDS). A project or home override of one of
+ * those commands leaves the YAML untouched but runs a project-written prompt, so the
+ * workflow is then `repo`; an unresolvable command is `repo` too.
  *
  * Discovery marks the expanded workflows that qualify (markShippedBundle); the executor
  * records the answer in the run's dispatch metadata once, so a resume never re-derives it.
  */
 import { createHash } from 'crypto';
-import { BUNDLED_WORKFLOWS } from './defaults/bundled-defaults';
+import { BUNDLED_COMMANDS, BUNDLED_WORKFLOWS } from './defaults/bundled-defaults';
 import type { ResolvedWorkflow } from './schemas/workflow';
 
 function sha256(text: string): string {
@@ -30,6 +35,17 @@ export function isShippedBundledContent(name: string, content: string): boolean 
     Object.entries(BUNDLED_WORKFLOWS).map(([n, text]) => [n, sha256(text)] as const)
   );
   const want = shippedHashes.get(name);
+  return want !== undefined && want === sha256(content);
+}
+
+let shippedCommandHashes: Map<string, string> | undefined;
+
+/** True when `content` is byte-identical to the shipped bundled command named `name`. */
+export function isShippedBundledCommand(name: string, content: string): boolean {
+  shippedCommandHashes ??= new Map(
+    Object.entries(BUNDLED_COMMANDS).map(([n, text]) => [n, sha256(text)] as const)
+  );
+  const want = shippedCommandHashes.get(name);
   return want !== undefined && want === sha256(content);
 }
 
