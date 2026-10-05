@@ -945,6 +945,8 @@ function buildBaseClaudeOptions(
 
   return {
     cwd,
+    // Claude's sandbox off only where the enforced Jev guard replaces it (claudeSandboxOverride).
+    ...claudeSandboxOverride(jevConfig),
     // In compiled binaries, the resolver supplies an absolute executable path;
     // in dev mode it returns undefined and the SDK resolves from node_modules.
     // Both are skipped for container runs (spawn hook bypasses disk resolution).
