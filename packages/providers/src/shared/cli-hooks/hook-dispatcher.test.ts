@@ -21,7 +21,7 @@ import {
   toolView,
   type HookRunSpec,
 } from './hook-dispatcher';
-import type { GuardVerdict, JevShadowConfig, ShadowCall } from '../jev-shadow';
+import { judgeCall, type GuardVerdict, type JevShadowConfig, type ShadowCall } from '../jev-shadow';
 import { dispatcherCommand } from './install';
 import { trackTempRoots } from '@archon/paths/test-utils';
 
@@ -513,6 +513,31 @@ describe("Jev guard (awaited after Archon's own guards)", () => {
     );
     expect(decision(out)).toBe('deny');
     expect(reasonOf(out)).toContain('boom');
+  });
+
+  test('must stop: the real guard runner on a guard that never answers, or answers non-JSON', async () => {
+    const cases: [string, string][] = [
+      ['slow', 'import time\ntime.sleep(30)\n'],
+      ['garbage', 'print("not a decision")\n'],
+      [
+        'ask',
+        'import json\nprint(json.dumps({"outcome": "ask", "stage": "jev", "reason": "?"}))\n',
+      ],
+    ];
+    for (const [name, body] of cases) {
+      const scripts = join(dir, `scripts-${name}`);
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(join(scripts, 'session_guard.py'), body);
+      const config = { ...guard, scriptsDir: scripts };
+      const out = await decideHook(
+        codex({ jevShadow: config }),
+        'PreToolUse',
+        { tool_name: 'exec_command', tool_input: { cmd: 'ls > out.txt' } },
+        ENV,
+        (c, cfg) => judgeCall(c, cfg, 1_500)
+      );
+      expect(decision(out)).toBe('deny');
+    }
   });
 
   test("a call Archon's own guards refuse is not sent to the guard", async () => {
