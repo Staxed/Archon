@@ -533,12 +533,29 @@ export function readRunStopReason(
  */
 export const RUN_DISPATCH_METADATA_KEY = 'dispatch';
 
+/**
+ * Who started a run, for the tool-call guards (stixed's Jev guard reads it with the
+ * run's message): `user` (a command the user typed: chat `/workflow run`, the CLI, the
+ * run API), `orchestrator` (the chat agent chose and worded it), `parent_run` (a
+ * `workflow:` node of another run), `trigger` (a forge event or a resource trigger).
+ */
+export const workflowRequestSourceSchema = z.enum([
+  'user',
+  'orchestrator',
+  'parent_run',
+  'trigger',
+]);
+
+export type WorkflowRequestSource = z.infer<typeof workflowRequestSourceSchema>;
+
 export const runDispatchMetadataSchema = z.object({
   /** The resolved `$BASE_BRANCH`. Empty string is a real outcome (folder projects, and
    *  repos where auto-detection failed), which is why absence is carried by the key. */
   base_branch: z.string(),
   /** Discovery source, for run attribution and telemetry categorization. */
   source: workflowSourceSchema.optional(),
+  /** Who started the run (guards only). Absent on runs dispatched before it was recorded. */
+  request_source: workflowRequestSourceSchema.optional(),
 });
 
 export type RunDispatchMetadata = z.infer<typeof runDispatchMetadataSchema>;

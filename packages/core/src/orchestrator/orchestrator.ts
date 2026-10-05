@@ -69,6 +69,7 @@ import {
 import {
   SUBRUN_METADATA_KEYS,
   CONTINUATION_METADATA_KEY,
+  type WorkflowRequestSource,
 } from '@archon/workflows/schemas/workflow-run';
 import type { ResolvedWorkflow, WorkflowSource } from '@archon/workflows/schemas/workflow';
 import type { RunModelOverrides } from '@archon/workflows/model-validation';
@@ -320,6 +321,12 @@ export interface WorkflowRoutingContext {
    * to the privacy-safe "custom" treatment when not provided.
    */
   readonly source?: WorkflowSource;
+  /**
+   * Who started the run, for the tool-call guards (ExecuteWorkflowOptions.requestSource):
+   * `user` for a typed command, `orchestrator` when the chat agent chose and worded it,
+   * `trigger` for a forge event. Optional; unknown when not provided.
+   */
+  readonly requestSource?: WorkflowRequestSource;
   /**
    * Keys the engine dropped from the workflow's YAML (#2213). Forwarded to the
    * executor so a background (web/console) run records them on the run like any
@@ -661,6 +668,7 @@ async function dispatchBackgroundWorkflowOwned(
             preCreatedRun,
             userId: ctx.userId,
             source: ctx.source,
+            ...(ctx.requestSource ? { requestSource: ctx.requestSource } : {}),
             parseWarnings: ctx.parseWarnings,
             baseBranch: codebaseBaseBranch,
             resolveChildIsolation,

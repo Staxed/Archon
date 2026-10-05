@@ -1194,6 +1194,8 @@ async function handleWorkflowCommand(
           ...(resolvedEntry?.parseWarnings && resolvedEntry.parseWarnings.length > 0
             ? { parseWarnings: resolvedEntry.parseWarnings }
             : {}),
+          // the run records it: telemetry, and the tool-call guards (bundled vs repo)
+          ...(resolvedEntry?.source ? { source: resolvedEntry.source } : {}),
         },
       };
     }

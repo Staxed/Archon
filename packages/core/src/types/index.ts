@@ -1,7 +1,7 @@
 /**
  * Core type definitions for the Remote Coding Agent platform
  */
-import type { ResolvedWorkflow } from '@archon/workflows/schemas/workflow';
+import type { ResolvedWorkflow, WorkflowSource } from '@archon/workflows/schemas/workflow';
 import type { WorkflowRun } from '@archon/workflows/schemas/workflow-run';
 import type { RunModelOverrides } from '@archon/workflows/model-validation';
 import type { WorkflowRunConfigInput } from '@archon/workflows/schemas/run-config';
@@ -88,6 +88,8 @@ export type WorkflowRequest =
       force?: boolean;
       /** Keys the engine dropped from this workflow's YAML (#2213). */
       parseWarnings?: readonly string[];
+      /** Where discovery found the definition (bundled / project / global / installed). */
+      source?: WorkflowSource;
     }
   | { kind: 'resume'; run: WorkflowRun };
 

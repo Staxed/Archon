@@ -97,6 +97,7 @@ import {
   containerCommandName,
   buildSubprocessDockerArgs,
   childOutcomeFromRun,
+  nodeGuardContext,
   type ExecuteDagWorkflowOptions,
   type RunChildWorkflowFn,
 } from './dag-executor';
@@ -36364,5 +36365,61 @@ describe('executeDagWorkflow -- node checkout starts (#3375)', () => {
     const [consumer] = terminal(deps, 'consumer');
     expect(consumer?.eventType).toBe('node_failed');
     expect(consumer?.data.error).toContain('$missing.execution.checkoutStart');
+  });
+});
+
+describe('nodeGuardContext (what the Jev guard knows about a node)', () => {
+  const base = { id: 'run-1', user_message: 'fix issue 12', workflow_name: 'archon-sdlc-deliver' };
+
+  it('the run message, the recorded request source and a bundled workflow', () => {
+    expect(
+      nodeGuardContext(
+        {
+          ...base,
+          metadata: {
+            dispatch: { base_branch: 'main', source: 'bundled', request_source: 'user' },
+          },
+        },
+        'implement'
+      )
+    ).toEqual({
+      runId: 'run-1',
+      nodeId: 'implement',
+      workflow: 'archon-sdlc-deliver',
+      userRequest: 'fix issue 12',
+      requestSource: 'user',
+      workflowSource: 'bundled',
+    });
+  });
+
+  it('a sub-run is parent_run by its parent_run_id, whatever was recorded', () => {
+    const g = nodeGuardContext(
+      {
+        ...base,
+        parent_run_id: 'parent-7',
+        metadata: { dispatch: { base_branch: 'main', request_source: 'user' } },
+      },
+      'n'
+    );
+    expect(g.requestSource).toBe('parent_run');
+    expect(g.parentRunId).toBe('parent-7');
+  });
+
+  it('only a recorded bundled source is bundled; project, global or unknown is repo', () => {
+    for (const source of ['project', 'global', 'installed', undefined]) {
+      const g = nodeGuardContext(
+        { ...base, metadata: { dispatch: { base_branch: '', ...(source ? { source } : {}) } } },
+        'n'
+      );
+      expect(g.workflowSource).toBe('repo');
+    }
+    expect(nodeGuardContext({ ...base, metadata: {} }, 'n').workflowSource).toBe('repo');
+  });
+
+  it('nothing recorded: no request source, no parent, no empty request', () => {
+    const g = nodeGuardContext({ id: 'r', user_message: '', parent_run_id: null }, 'n');
+    expect(g).not.toHaveProperty('requestSource');
+    expect(g).not.toHaveProperty('parentRunId');
+    expect(g).not.toHaveProperty('userRequest');
   });
 });

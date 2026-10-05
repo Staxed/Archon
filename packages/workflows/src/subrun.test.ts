@@ -2829,6 +2829,9 @@ nodes:
     ]);
     const completedParent = await store.getWorkflowRun(parentRun!.id);
     expect(readRunDispatchMetadata(completedParent?.metadata)?.source).toBe('bundled');
+    // The tool-call guards read who started each run: the child was a parent's node.
+    const childRow = await store.getWorkflowRun(child!.id);
+    expect(readRunDispatchMetadata(childRow?.metadata)?.request_source).toBe('parent_run');
   });
 
   // --- slice 2, PR-C: dynamic fan-out -------------------------------------------

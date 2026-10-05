@@ -73,7 +73,7 @@ import type {
   WorkflowSource,
 } from '@archon/workflows/schemas/workflow';
 import { isWorkflowWaitContext } from '@archon/workflows/schemas/workflow-run';
-import type { WorkflowRun } from '@archon/workflows/schemas/workflow-run';
+import type { WorkflowRequestSource, WorkflowRun } from '@archon/workflows/schemas/workflow-run';
 import { spellWorkflowCommand, type WorkflowCommandSurface } from '@archon/workflows/deps';
 import type { WorkflowRunConfigInput } from '@archon/workflows/schemas/run-config';
 import { isPerUserGitHubEnabled } from '../github-auth/config';
@@ -648,6 +648,27 @@ interface WorkflowDispatchOptions {
   /** Between-run continuation (#2747): adopt/supersede target, if declared. */
   adoptRunId?: string;
   supersedesRunId?: string;
+  /**
+   * Who started the run, for the tool-call guards (ExecuteWorkflowOptions.requestSource).
+   * A continuation keeps what its run recorded; this only reaches a fresh run row.
+   */
+  requestSource?: WorkflowRequestSource;
+}
+
+/** Forge platforms: a run they start answers an event (a comment, a label), not a typed command. */
+const FORGE_PLATFORMS = new Set(['github', 'gitlab', 'gitea']);
+
+/**
+ * Who started a run dispatched from this platform: a forge event is a `trigger`
+ * whatever its text says; elsewhere a command the user typed is `user` and a run the
+ * chat agent chose and worded is `orchestrator`.
+ */
+export function requestSourceFor(
+  platform: Pick<IPlatformAdapter, 'getPlatformType'>,
+  how: 'command' | 'agent'
+): WorkflowRequestSource {
+  if (FORGE_PLATFORMS.has(platform.getPlatformType())) return 'trigger';
+  return how === 'command' ? 'user' : 'orchestrator';
 }
 
 const FAILED_RUN_PROMPT_PREVIEW_MAX = 160;
@@ -739,10 +760,14 @@ async function dispatchOrchestratorWorkflowOwned(
    * Discovery source of the workflow — telemetry only (bundled workflows
    * report their real name, custom ones report "custom"). Optional: callers
    * that don't have it readily in scope omit it and the run reports "custom".
+   * A `start` request that carries its own discovery source fills it in.
    */
-  source?: WorkflowSource,
+  sourceArg?: WorkflowSource,
   options?: WorkflowDispatchOptions
 ): Promise<void> {
+  const source = sourceArg ?? (request.kind === 'start' ? request.source : undefined);
+  // Who started the run (guards only); a continuation keeps what its run recorded.
+  const requestSourceOpt = options?.requestSource ? { requestSource: options.requestSource } : {};
   const userMessage = request.kind === 'resume' ? request.run.user_message : request.args;
   const parseWarnings = request.kind === 'start' ? request.parseWarnings : undefined;
   const runCwd = conversation.cwd ?? codebase.default_cwd;
@@ -1320,6 +1345,7 @@ async function dispatchOrchestratorWorkflowOwned(
               parentConversationId: conversation.id,
               userId,
               source,
+              ...requestSourceOpt,
               preparedSource: captured.preparedSource,
               parseWarnings,
               baseBranch: codebaseBaseBranch,
@@ -1364,6 +1390,7 @@ async function dispatchOrchestratorWorkflowOwned(
           isolationHints,
           userId,
           source,
+          ...requestSourceOpt,
           parseWarnings,
           inputs: resolvedInputs,
           modelOverrides: options?.modelOverrides,
@@ -1418,6 +1445,7 @@ async function dispatchOrchestratorWorkflowOwned(
           parentConversationId: conversation.id,
           userId,
           source,
+          ...requestSourceOpt,
           preparedSource: freshCaptured.preparedSource,
           parseWarnings,
           baseBranch: codebaseBaseBranch,
@@ -1981,6 +2009,8 @@ export async function handleMessage(
               // Between-run continuation (#2747), same channel.
               adoptRunId: context?.workflowAdoptRunId,
               supersedesRunId: context?.workflowSupersedesRunId,
+              // A command typed by the user (a forge event: a trigger).
+              requestSource: requestSourceFor(platform, 'command'),
             }
           );
         }
@@ -2424,9 +2454,12 @@ export async function handleMessage(
       protectedEnvKeys: protectedEnvKeys.length > 0 ? protectedEnvKeys : undefined,
       model: chatRequest.model,
       systemPrompt,
-      // For the tool-call guards only (the Jev shadow judge): the chat message
-      // this turn answers. Never sent to the model.
-      guardContext: { userRequest: message },
+      // For the tool-call guards only (the Jev guard): the chat message this turn
+      // answers, and who wrote it. Never sent to the model.
+      guardContext: {
+        userRequest: message,
+        requestSource: FORGE_PLATFORMS.has(platform.getPlatformType()) ? 'trigger' : 'user',
+      },
     };
     if (chatRequest.preset) {
       applyPresetToRequestOptions(providerKey, chatRequest.preset, requestOptions);
@@ -2503,6 +2536,7 @@ export async function handleMessage(
               const names = workflows.map(w => w.name).join(', ');
               return `No workflow named "${workflowName}". Available: ${names}`;
             }
+            const startedWf = wf;
             try {
               await dispatchBackgroundWorkflow(
                 {
@@ -2514,6 +2548,9 @@ export async function handleMessage(
                   codebaseId: scopedCodebaseId,
                   availableWorkflows: workflows,
                   userId,
+                  source: workflowsWithSource.find(ws => ws.workflow === startedWf)?.source,
+                  // The chat agent started it with its own message.
+                  requestSource: requestSourceFor(platform, 'agent'),
                 },
                 wf
               );
@@ -3239,7 +3276,9 @@ async function handleWorkflowInvocationResult(
       },
       isolationHints,
       userId,
-      workflowEntry?.source
+      workflowEntry?.source,
+      // The chat agent chose the workflow and may have worded its prompt.
+      { requestSource: requestSourceFor(platform, 'agent') }
     );
     return;
   }

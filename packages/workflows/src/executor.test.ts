@@ -2787,6 +2787,59 @@ describe('executeWorkflow', () => {
       });
     });
 
+    it('records who started the run with the dispatch record (guards)', async () => {
+      const store = makeStore();
+      const deps = makeDeps(store);
+
+      await executeWorkflow(
+        deps,
+        makePlatform(),
+        'conv-1',
+        '/tmp/worktree',
+        makeWorkflow(),
+        'test message',
+        'db-conv-1',
+        { baseBranch: 'develop', source: 'bundled', requestSource: 'orchestrator' }
+      );
+
+      const created = (store.createWorkflowRun as ReturnType<typeof mock>).mock.calls[0]?.[0] as {
+        metadata?: Record<string, unknown>;
+      };
+      expect(readRunDispatchMetadata(created.metadata)).toEqual({
+        base_branch: 'develop',
+        source: 'bundled',
+        request_source: 'orchestrator',
+      });
+    });
+
+    it('a continuation keeps the request source it recorded, not the resuming surface (guards)', async () => {
+      const deps = makeDeps();
+
+      await executeWorkflow(
+        deps,
+        makePlatform(),
+        'conv-1',
+        '/tmp/worktree',
+        makeWorkflow(),
+        'test message',
+        'db-conv-1',
+        {
+          preCreatedRun: makeRun({
+            metadata: {
+              [RUN_DISPATCH_METADATA_KEY]: { base_branch: 'main', request_source: 'trigger' },
+            },
+          }),
+          priorCompletedNodes: new Map(),
+          requestSource: 'user',
+        }
+      );
+
+      const run = mockExecuteDagWorkflow.mock.calls[0]?.[0].workflowRun as {
+        metadata?: Record<string, unknown>;
+      };
+      expect(readRunDispatchMetadata(run.metadata)?.request_source).toBe('trigger');
+    });
+
     it('a continuation reads the branch the run recorded, not the current environment (#2454)', async () => {
       // The gate-resumed half of a run must answer $BASE_BRANCH the way its first half
       // did. Repo config and the caller's codebase default both changed since the start;

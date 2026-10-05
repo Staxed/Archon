@@ -125,6 +125,7 @@ import {
   isWaitNode,
   isPersistableNode,
   readSubrunMetadata,
+  readRunDispatchMetadata,
   isApprovalContext,
   inputEnvKey,
   isNodeContextResume,
@@ -2073,17 +2074,32 @@ function observeNodeCheckout(ctx: RunLayersContext): Promise<CheckoutObservation
 
 /**
  * What the providers' tool-call guards may know about a node's request (the Jev
- * shadow judge reads it; providers/src/types.ts GuardContext). Never sent to the model.
+ * guard reads it; providers/src/types.ts GuardContext). Never sent to the model.
+ *
+ * - `userRequest`: the run's message; whose words they are is `requestSource`.
+ * - `requestSource`: `parent_run` for a `workflow:` sub-run (its `parent_run_id`),
+ *   else what the dispatching surface recorded (`dispatch.request_source`); absent
+ *   when nothing was recorded (a run dispatched before this existed).
+ * - `workflowSource`: `bundled` only when discovery said so (`dispatch.source`);
+ *   anything else, unknown included, is `repo` (a repo file can override a bundled
+ *   workflow of the same name, so only a recorded `bundled` counts).
  */
-function nodeGuardContext(
-  workflowRun: Pick<WorkflowRun, 'id' | 'user_message'> & { workflow_name?: string },
+export function nodeGuardContext(
+  workflowRun: Pick<WorkflowRun, 'id' | 'user_message'> &
+    Partial<Pick<WorkflowRun, 'metadata' | 'parent_run_id'>> & { workflow_name?: string },
   nodeId: string
 ): GuardContext {
+  const dispatch = readRunDispatchMetadata(workflowRun.metadata);
+  const parentRunId = workflowRun.parent_run_id ?? undefined;
+  const requestSource = parentRunId ? 'parent_run' : dispatch?.request_source;
   return {
     runId: workflowRun.id,
     nodeId,
     ...(workflowRun.workflow_name ? { workflow: workflowRun.workflow_name } : {}),
     ...(workflowRun.user_message ? { userRequest: workflowRun.user_message } : {}),
+    ...(requestSource ? { requestSource } : {}),
+    ...(parentRunId ? { parentRunId } : {}),
+    workflowSource: dispatch?.source === 'bundled' ? 'bundled' : 'repo',
   };
 }
 
