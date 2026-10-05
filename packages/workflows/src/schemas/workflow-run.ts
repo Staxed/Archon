@@ -556,6 +556,12 @@ export const runDispatchMetadataSchema = z.object({
   source: workflowSourceSchema.optional(),
   /** Who started the run (guards only). Absent on runs dispatched before it was recorded. */
   request_source: workflowRequestSourceSchema.optional(),
+  /**
+   * The run's workflow (and every workflow it includes) is byte-identical to Archon's
+   * shipped bundle (shipped-bundle.ts): the only case the guards call `bundled`.
+   * Absent otherwise, and on runs dispatched before it was recorded.
+   */
+  bundled_shipped: z.literal(true).optional(),
 });
 
 export type RunDispatchMetadata = z.infer<typeof runDispatchMetadataSchema>;

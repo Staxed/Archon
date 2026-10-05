@@ -54,6 +54,7 @@ import {
   BUNDLED_WORKFLOW_PATHS,
   isBinaryBuild,
 } from './defaults/bundled-defaults';
+import { includeTargets, isShippedBundledContent, markShippedBundle } from './shipped-bundle';
 import {
   bundledDefaultCommandPath,
   bundlesPackagedResources,
@@ -144,6 +145,13 @@ interface ParsedWorkflowFile {
   workflow: WorkflowDefinition;
   /** Empty for a clean file. */
   parseWarnings: readonly string[];
+  /** The file's bytes are the shipped bundled workflow of its name (shipped-bundle.ts). */
+  shippedBundle?: true;
+}
+
+/** `{ shippedBundle: true }` when `content` is the shipped bundle's copy of `workflow`. */
+function shippedMark(workflow: WorkflowDefinition, content: string): { shippedBundle?: true } {
+  return isShippedBundledContent(workflow.name, content) ? { shippedBundle: true } : {};
 }
 
 /** A discovered workflow file with the scope it came from. */
@@ -227,7 +235,11 @@ async function loadWorkflowsFromDir(dirPath: string, depth = 0): Promise<DirLoad
           const result = parseWorkflow(content, entry);
 
           if (result.workflow) {
-            workflows.set(entry, { workflow: result.workflow, parseWarnings: result.warnings });
+            workflows.set(entry, {
+              workflow: result.workflow,
+              parseWarnings: result.warnings,
+              ...shippedMark(result.workflow, content),
+            });
             getLog().debug({ workflowName: result.workflow.name, dirPath }, 'workflow_loaded');
           } else {
             errors.push(result.error);
@@ -362,6 +374,8 @@ async function loadPackWorkflows(
       continue;
     }
     const parsed = parseWorkflow(content, filename);
+    // Before qualification: the hash is of the bytes, the name is the one the file declares.
+    const mark = parsed.workflow ? shippedMark(parsed.workflow, content) : {};
     if (!parsed.workflow) {
       // A scope file's error keeps its bare filename, which resume matches against a
       // run's workflow name. An installed pack's error names the pack and folder.
@@ -377,7 +391,7 @@ async function loadPackWorkflows(
     files.push({
       folder: workflowFolder,
       filename,
-      parsed: { workflow: parsed.workflow, parseWarnings: parsed.warnings },
+      parsed: { workflow: parsed.workflow, parseWarnings: parsed.warnings, ...mark },
     });
   }
 
@@ -475,11 +489,16 @@ function loadBundledWorkflows(): DirLoadResult {
     const filename = basename(path);
     const result = parseWorkflow(content, filename);
     if (result.workflow) {
+      const mark = shippedMark(result.workflow, content);
       const owner = BUNDLED_WORKFLOW_OWNERS[name];
       if (owner !== undefined) {
         qualifyWorkflowResources(result.workflow, { source: 'bundled', ...owner });
       }
-      workflows.set(filename, { workflow: result.workflow, parseWarnings: result.warnings });
+      workflows.set(filename, {
+        workflow: result.workflow,
+        parseWarnings: result.warnings,
+        ...mark,
+      });
       getLog().debug({ workflowName: result.workflow.name }, 'bundled_workflow_loaded');
     } else {
       // Bundled workflows should ALWAYS be valid - this indicates a build-time error
@@ -883,6 +902,21 @@ export async function discoverWorkflows(
       }))
     );
 
+    // The guard's `bundled` (shipped-bundle.ts): a bundled-labelled workflow whose file and
+    // every file it includes, transitively, are byte-identical to the shipped bundle's.
+    const shippedByName = new Map<string, boolean>();
+    for (const { workflow, source, shippedBundle } of files.values()) {
+      if (!duplicateNames.has(workflow.name))
+        shippedByName.set(workflow.name, source === 'bundled' && shippedBundle === true);
+    }
+    const shippedClosure = (name: string, seen = new Set<string>()): boolean => {
+      if (seen.has(name)) return true; // a cycle adds nothing new (expansion rejects it anyway)
+      seen.add(name);
+      const raw = rawByName.get(name);
+      if (!raw || shippedByName.get(name) !== true) return false;
+      return includeTargets(raw.nodes).every(target => shippedClosure(target, seen));
+    };
+
     const result: WorkflowWithSource[] = [];
     for (const { workflow, source, parseWarnings } of files.values()) {
       if (duplicateNames.has(workflow.name)) continue; // dropped as a duplicate-name collision
@@ -903,6 +937,7 @@ export async function discoverWorkflows(
       // expansion, so it is reported here exactly once too.
       const warnings = [...parseWarnings];
       collectLoopGroupSinkWarnings(expanded.nodes, warnings);
+      if (source === 'bundled' && shippedClosure(workflow.name)) markShippedBundle(expanded);
       result.push({
         workflow: expanded,
         source,
@@ -1052,16 +1087,19 @@ export async function discoverWorkflows(
           for (const file of files) {
             if (file.kind !== 'workflow') continue;
             const filename = basename(file.sourcePath);
-            const parsed = parseWorkflow(await readBundleContent(file), filename);
+            const content = await readBundleContent(file);
+            const parsed = parseWorkflow(content, filename);
             if (!parsed.workflow) {
               appResult.errors.push(parsed.error);
               continue;
             }
+            const mark = shippedMark(parsed.workflow, content);
             if (file.owner)
               qualifyWorkflowResources(parsed.workflow, { source: 'bundled', ...file.owner });
             appResult.workflows.set(filename, {
               workflow: parsed.workflow,
               parseWarnings: parsed.warnings,
+              ...mark,
             });
           }
         } else {

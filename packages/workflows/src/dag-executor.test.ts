@@ -36377,7 +36377,12 @@ describe('nodeGuardContext (what the Jev guard knows about a node)', () => {
         {
           ...base,
           metadata: {
-            dispatch: { base_branch: 'main', source: 'bundled', request_source: 'user' },
+            dispatch: {
+              base_branch: 'main',
+              source: 'bundled',
+              request_source: 'user',
+              bundled_shipped: true,
+            },
           },
         },
         'implement'
@@ -36414,6 +36419,24 @@ describe('nodeGuardContext (what the Jev guard knows about a node)', () => {
       expect(g.workflowSource).toBe('repo');
     }
     expect(nodeGuardContext({ ...base, metadata: {} }, 'n').workflowSource).toBe('repo');
+  });
+
+  it('a bundled-labelled run is repo unless it recorded byte-identity with the shipped bundle', () => {
+    // A repo file with a bundled workflow's filename keeps discovery's `bundled` label;
+    // only `bundled_shipped` (the bytes hash to the shipped copy) makes it bundled.
+    const g = nodeGuardContext(
+      { ...base, metadata: { dispatch: { base_branch: 'main', source: 'bundled' } } },
+      'n'
+    );
+    expect(g.workflowSource).toBe('repo');
+    const h = nodeGuardContext(
+      {
+        ...base,
+        metadata: { dispatch: { base_branch: 'main', source: 'project', bundled_shipped: true } },
+      },
+      'n'
+    );
+    expect(h.workflowSource).toBe('repo');
   });
 
   it('nothing recorded: no request source, no parent, no empty request', () => {

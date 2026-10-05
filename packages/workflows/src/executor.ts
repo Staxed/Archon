@@ -73,6 +73,7 @@ import type { RunChildWorkflowArgs, ChildWorkflowOutcome, PriorRunUsage } from '
 import type { PersistedNodeOutput, WorkflowResumeCursor } from './store';
 import { canonicalValueText, type JsonValue } from './output-ref';
 import { discoverWorkflowsWithConfig } from './workflow-discovery';
+import { isShippedBundle } from './shipped-bundle';
 import type { WorkflowWithSource, WorkflowLoadError } from './schemas';
 import { validateWorkflowOutcomeDeclaration } from './loader';
 import { maybeWarnLegacyStatePath, maybeWarnLegacyArtifactsPath } from './state-migration';
@@ -2066,10 +2067,16 @@ export async function executeWorkflow(
   const runSource = recordedDispatch ? recordedDispatch.source : source;
   // Who started the run (guards only), kept the same way: a continuation never re-derives it.
   const runRequestSource = recordedDispatch ? recordedDispatch.request_source : requestSource;
+  // Byte-identical to the shipped bundle (guards only), decided once from what discovery
+  // read for this run and kept the same way.
+  const runBundledShipped = recordedDispatch
+    ? recordedDispatch.bundled_shipped === true
+    : runSource === 'bundled' && isShippedBundle(workflow);
   const dispatchMetadata: RunDispatchMetadata = {
     base_branch: baseBranch,
     ...(runSource ? { source: runSource } : {}),
     ...(runRequestSource ? { request_source: runRequestSource } : {}),
+    ...(runBundledShipped ? { bundled_shipped: true as const } : {}),
   };
 
   const docsDir = config.docsPath ?? 'docs/';

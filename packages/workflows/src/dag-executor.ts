@@ -2080,9 +2080,10 @@ function observeNodeCheckout(ctx: RunLayersContext): Promise<CheckoutObservation
  * - `requestSource`: `parent_run` for a `workflow:` sub-run (its `parent_run_id`),
  *   else what the dispatching surface recorded (`dispatch.request_source`); absent
  *   when nothing was recorded (a run dispatched before this existed).
- * - `workflowSource`: `bundled` only when discovery said so (`dispatch.source`);
- *   anything else, unknown included, is `repo` (a repo file can override a bundled
- *   workflow of the same name, so only a recorded `bundled` counts).
+ * - `workflowSource`: `bundled` only when the run recorded that its workflow, and
+ *   everything it includes, is byte-identical to Archon's shipped bundle
+ *   (`dispatch.bundled_shipped`, shipped-bundle.ts); anything else is `repo`: a
+ *   user-edited or project copy of a bundled name, or a run recorded before this.
  */
 export function nodeGuardContext(
   workflowRun: Pick<WorkflowRun, 'id' | 'user_message'> &
@@ -2099,7 +2100,8 @@ export function nodeGuardContext(
     ...(workflowRun.user_message ? { userRequest: workflowRun.user_message } : {}),
     ...(requestSource ? { requestSource } : {}),
     ...(parentRunId ? { parentRunId } : {}),
-    workflowSource: dispatch?.source === 'bundled' ? 'bundled' : 'repo',
+    workflowSource:
+      dispatch?.source === 'bundled' && dispatch.bundled_shipped === true ? 'bundled' : 'repo',
   };
 }
 

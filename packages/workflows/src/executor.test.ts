@@ -196,6 +196,7 @@ import {
 import type { WorkflowRunConfigMetadata } from './schemas/run-config';
 import { substituteWorkflowVariables } from './executor-shared';
 import { TerminalStatusWriteError } from './terminal-status-write';
+import { markShippedBundle } from './shipped-bundle';
 
 // --- Helpers ---
 
@@ -2810,6 +2811,32 @@ describe('executeWorkflow', () => {
         source: 'bundled',
         request_source: 'orchestrator',
       });
+    });
+
+    it('records bundled_shipped only for a bundled run whose workflow discovery marked as the shipped bytes (guards)', async () => {
+      const dispatchOf = async (source: 'bundled' | 'project', marked: boolean) => {
+        const store = makeStore();
+        const wf = makeWorkflow();
+        if (marked) markShippedBundle(wf);
+        await executeWorkflow(
+          makeDeps(store),
+          makePlatform(),
+          'conv-1',
+          '/tmp/worktree',
+          wf,
+          'test message',
+          'db-conv-1',
+          { baseBranch: 'develop', source }
+        );
+        const created = (store.createWorkflowRun as ReturnType<typeof mock>).mock.calls[0]?.[0] as {
+          metadata?: Record<string, unknown>;
+        };
+        return readRunDispatchMetadata(created.metadata);
+      };
+      expect((await dispatchOf('bundled', true))?.bundled_shipped).toBe(true);
+      // a user-edited copy keeps discovery's `bundled` label but is not marked
+      expect(await dispatchOf('bundled', false)).not.toHaveProperty('bundled_shipped');
+      expect(await dispatchOf('project', true)).not.toHaveProperty('bundled_shipped');
     });
 
     it('a continuation keeps the request source it recorded, not the resuming surface (guards)', async () => {
