@@ -16,11 +16,12 @@ import {
   matcherMatches,
   parseApplyPatch,
   runDispatcher,
-  startShadowJudge,
+  decideHook,
+  guardCallFor,
   toolView,
   type HookRunSpec,
 } from './hook-dispatcher';
-import type { ShadowCall } from '../jev-shadow';
+import type { GuardVerdict, JevShadowConfig, ShadowCall } from '../jev-shadow';
 import { dispatcherCommand } from './install';
 import { trackTempRoots } from '@archon/paths/test-utils';
 
@@ -371,14 +372,16 @@ describe('runDispatcher', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('is a no-op without ARCHON_HOOK_SPEC', () => {
-    expect(runDispatcher('PreToolUse', '{}', {})).toEqual({ stdout: '', exitCode: 0 });
+  test('is a no-op without ARCHON_HOOK_SPEC', async () => {
+    expect(await runDispatcher('PreToolUse', '{}', {})).toEqual({ stdout: '', exitCode: 0 });
   });
 
-  test('fails closed for PreToolUse when the spec is unreadable, open otherwise', () => {
+  test('fails closed for PreToolUse when the spec is unreadable, open otherwise', async () => {
     const env = { ARCHON_HOOK_SPEC: join(dir, 'missing.json') };
-    expect(runDispatcher('PreToolUse', '{"tool_name":"Bash"}', env).stdout).toContain('deny');
-    expect(runDispatcher('Stop', '{}', env).stdout).toBe('');
+    expect((await runDispatcher('PreToolUse', '{"tool_name":"Bash"}', env)).stdout).toContain(
+      'deny'
+    );
+    expect((await runDispatcher('Stop', '{}', env)).stdout).toBe('');
   });
 
   test('the installed shell command runs the dispatcher only for listed events', () => {
@@ -396,126 +399,262 @@ describe('runDispatcher', () => {
   });
 });
 
-describe('Jev shadow judge (log-only)', () => {
+describe("Jev guard (awaited after Archon's own guards)", () => {
   const dir = mkdtempSync(join(tmpdir(), 'hook-dispatcher-jev-'));
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
   });
-  const shadow = {
+  const guard: JevShadowConfig = {
     python: existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3',
     scriptsDir: join(dir, 'scripts'),
     logDir: join(dir, 'log'),
     caller: 'archon',
   };
-  const ctx = { runId: 'r1', nodeId: 'n1', workflow: 'w', userRequest: 'go' };
+  const ctx = {
+    runId: 'r1',
+    nodeId: 'n1',
+    workflow: 'w',
+    userRequest: 'go',
+    requestSource: 'user' as const,
+    workflowSource: 'bundled' as const,
+  };
+  const ENV = { PATH: '/usr/bin', X: '1' };
+  const ALLOW: GuardVerdict = { decision: 'allow', reason: 'ok', stage: 'prefilter' };
 
-  function judged(
-    spec: HookRunSpec,
-    input: Record<string, unknown>,
-    out?: Record<string, unknown>
-  ) {
+  function recording(verdict: GuardVerdict | ((c: ShadowCall) => GuardVerdict) = ALLOW) {
     const calls: ShadowCall[] = [];
-    const p = startShadowJudge(spec, input, out, { PATH: '/usr/bin', X: '1' }, async c => {
+    const judge = async (c: ShadowCall): Promise<GuardVerdict> => {
       calls.push(c);
-    });
-    return { calls, p };
+      return typeof verdict === 'function' ? verdict(c) : verdict;
+    };
+    return { calls, judge };
   }
 
-  test('a Codex shell call is judged with the run context; the decision is untouched', () => {
-    const spec = codex({ jevShadow: shadow, guardContext: ctx });
-    const input = {
-      tool_name: 'exec_command',
-      tool_input: { cmd: 'rm -rf build', workdir: 'pkg' },
-    };
-    const { calls, p } = judged(spec, input, undefined);
-    expect(p).toBeDefined();
+  function reasonOf(out: Record<string, unknown> | undefined): string | undefined {
+    return (out?.hookSpecificOutput as { permissionDecisionReason?: string } | undefined)
+      ?.permissionDecisionReason;
+  }
+
+  test('a Codex shell call is judged with the run context; an allow prints nothing', async () => {
+    const spec = codex({ jevShadow: guard, guardContext: ctx });
+    const { calls, judge } = recording();
+    const out = await decideHook(
+      spec,
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'rm -rf build', workdir: 'pkg' } },
+      ENV,
+      judge
+    );
+    expect(out).toBeUndefined();
     expect(calls[0]).toMatchObject({
       provider: 'codex',
       toolName: 'Bash',
       toolInput: { command: 'rm -rf build' },
       cwd: '/work/tree/pkg',
       projectRoot: '/work/tree',
-      env: { PATH: '/usr/bin', X: '1' },
+      env: ENV,
       runId: 'r1',
       userRequest: 'go',
+      requestSource: 'user',
+      workflowSource: 'bundled',
       archonGuard: 'pass',
     });
   });
 
-  test("a call Archon's floor refused is judged too, labelled with the rule", () => {
-    const spec = codex({ jevShadow: shadow, pathGuard: false });
-    const input = { tool_name: 'exec_command', tool_input: { cmd: 'rm -rf /' } };
-    const out = dispatchHook(spec, 'PreToolUse', input);
-    expect(decision(out)).toBe('deny');
-    const { calls } = judged(spec, input, out);
-    expect(calls[0].archonGuard).toMatch(/^deny: /);
-    expect(calls[0].archonGuard).not.toBe('deny: node-policy');
-  });
-
-  test('Grok writes are judged; reads, MCP and spec without a judge are not', () => {
-    const g = grok({ jevShadow: shadow });
-    expect(
-      judged(g, { tool_name: 'write', tool_input: { file_path: '/work/tree/a', content: 'x' } })
-        .calls[0]
-    ).toMatchObject({ toolName: 'Write', toolInput: { file_path: '/work/tree/a', content: 'x' } });
-    expect(
-      judged(g, { tool_name: 'read_file', tool_input: { target_file: 'a' } }).p
-    ).toBeUndefined();
-    expect(judged(g, { tool_name: 'use_tool', tool_input: {} }).p).toBeUndefined();
-    expect(
-      judged(codex({ jevShadow: null }), { tool_name: 'exec_command', tool_input: { cmd: 'ls' } }).p
-    ).toBeUndefined();
-  });
-
-  test('end to end: the installed hook prints the same decision with the judge on, and the judge logs', async () => {
-    mkdirSync(shadow.scriptsDir, { recursive: true });
-    writeFileSync(
-      join(shadow.scriptsDir, 'jev_guard.py'),
-      [
-        'CALLER = "stixed"',
-        'def redact(s):',
-        '    return str(s)',
-        'class V:',
-        '    def __init__(self, **kw):',
-        '        self.__dict__.update(kw)',
-        'def decide(tool, ti, ctx):',
-        '    return V(decision="deny", reason="shadow says no", asked=True, triggers=["t"], facts={},',
-        '             model="m", latency_ms=1, cost=0.0, error="")',
-        '',
-      ].join('\n')
-    );
-    const run = (withJudge: boolean): string => {
-      const specPath = join(dir, `spec-${String(withJudge)}.json`);
-      writeFileSync(specPath, JSON.stringify(codex(withJudge ? { jevShadow: shadow } : {})));
-      return spawnSync('/bin/sh', ['-c', dispatcherCommand('PreToolUse')], {
-        input: JSON.stringify({
-          hook_event_name: 'PreToolUse',
-          tool_name: 'exec_command',
-          tool_input: { cmd: 'ls -la' },
-        }),
-        env: { ...process.env, ARCHON_HOOK_SPEC: specPath, ARCHON_HOOK_EVENTS: 'PreToolUse' },
-        encoding: 'utf8',
-      }).stdout;
-    };
-    const plain = run(false);
-    const shadowed = run(true);
-    expect(shadowed).toBe(plain); // Jev said deny; the call is still allowed (no output)
-    expect(shadowed).toBe('');
-    let lines: string[] = [];
-    for (let i = 0; i < 100 && lines.length === 0; i++) {
-      await Bun.sleep(50);
-      lines = existsSync(shadow.logDir)
-        ? readdirSync(shadow.logDir)
-            .filter(f => f.endsWith('.jsonl'))
-            .flatMap(f => readFileSync(join(shadow.logDir, f), 'utf8').trim().split('\n'))
-        : [];
-    }
-    expect(JSON.parse(lines[0])).toMatchObject({
-      provider: 'codex',
-      tool: 'Bash',
+  test('must stop: an enforced deny is printed as the CLI deny (Codex and Grok)', async () => {
+    const deny: GuardVerdict = {
       decision: 'deny',
-      archon_guard: 'pass',
-      call: 'ls -la',
+      reason: 'jev-guard: denied (x)',
+      stage: 'judge',
+    };
+    const cases: [HookRunSpec, string, Record<string, unknown>][] = [
+      [codex({ jevShadow: guard }), 'exec_command', { cmd: 'npm publish' }],
+      [grok({ jevShadow: guard }), 'run_terminal_command', { command: 'npm publish' }],
+    ];
+    for (const [spec, tool, input] of cases) {
+      const { judge } = recording(deny);
+      const out = await decideHook(
+        spec,
+        'PreToolUse',
+        { tool_name: tool, tool_input: input },
+        ENV,
+        judge
+      );
+      expect(decision(out)).toBe('deny');
+      expect(reasonOf(out)).toBe('jev-guard: denied (x)');
+    }
+  });
+
+  test('must pass: a log-only would-deny lets the call run', async () => {
+    const { judge } = recording({
+      decision: 'allow',
+      reason: 'would deny',
+      stage: 'jev',
+      mode: 'log-only',
+      enforced: false,
     });
+    const out = await decideHook(
+      codex({ jevShadow: guard }),
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'docker compose down' } },
+      ENV,
+      judge
+    );
+    expect(out).toBeUndefined();
+  });
+
+  test('must stop: a judge that throws denies (fail closed)', async () => {
+    const out = await decideHook(
+      codex({ jevShadow: guard }),
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'ls' } },
+      ENV,
+      () => Promise.reject(new Error('boom'))
+    );
+    expect(decision(out)).toBe('deny');
+    expect(reasonOf(out)).toContain('boom');
+  });
+
+  test("a call Archon's own guards refuse is not sent to the guard", async () => {
+    const { calls, judge } = recording();
+    const out = await decideHook(
+      codex({ jevShadow: guard, pathGuard: false }),
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'rm -rf /' } },
+      ENV,
+      judge
+    );
+    expect(decision(out)).toBe('deny');
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a node hook's rewritten call is the one judged", async () => {
+    const spec = codex({
+      jevShadow: guard,
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            response: {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                updatedInput: { cmd: 'make clean' },
+              },
+            },
+          },
+        ],
+      },
+    });
+    const { calls, judge } = recording(c =>
+      c.toolInput.command === 'make clean'
+        ? { decision: 'deny', reason: 'no', stage: 'judge' }
+        : ALLOW
+    );
+    const out = await decideHook(
+      spec,
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'ls' } },
+      ENV,
+      judge
+    );
+    expect(calls[0].toolInput).toEqual({ command: 'make clean' });
+    expect(reasonOf(out)).toBe("no (after this node's hook rewrote the call)");
+  });
+
+  test('Grok writes are judged; reads, MCP, other events and a spec without a guard are not', async () => {
+    const { calls, judge } = recording();
+    const g = grok({ jevShadow: guard });
+    const write = { tool_name: 'write', tool_input: { file_path: '/work/tree/a', content: 'x' } };
+    await decideHook(g, 'PreToolUse', write, ENV, judge);
+    await decideHook(
+      g,
+      'PreToolUse',
+      { tool_name: 'read_file', tool_input: { target_file: 'a' } },
+      ENV,
+      judge
+    );
+    await decideHook(g, 'PreToolUse', { tool_name: 'use_tool', tool_input: {} }, ENV, judge);
+    await decideHook(g, 'PostToolUse', write, ENV, judge);
+    await decideHook(
+      codex({ jevShadow: null }),
+      'PreToolUse',
+      { tool_name: 'exec_command', tool_input: { cmd: 'ls' } },
+      ENV,
+      judge
+    );
+    expect(calls.map(c => c.toolName)).toEqual(['Write']);
+    expect(calls[0].toolInput).toEqual({ file_path: '/work/tree/a', content: 'x' });
+    expect(guardCallFor(g, { tool_name: 'read_file', tool_input: {} }, ENV)).toBeUndefined();
+  });
+
+  /**
+   * A stand-in for stixed's session_guard.py: appends each call's command to
+   * calls.log and answers deny for `git push --force`, allow for everything else.
+   */
+  const FAKE = [
+    'import json, os, sys',
+    'HERE = os.path.dirname(os.path.abspath(__file__))',
+    'req = json.loads(sys.stdin.read() or "{}")',
+    'cmd = str((req.get("tool_input") or {}).get("command", ""))',
+    'with open(os.path.join(HERE, "calls.log"), "a") as f:',
+    '    f.write(json.dumps({"cmd": cmd, "profile": req.get("profile"), "cli": req.get("cli")}) + "\\n")',
+    'deny = cmd.startswith("git push --force")',
+    'print(json.dumps({"outcome": "deny" if deny else "allow", "stage": "judge" if deny else "prefilter",',
+    '                  "reason": "force-push of the default branch" if deny else "nothing at stake",',
+    '                  "mode": "enforce", "enforced": True}))',
+    '',
+  ].join('\n');
+
+  function installed(command: string, specPath: string): string {
+    return spawnSync('/bin/sh', ['-c', dispatcherCommand('PreToolUse')], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'exec_command',
+        tool_input: { cmd: command },
+      }),
+      env: { ...process.env, ARCHON_HOOK_SPEC: specPath, ARCHON_HOOK_EVENTS: 'PreToolUse' },
+      encoding: 'utf8',
+    }).stdout;
+  }
+
+  test('must pass: Codex fires the hook once per command, and every safe command runs', () => {
+    mkdirSync(guard.scriptsDir, { recursive: true });
+    writeFileSync(join(guard.scriptsDir, 'session_guard.py'), FAKE);
+    const specPath = join(dir, 'spec-per-command.json');
+    writeFileSync(specPath, JSON.stringify(codex({ jevShadow: guard })));
+    const commands = ['ls -la', 'git status', 'bun test src/a.test.ts', 'git push -u origin HEAD'];
+    for (const c of commands) expect(installed(c, specPath)).toBe('');
+    const logged = readFileSync(join(guard.scriptsDir, 'calls.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l) as { cmd: string; profile: string; cli: string });
+    expect(logged.map(l => l.cmd)).toEqual(commands);
+    expect(logged.every(l => l.profile === 'archon' && l.cli === 'codex')).toBe(true);
+  });
+
+  test('must stop: end to end, the installed hook prints the deny for a refused command', () => {
+    mkdirSync(guard.scriptsDir, { recursive: true });
+    writeFileSync(join(guard.scriptsDir, 'session_guard.py'), FAKE);
+    const specPath = join(dir, 'spec-deny.json');
+    writeFileSync(specPath, JSON.stringify(codex({ jevShadow: guard })));
+    const out = JSON.parse(installed('git push --force origin feature', specPath)) as Record<
+      string,
+      unknown
+    >;
+    expect(decision(out)).toBe('deny');
+    expect(JSON.stringify(out)).toContain('force-push of the default branch');
+    expect(readdirSync(guard.logDir).some(f => f.endsWith('.jsonl'))).toBe(true);
+  });
+
+  test('must stop: end to end, a guard that crashes denies', () => {
+    const crashDir = join(dir, 'crash-scripts');
+    mkdirSync(crashDir, { recursive: true });
+    writeFileSync(join(crashDir, 'session_guard.py'), 'raise SystemExit(3)\n');
+    const specPath = join(dir, 'spec-crash.json');
+    writeFileSync(
+      specPath,
+      JSON.stringify(codex({ jevShadow: { ...guard, scriptsDir: crashDir } }))
+    );
+    expect(decision(JSON.parse(installed('ls', specPath)) as Record<string, unknown>)).toBe('deny');
   });
 });

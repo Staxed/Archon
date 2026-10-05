@@ -593,8 +593,8 @@ export interface AgentRequestOptions {
   /**
    * What the tool-call guards may know about the request behind this turn: the
    * run and node it belongs to and the user's own words (a workflow run's input,
-   * a chat message). Read by the Jev shadow hook (shared/jev-shadow.ts); never
-   * sent to the model and never changes what a provider does.
+   * a chat message). Read by the Jev guard hooks (shared/jev-shadow.ts); never
+   * sent to the model.
    */
   guardContext?: GuardContext;
 }
@@ -604,8 +604,22 @@ export interface GuardContext {
   runId?: string;
   nodeId?: string;
   workflow?: string;
-  /** The user's request, as typed (the run's user_message or the chat message). */
+  /**
+   * The run's message (its user_message, or the chat message a chat turn answers).
+   * Whose words these are is `requestSource`.
+   */
   userRequest?: string;
+  /**
+   * Who started the run: `user` (a command the user typed: chat `/workflow run`, the
+   * CLI, the run API), `orchestrator` (the chat agent chose and worded it),
+   * `parent_run` (a `workflow:` node of another run), `trigger` (a forge event or a
+   * resource trigger). Absent when unknown (a run from before this was recorded).
+   */
+  requestSource?: 'user' | 'orchestrator' | 'parent_run' | 'trigger';
+  /** The parent run of a `workflow:` sub-run. */
+  parentRunId?: string;
+  /** `bundled` when the run's workflow is Archon's bundled file, else `repo` (project, global, installed). */
+  workflowSource?: 'bundled' | 'repo';
 }
 
 /**
