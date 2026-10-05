@@ -134,6 +134,28 @@ describe('Claude Jev guard hook', () => {
     expect(judge.mock.calls.map(c => c[0].toolName)).toEqual(['Write', 'WebFetch']);
   });
 
+  test("the session's own enforced denies reach the next call as recent_blocked_calls", async () => {
+    const DENY: GuardVerdict = { decision: 'deny', reason: 'no', stage: 'judge', enforced: true };
+    const verdicts = [DENY, ALLOW, ALLOW];
+    const judge = mock(async (_c: ShadowCall, _cfg: JevShadowConfig) => verdicts.shift() ?? ALLOW);
+    const hook = hookWith(judge);
+    await run(hook, { tool_name: 'Bash', tool_input: { command: 'git push origin main' } });
+    await run(hook, { tool_name: 'Bash', tool_input: { command: 'git push origin HEAD:main' } });
+    await run(hook, {
+      tool_name: 'Write',
+      tool_input: { file_path: '/work/tree/a', content: 'x' },
+    });
+    expect(judge.mock.calls[0][0].recentBlockedCalls).toEqual([]);
+    const blocked = [{ call: 'git push origin main', blocked_by: 'jev:archon-claude:judge' }];
+    expect(judge.mock.calls[1][0].recentBlockedCalls).toEqual(blocked);
+    // an allow is not a block; the earlier deny stays in the window
+    expect(judge.mock.calls[2][0].recentBlockedCalls).toEqual(blocked);
+    // another node session (another hook) does not see this one's refusals
+    const other = mock(async (_c: ShadowCall, _cfg: JevShadowConfig) => ALLOW);
+    await run(hookWith(other), { tool_name: 'Bash', tool_input: { command: 'ls > f' } });
+    expect(other.mock.calls[0][0].recentBlockedCalls).toEqual([]);
+  });
+
   test('the SDK hook timeout (45 s) sits above the guard backstop (40 s)', () => {
     expect(JEV_GUARD_HOOK_TIMEOUT_S).toBe(45);
   });

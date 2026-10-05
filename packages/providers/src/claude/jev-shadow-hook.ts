@@ -14,6 +14,7 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { checkCommand } from '../shared/destructive-guard';
 import {
   JUDGED_TOOLS,
+  RecentBlocks,
   callContext,
   judgeCall,
   type GuardVerdict,
@@ -31,6 +32,8 @@ export interface ClaudeShadowContext {
   /** The env Claude's Bash commands run with (claudeBashEnv of the CLI env). */
   env: Record<string, string | undefined>;
   guardContext?: GuardContext;
+  /** The session's own recent refusals (test seam; default: a fresh one per hook). */
+  blocks?: RecentBlocks;
   /** Test seam: replaces shared/jev-shadow.ts judgeCall. */
   judge?: (call: ShadowCall, config: JevShadowConfig) => Promise<GuardVerdict>;
 }
@@ -61,6 +64,8 @@ export function createPreToolUseJevShadowHook(
   ctx: ClaudeShadowContext
 ): HookCallback {
   const judge = ctx.judge ?? judgeCall;
+  // This node session's own refusals, so the guard sees a retry as one (recent_blocked_calls).
+  const blocks = ctx.blocks ?? new RecentBlocks();
   return (async (input: Record<string, unknown>) => {
     let call: ShadowCall;
     try {
@@ -83,6 +88,7 @@ export function createPreToolUseJevShadowHook(
         env: ctx.env,
         ...callContext(ctx.guardContext),
         ...(toolName === 'Bash' ? { archonGuard: 'pass' } : {}),
+        recentBlockedCalls: blocks.list(),
       };
     } catch (err) {
       return claudeDeny(
@@ -91,7 +97,9 @@ export function createPreToolUseJevShadowHook(
     }
     try {
       const verdict = await judge(call, config);
-      return verdict.decision === 'deny' ? claudeDeny(verdict.reason) : NO_OPINION;
+      if (verdict.decision !== 'deny') return NO_OPINION;
+      blocks.add(call, verdict);
+      return claudeDeny(verdict.reason);
     } catch (err) {
       return claudeDeny(
         `jev-guard: the guard failed (${(err as Error).message}); the call is denied (fail closed).`

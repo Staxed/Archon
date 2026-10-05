@@ -15,6 +15,8 @@ import {
   GUARD_DEADLINE_S,
   JEV_GUARD_MODE_FILE,
   JUDGE_KILL_MS,
+  RecentBlocks,
+  blockedCallText,
   callContext,
   claudeShapedCall,
   guardRequest,
@@ -23,6 +25,7 @@ import {
   readArchonGuardMode,
   resolveJevShadowConfig,
   verdictOf,
+  type GuardVerdict,
   type JevShadowConfig,
   type ShadowCall,
 } from './jev-shadow';
@@ -338,6 +341,40 @@ describe('guardRequest (what session_guard reads on stdin)', () => {
       })
     ).toEqual({ runId: 'r', requestSource: 'trigger', workflowSource: 'repo', parentRunId: 'p' });
     expect(callContext(undefined)).toEqual({});
+  });
+});
+
+describe("recent_blocked_calls (the session's own refusals)", () => {
+  test('sent in the context when the caller keeps them (last 5), left out otherwise', () => {
+    const blocked = Array.from({ length: 7 }, (_, i) => ({ call: `c${i}`, blocked_by: 'b' }));
+    const req = JSON.parse(guardRequest(call('ls', { recentBlockedCalls: blocked })));
+    expect(req.context.recent_blocked_calls).toEqual(blocked.slice(-5));
+    const none = JSON.parse(guardRequest(call('ls')));
+    expect('recent_blocked_calls' in none.context).toBe(false);
+  });
+
+  test('RecentBlocks keeps enforced denies only, the last 5 of the last 10 minutes', () => {
+    let now = 0;
+    const blocks = new RecentBlocks(10 * 60_000, 5, () => now);
+    const c = (command: string) =>
+      ({ provider: 'codex', toolName: 'Bash', toolInput: { command } }) as const;
+    const deny: GuardVerdict = { decision: 'deny', reason: 'r', stage: 'jev' };
+    blocks.add(c('allowed'), { decision: 'allow', reason: 'r', stage: 'jev' });
+    expect(blocks.list()).toEqual([]);
+    for (let i = 0; i < 6; i++) blocks.add(c(`x${i}`), deny);
+    expect(blocks.list().map(b => b.call)).toEqual(['x1', 'x2', 'x3', 'x4', 'x5']);
+    expect(blocks.list()[0].blocked_by).toBe('jev:archon-codex:jev');
+    now = 10 * 60_000 + 1;
+    expect(blocks.list()).toEqual([]);
+  });
+
+  test('a write or fetch is named by its path or URL', () => {
+    expect(blockedCallText('Write', { file_path: '/a/b', content: 'secret text' })).toBe(
+      'Write /a/b'
+    );
+    expect(blockedCallText('WebFetch', { url: 'https://x.test/' })).toBe(
+      'WebFetch https://x.test/'
+    );
   });
 });
 

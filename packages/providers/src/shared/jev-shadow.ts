@@ -118,6 +118,61 @@ export interface ShadowCall {
   parentRunId?: string;
   /** What Archon's own guards decided for this call ("pass" or the deny reason's head). */
   archonGuard?: string;
+  /**
+   * This node session's own recent enforced denies (RecentBlocks), sent as
+   * `recent_blocked_calls`. Unset: session_guard reads the shared ledger instead.
+   */
+  recentBlockedCalls?: BlockedCall[];
+}
+
+/** One earlier refused call, as session_guard's `recent_blocked_calls` holds it. */
+export interface BlockedCall {
+  call: string;
+  blocked_by: string;
+}
+
+/** The one-line form of a call for `recent_blocked_calls` (session_guard redacts and clips it). */
+export function blockedCallText(toolName: string, toolInput: Record<string, unknown>): string {
+  const text =
+    toolName === 'Bash'
+      ? (str(toolInput.command) ?? '')
+      : `${toolName} ${str(toolInput.file_path) ?? str(toolInput.url) ?? str(toolInput.notebook_path) ?? ''}`;
+  return text.trim().slice(0, 300);
+}
+
+/**
+ * A node session's own recent enforced denies (the last 5 of the last 10 minutes,
+ * session_guard's window for the ledger). Kept in memory by the hook that judges the
+ * session's calls, so a retry of a refused call is seen as one, and no other session's
+ * refusals are.
+ */
+export class RecentBlocks {
+  private items: { at: number; entry: BlockedCall }[] = [];
+  constructor(
+    private readonly windowMs = 10 * 60_000,
+    private readonly limit = 5,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  /** Record a call the guard refused (an enforced deny only). */
+  add(call: Pick<ShadowCall, 'provider' | 'toolName' | 'toolInput'>, verdict: GuardVerdict): void {
+    if (verdict.decision !== 'deny') return;
+    this.items.push({
+      at: this.now(),
+      entry: {
+        call: blockedCallText(call.toolName, call.toolInput),
+        blocked_by: `jev:archon-${call.provider}:${verdict.stage}`,
+      },
+    });
+    if (this.items.length > this.limit) this.items = this.items.slice(-this.limit);
+  }
+
+  /** The denies still inside the window, oldest first. */
+  list(): BlockedCall[] {
+    const since = this.now() - this.windowMs;
+    this.items = this.items.filter(i => i.at >= since);
+    return this.items.map(i => ({ ...i.entry }));
+  }
 }
 
 /** The run fields of a GuardContext (providers/src/types.ts), structurally. */
@@ -273,8 +328,10 @@ export function judgeEnv(env: Record<string, string | undefined>): Record<string
  * call, the env the agent's tool runs with (`env`), and in `context` the run's
  * message (`user_request`), where it came from (`request_source`, `parent_run_id`),
  * which workflow asked (`workflow`, `workflow_source`: `bundled` only for Archon's
- * shipped default) and the run and node ids. Exactly those fields: session_guard
- * derives the request's source label itself. Exit 2 (malformed request) denies.
+ * shipped default), the run and node ids, and the session's own recent refusals
+ * (`recent_blocked_calls`, when the caller keeps them). Exactly those fields:
+ * session_guard derives the request's source label and the project root itself.
+ * Exit 2 (malformed request) denies.
  */
 export function guardRequest(call: ShadowCall): string {
   const context: Record<string, unknown> = {
@@ -286,6 +343,8 @@ export function guardRequest(call: ShadowCall): string {
   if (call.parentRunId !== undefined) context.parent_run_id = call.parentRunId;
   if (call.runId !== undefined) context.run_id = call.runId;
   if (call.nodeId !== undefined) context.node_id = call.nodeId;
+  if (call.recentBlockedCalls !== undefined)
+    context.recent_blocked_calls = call.recentBlockedCalls.slice(-5);
   return JSON.stringify({
     cli: call.provider,
     tool: call.toolName,
