@@ -266,17 +266,16 @@ export function judgeEnv(env: Record<string, string | undefined>): Record<string
 }
 
 /**
- * The JSON session_guard reads on stdin (`--stdin-json`). `context` replaces the
- * session record a host hook reads: the run's message is the request, and the
- * archon channel reads where it came from (`request_source`, `parent_run_id`) and
- * which workflow asked (`workflow`, `workflow_source`).
+ * The JSON session_guard reads on stdin (`--stdin-json`, the archon channel): the
+ * call, the env the agent's tool runs with (`env`), and in `context` the run's
+ * message (`user_request`), where it came from (`request_source`, `parent_run_id`),
+ * which workflow asked (`workflow`, `workflow_source`: `bundled` only for Archon's
+ * shipped default) and the run and node ids. Exactly those fields: session_guard
+ * derives the request's source label itself. Exit 2 (malformed request) denies.
  */
 export function guardRequest(call: ShadowCall): string {
   const context: Record<string, unknown> = {
     user_request: (call.userRequest ?? '').slice(0, 4_000),
-    user_request_source: 'archon_node_prompt',
-    project_root: call.projectRoot,
-    env: judgeEnv(call.env),
   };
   if (call.workflow !== undefined) context.workflow = call.workflow;
   if (call.workflowSource !== undefined) context.workflow_source = call.workflowSource;
@@ -284,15 +283,15 @@ export function guardRequest(call: ShadowCall): string {
   if (call.parentRunId !== undefined) context.parent_run_id = call.parentRunId;
   if (call.runId !== undefined) context.run_id = call.runId;
   if (call.nodeId !== undefined) context.node_id = call.nodeId;
-  if (call.archonGuard !== undefined) context.archon_guard = call.archonGuard;
   return JSON.stringify({
     cli: call.provider,
     tool: call.toolName,
     tool_input: clipStrings(call.toolInput, MAX_TEXT),
     cwd: call.cwd,
     profile: 'archon',
-    context,
+    env: judgeEnv(call.env),
     deadline_s: GUARD_DEADLINE_S,
+    context,
   });
 }
 

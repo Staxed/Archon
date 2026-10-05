@@ -251,7 +251,7 @@ describe('claudeShapedCall (Codex/Grok calls in Claude vocabulary)', () => {
 });
 
 describe('guardRequest (what session_guard reads on stdin)', () => {
-  test('profile archon, the call, and the run context the archon channel reads', () => {
+  test('profile archon, the call, the env, and exactly the archon channel context', () => {
     const req = JSON.parse(
       guardRequest(
         call('git push -u origin HEAD', { parentRunId: 'parent-9', requestSource: 'parent_run' })
@@ -264,20 +264,17 @@ describe('guardRequest (what session_guard reads on stdin)', () => {
       cwd: '/work/tree/pkg',
       profile: 'archon',
       deadline_s: GUARD_DEADLINE_S,
-      context: {
-        user_request: 'clean up the build',
-        user_request_source: 'archon_node_prompt',
-        project_root: '/work/tree',
-        workflow: 'archon-sdlc-deliver',
-        workflow_source: 'bundled',
-        request_source: 'parent_run',
-        parent_run_id: 'parent-9',
-        run_id: 'run-1',
-        node_id: 'implement',
-        archon_guard: 'pass',
-      },
     });
-    expect((req.context as { env: Record<string, string> }).env.GH_TOKEN).toBe('tok');
+    expect(req.context).toEqual({
+      user_request: 'clean up the build',
+      workflow: 'archon-sdlc-deliver',
+      workflow_source: 'bundled',
+      request_source: 'parent_run',
+      parent_run_id: 'parent-9',
+      run_id: 'run-1',
+      node_id: 'implement',
+    });
+    expect((req as { env: Record<string, string> }).env.GH_TOKEN).toBe('tok');
   });
 
   test('unknown run fields are left out, not sent empty', () => {
