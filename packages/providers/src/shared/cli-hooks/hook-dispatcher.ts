@@ -20,8 +20,12 @@
  * calls (../destructive-guard.ts), the node's tool allow/deny list, then
  * the node's static hook responses by matcher. Every other event only replays
  * the node's static responses. A PreToolUse that cannot read its spec DENIES
- * (fail closed); both CLIs treat a crashed hook as "allow". After deciding, a
- * PreToolUse also starts the Jev shadow judge (../jev-shadow.ts), log-only.
+ * (fail closed); both CLIs treat a crashed hook as "allow". A PreToolUse those
+ * guards let through then waits for the Jev guard (../jev-shadow.ts, stixed's
+ * session guard, profile "archon"): its enforced deny, or no verdict at all
+ * (crash, 40 s), is printed as the same deny. A log-only would-deny lets the call
+ * run. The deny is the Claude-shaped JSON on stdout with exit 0 for both CLIs
+ * (Grok treats a non-zero exit as a failed hook and fails open).
  *
  * This file is executed directly by the CLIs (`bun hook-dispatcher.ts <Event>`),
  * so it keeps its imports to node built-ins and small sibling modules.
@@ -29,7 +33,15 @@
 import { readFileSync } from 'node:fs';
 import { validatePath } from './path-validation';
 import { checkCommand, shellQuote } from '../destructive-guard';
-import { claudeShapedCall, shadowJudge, type JevShadowConfig } from '../jev-shadow';
+import {
+  callContext,
+  claudeShapedCall,
+  jevDecidesFor,
+  judgeCall,
+  type GuardVerdict,
+  type JevShadowConfig,
+  type ShadowCall,
+} from '../jev-shadow';
 import type { GuardContext } from '../../types';
 
 export const HOOK_SPEC_ENV = 'ARCHON_HOOK_SPEC';
@@ -67,11 +79,11 @@ export interface HookRunSpec {
    */
   rulesPath?: string | null;
   /**
-   * The Jev shadow judge the server resolved (null: off). Pinned here like
-   * rulesPath. Log-only: its verdict never changes what this dispatcher prints.
+   * The Jev guard the server resolved (null: off). Pinned here like rulesPath,
+   * so a project's env cannot point it at other scripts.
    */
   jevShadow?: JevShadowConfig | null;
-  /** The run, node and user request behind this CLI session (for the shadow judge). */
+  /** The run, node, request and its source behind this CLI session (for the Jev guard). */
   guardContext?: GuardContext;
 }
 
@@ -299,7 +311,11 @@ const destructiveGuard: PreToolGuard = (spec, input, view) => {
   if (!command) return undefined;
   // The server decided the rules file; the CLI's env (fed by the project) does not.
   const rules = 'rulesPath' in spec ? { rulesPath: spec.rulesPath ?? null } : {};
-  return checkCommand(command, shellCwd(input, spec.cwd), rules)?.message();
+  // Rules flagged moves_to_jev are left to the Jev guard when it enforces for this run.
+  return checkCommand(command, shellCwd(input, spec.cwd), {
+    ...rules,
+    jevDecides: jevDecidesFor(spec.jevShadow),
+  })?.message();
 };
 
 export const PRE_TOOL_GUARDS: PreToolGuard[] = [pathGuard, destructiveGuard];
@@ -374,69 +390,87 @@ export function dispatchHook(
   return merged;
 }
 
-/** Entry point for the installed hook command. Never throws. */
+/** The judge the dispatcher awaits (tests pass a fake). */
+export type GuardJudge = (call: ShadowCall, config: JevShadowConfig) => Promise<GuardVerdict>;
+
 /**
- * Start the Jev shadow judge for a PreToolUse call (shared/jev-shadow.ts) and
- * return the promise a short-lived caller awaits before exiting. `out` is what
- * this dispatcher already decided; nothing the judge says can change it.
+ * The Jev guard's call for a PreToolUse, in Claude's vocabulary, or undefined when
+ * the guard has nothing to judge (no guard configured, an MCP call, a read).
  */
-export function startShadowJudge(
+export function guardCallFor(
   spec: HookRunSpec,
   input: HookInput,
-  out: Record<string, unknown> | undefined,
+  env: Record<string, string | undefined>
+): ShadowCall | undefined {
+  const toolName = str(input.tool_name);
+  if (!spec.jevShadow || !toolName) return undefined;
+  const view = toolView(spec.provider, toolName, input.tool_input);
+  if (view.mcp) return undefined;
+  const command = shellCommand(input.tool_input);
+  const shaped = claudeShapedCall(view.names, view.writes, input.tool_input, command);
+  if (!shaped) return undefined;
+  return {
+    provider: spec.provider,
+    toolName: shaped.toolName,
+    toolInput: shaped.toolInput,
+    cwd: shellCwd(input, spec.cwd),
+    projectRoot: spec.cwd,
+    env,
+    ...callContext(spec.guardContext),
+    archonGuard: 'pass',
+  };
+}
+
+/**
+ * Decide one hook event, the Jev guard included. A PreToolUse that Archon's own
+ * guards and the node's rules let through (`dispatchHook` printed no deny) waits
+ * for the Jev guard; its deny is printed as Archon's. When a node hook rewrote
+ * the call, the guard judges the rewritten call. Never rejects.
+ */
+export async function decideHook(
+  spec: HookRunSpec,
+  event: string,
+  input: HookInput,
   env: Record<string, string | undefined>,
-  judge: typeof shadowJudge = shadowJudge
-): Promise<void> | undefined {
+  judge: GuardJudge = judgeCall
+): Promise<Record<string, unknown> | undefined> {
+  let out: Record<string, unknown> | undefined;
   try {
-    const config = spec.jevShadow;
-    const toolName = str(input.tool_name);
-    if (!config || !toolName) return undefined;
-    const view = toolView(spec.provider, toolName, input.tool_input);
-    if (view.mcp) return undefined;
-    const command = shellCommand(input.tool_input);
-    const shaped = claudeShapedCall(view.names, view.writes, input.tool_input, command);
-    if (!shaped) return undefined;
-    const cwd = shellCwd(input, spec.cwd);
-    let archonGuard = 'pass';
-    if (out && isDenyResponse(out)) {
-      let rule: string | undefined;
-      if (shaped.toolName === 'Bash' && command) {
-        try {
-          const rules = 'rulesPath' in spec ? { rulesPath: spec.rulesPath ?? null } : {};
-          rule = checkCommand(command, cwd, rules)?.rule;
-        } catch {
-          rule = 'guard-error';
-        }
-      }
-      archonGuard = `deny: ${rule ?? 'node-policy'}`;
-    }
-    const g = spec.guardContext;
-    return judge(
-      {
-        provider: spec.provider,
-        toolName: shaped.toolName,
-        toolInput: shaped.toolInput,
-        cwd,
-        projectRoot: spec.cwd,
-        env,
-        ...(g?.userRequest !== undefined ? { userRequest: g.userRequest } : {}),
-        ...(g?.runId !== undefined ? { runId: g.runId } : {}),
-        ...(g?.nodeId !== undefined ? { nodeId: g.nodeId } : {}),
-        ...(g?.workflow !== undefined ? { workflow: g.workflow } : {}),
-        archonGuard,
-      },
-      config
+    out = dispatchHook(spec, event, input);
+  } catch (err) {
+    if (event !== 'PreToolUse') return undefined;
+    return denyOutput(
+      `Archon hook dispatcher failed (${(err as Error).message}); refusing tool calls for safety.`
     );
-  } catch {
-    return undefined; // shadow mode: never affects the call
+  }
+  if (event !== 'PreToolUse' || !spec.jevShadow || (out && isDenyResponse(out))) return out;
+  const config = spec.jevShadow;
+  try {
+    const updated = (out?.hookSpecificOutput as Record<string, unknown> | undefined)?.updatedInput;
+    const judged: HookInput = updated === undefined ? input : { ...input, tool_input: updated };
+    const call = guardCallFor(spec, judged, env);
+    if (!call) return out;
+    const verdict = await judge(call, config);
+    if (verdict.decision !== 'deny') return out;
+    return denyOutput(
+      updated === undefined
+        ? verdict.reason
+        : `${verdict.reason} (after this node's hook rewrote the call)`
+    );
+  } catch (err) {
+    return denyOutput(
+      `jev-guard: the guard failed (${(err as Error).message}); the call is denied (fail closed).`
+    );
   }
 }
 
-export function runDispatcher(
+/** Entry point for the installed hook command. Never rejects. */
+export async function runDispatcher(
   event: string,
   stdin: string,
-  env: Record<string, string | undefined>
-): { stdout: string; exitCode: number; pending?: Promise<void> } {
+  env: Record<string, string | undefined>,
+  judge: GuardJudge = judgeCall
+): Promise<{ stdout: string; exitCode: number }> {
   const specPath = env[HOOK_SPEC_ENV];
   if (!specPath) return { stdout: '', exitCode: 0 };
   let spec: HookRunSpec;
@@ -462,17 +496,8 @@ export function runDispatcher(
   } catch {
     // malformed stdin: decide on the event alone
   }
-  let out: Record<string, unknown> | undefined;
-  try {
-    out = dispatchHook(spec, event, input);
-  } catch (err) {
-    if (event !== 'PreToolUse') return { stdout: '', exitCode: 0 };
-    out = denyOutput(
-      `Archon hook dispatcher failed (${(err as Error).message}); refusing tool calls for safety.`
-    );
-  }
-  const pending = event === 'PreToolUse' ? startShadowJudge(spec, input, out, env) : undefined;
-  return { stdout: out ? JSON.stringify(out) : '', exitCode: 0, ...(pending ? { pending } : {}) };
+  const out = await decideHook(spec, event, input, env, judge);
+  return { stdout: out ? JSON.stringify(out) : '', exitCode: 0 };
 }
 
 if (import.meta.main) {
@@ -480,17 +505,25 @@ if (import.meta.main) {
   const chunks: Buffer[] = [];
   process.stdin.on('data', (c: Buffer) => chunks.push(c));
   process.stdin.on('end', () => {
-    const { stdout, exitCode, pending } = runDispatcher(
-      event,
-      Buffer.concat(chunks).toString('utf8'),
-      process.env
-    );
-    if (stdout) process.stdout.write(stdout);
-    // The shadow judge runs detached; wait only until its payload is handed over.
-    if (pending) {
-      void pending.finally(() => process.exit(exitCode));
-    } else {
-      process.exit(exitCode);
-    }
+    void runDispatcher(event, Buffer.concat(chunks).toString('utf8'), process.env)
+      .then(({ stdout, exitCode }) => {
+        if (stdout) process.stdout.write(stdout, () => process.exit(exitCode));
+        else process.exit(exitCode);
+      })
+      .catch((err: unknown) => {
+        // Never reached (runDispatcher does not reject); a PreToolUse still fails closed.
+        if (event === 'PreToolUse') {
+          process.stdout.write(
+            JSON.stringify(
+              denyOutput(
+                `Archon hook dispatcher failed (${String(err)}); refusing tool calls for safety.`
+              )
+            ),
+            () => process.exit(0)
+          );
+        } else {
+          process.exit(0);
+        }
+      });
   });
 }

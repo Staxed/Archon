@@ -23,6 +23,7 @@ import {
   resolveRulesPath,
   type DestructiveRulesFile,
 } from './destructive-guard';
+import { jevDecidesFor, type JevGuardMode, type JevShadowConfig } from './jev-shadow';
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import {
   createPreToolUseDestructiveGuardHook,
@@ -55,6 +56,10 @@ interface Cases {
   default_cwd: string;
   block: Case[];
   allow: Case[];
+  /** Refused by the floor even when Jev decides (another rule fires). */
+  jev_decides_block?: Case[];
+  /** Allowed whether or not Jev decides. */
+  jev_decides_allow?: Case[];
 }
 
 describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () => {
@@ -84,6 +89,95 @@ describe.skipIf(!haveShared)('shared cases (same list as the Python guard)', () 
       if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
     }
     expect(wrong).toEqual([]);
+  });
+
+  // moves_to_jev: a node whose Jev decides (mode enforce, guard wired) leaves the flagged
+  // rules to Jev; every other node (log-only, off, unknown mode, no guard) keeps them.
+  const jevChecker =
+    haveShared && rules
+      ? new Checker(new Rules(rules, '/home/staxed'), undefined, true)
+      : undefined;
+  const moved = new Set(rules?.rules.filter(r => r.moves_to_jev === true).map(r => r.id) ?? []);
+  const cwdOf = (c: Case): string => c.cwd ?? cases?.default_cwd ?? '/';
+
+  it("reads moves_to_jev from Stixed's rules file", () => {
+    expect([...moved]).toEqual(['docker-volume-delete']);
+    expect(blockCases.some(c => moved.has(c.archon ?? c.rule ?? ''))).toBe(true);
+    expect(cases?.jev_decides_block?.length).toBeGreaterThan(0);
+    expect(cases?.jev_decides_allow?.length).toBeGreaterThan(0);
+  });
+
+  it('with Jev deciding: block cases of a moved rule pass the floor, the rest still block', () => {
+    const wrong: string[] = [];
+    for (const c of blockCases) {
+      const want = c.archon ?? c.rule ?? '';
+      const v = jevChecker?.check(c.cmd, cwdOf(c));
+      if (moved.has(want)) {
+        if (v) wrong.push(`${c.cmd} -> ${v.rule} (want pass: ${want} moves to Jev)`);
+      } else if (!v || v.rule !== want) {
+        wrong.push(`${c.cmd} -> ${v ? v.rule : 'allowed'} (want ${want})`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('with Jev deciding: every allow case still passes', () => {
+    const wrong: string[] = [];
+    for (const c of [...(cases?.allow ?? []), ...archonAllows]) {
+      const v = jevChecker?.check(c.cmd, cwdOf(c));
+      if (v) wrong.push(`${c.cmd} -> ${v.message()}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('jev_decides_block is refused whether or not Jev decides (by its rule when Jev does)', () => {
+    const wrong: string[] = [];
+    for (const c of cases?.jev_decides_block ?? []) {
+      const v = jevChecker?.check(c.cmd, cwdOf(c));
+      if (!v || v.rule !== c.rule)
+        wrong.push(`jev: ${c.cmd} -> ${v ? v.rule : 'allowed'} (want ${c.rule})`);
+      // Without Jev the first member's rule (the volume delete) fires first.
+      if (!checker?.check(c.cmd, cwdOf(c))) wrong.push(`floor: ${c.cmd} -> allowed`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('jev_decides_allow passes whether or not Jev decides', () => {
+    const wrong: string[] = [];
+    for (const c of cases?.jev_decides_allow ?? []) {
+      for (const [label, ch] of [
+        ['jev', jevChecker],
+        ['floor', checker],
+      ] as const) {
+        const v = ch?.check(c.cmd, cwdOf(c));
+        if (v) wrong.push(`${label}: ${c.cmd} -> ${v.rule}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('through checkCommand: only mode enforce with the guard wired skips a moved rule', () => {
+    const config = { caller: 'archon' } as JevShadowConfig;
+    const volumeCases = blockCases.filter(c => moved.has(c.archon ?? c.rule ?? ''));
+    const outcomes: Record<string, string[]> = {};
+    for (const [label, cfg, mode] of [
+      ['enforce', config, 'enforce'],
+      ['log-only', config, 'log-only'],
+      ['off', config, 'off'],
+      ['unknown', config, 'bogus'],
+      ['no guard', null, 'enforce'],
+    ] as const) {
+      const jevDecides = jevDecidesFor(cfg, () => mode as JevGuardMode);
+      outcomes[label] = volumeCases.map(
+        c =>
+          checkCommand(c.cmd, cwdOf(c), { rulesPath: SHARED_RULES_PATH, jevDecides })?.rule ??
+          'pass'
+      );
+    }
+    expect(new Set(outcomes.enforce)).toEqual(new Set(['pass']));
+    for (const label of ['log-only', 'off', 'unknown', 'no guard']) {
+      expect(new Set(outcomes[label])).toEqual(new Set(['docker-volume-delete']));
+    }
   });
 });
 
@@ -226,9 +320,62 @@ describe('default rules (no rules file, or the root-owned copy missing)', () => 
     expect(DEFAULT_RULES.project_parent).toEqual(shared.project_parent);
     expect(DEFAULT_RULES.protected_children_of).toEqual(shared.protected_children_of);
     expect(DEFAULT_RULES.vaults).toEqual(shared.vaults);
-    expect(DEFAULT_RULES.rules).toEqual(shared.rules.map(r => ({ id: r.id, instead: r.instead })));
+    expect(DEFAULT_RULES.rules).toEqual(
+      shared.rules.map(r => ({
+        id: r.id,
+        instead: r.instead,
+        ...(r.moves_to_jev === true ? { moves_to_jev: true } : {}),
+      }))
+    );
     const { _comment: _c, ...forcePush } = (shared.force_push ?? {}) as Record<string, unknown>;
     expect(DEFAULT_RULES.force_push as unknown).toEqual(forcePush);
+  });
+});
+
+describe('moves_to_jev: read from the rules file, else the built-in flag', () => {
+  const ids = (data: DestructiveRulesFile): string[] => [
+    ...new Rules(data, '/home/staxed').movesToJev,
+  ];
+  const withRule = (id: string, extra: Record<string, unknown>): DestructiveRulesFile => ({
+    ...DEFAULT_RULES,
+    rules: DEFAULT_RULES.rules.map(r => {
+      const { moves_to_jev: _m, ...plain } = r;
+      return r.id === id ? { ...plain, ...extra } : plain;
+    }),
+  });
+
+  it('the built-in copy flags docker-volume-delete', () => {
+    expect(ids(DEFAULT_RULES)).toEqual(['docker-volume-delete']);
+  });
+
+  it('a rules file without the key (an older promoted copy) keeps the built-in flag', () => {
+    expect(ids(withRule('docker-volume-delete', {}))).toEqual(['docker-volume-delete']);
+  });
+
+  it("the file's own flag wins: false keeps the rule, true moves another rule", () => {
+    expect(ids(withRule('docker-volume-delete', { moves_to_jev: false }))).toEqual([]);
+    expect(ids(withRule('git-wipe', { moves_to_jev: true })).sort()).toEqual([
+      'docker-volume-delete',
+      'git-wipe',
+    ]);
+    const data = {
+      ...withRule('git-wipe', { moves_to_jev: true }),
+      rules: withRule('git-wipe', { moves_to_jev: true }).rules.map(r =>
+        r.id === 'docker-volume-delete' ? { ...r, moves_to_jev: false } : r
+      ),
+    };
+    const jev = new Checker(new Rules(data, '/home/staxed'), undefined, true);
+    expect(jev.check('git clean -fdx', '/mnt/volumes/projects/stixed')).toBeUndefined();
+    expect(jev.check('docker volume rm pgdata', '/tmp')?.rule).toBe('docker-volume-delete');
+    const floor = new Checker(new Rules(data, '/home/staxed'));
+    expect(floor.check('git clean -fdx', '/mnt/volumes/projects/stixed')?.rule).toBe('git-wipe');
+  });
+
+  it('a skipped rule does not hide a later member another rule refuses', () => {
+    const jev = new Checker(new Rules(DEFAULT_RULES, '/home/staxed'), undefined, true);
+    expect(jev.check('docker compose down -v; rm -rf /etc', '/tmp')?.rule).toBe('recursive-delete');
+    expect(jev.check('docker system prune --volumes', '/tmp')).toBeUndefined();
+    expect(jev.check('rm -rf /etc', '/tmp')?.rule).toBe('recursive-delete');
   });
 });
 
@@ -401,6 +548,21 @@ describe('Claude PreToolUse hook', () => {
   it('uses the cwd the SDK reports for the call', async () => {
     const out = await hook({ tool_name: 'Bash', tool_input: { command: 'rm -rf etc' }, cwd: '/' });
     expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  it("leaves a volume delete to Jev only while the node's Jev decides", async () => {
+    let decides = false;
+    const jevHook = createPreToolUseDestructiveGuardHook(
+      '/work/tree',
+      () => decides
+    ) as unknown as (i: Record<string, unknown>) => Promise<HookOut>;
+    const volume = { tool_name: 'Bash', tool_input: { command: 'docker volume rm pgdata' } };
+    expect((await jevHook(volume)).hookSpecificOutput.permissionDecision).toBe('deny');
+    expect((await hook(volume)).hookSpecificOutput.permissionDecision).toBe('deny');
+    decides = true;
+    expect(await jevHook(volume)).toEqual({ continue: true } as unknown as HookOut);
+    const etc = { tool_name: 'Bash', tool_input: { command: 'rm -rf /etc' } };
+    expect((await jevHook(etc)).hookSpecificOutput.permissionDecision).toBe('deny');
   });
 });
 

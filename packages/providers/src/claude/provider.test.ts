@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
@@ -27,6 +27,7 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
 import { ClaudeProvider, classifySubprocessError, shouldPassNoEnvFile } from './provider';
 import * as claudeModule from './provider';
 import * as binaryResolver from './binary-resolver';
+import { readArchonGuardMode } from '../shared/jev-shadow';
 
 describe('shouldPassNoEnvFile', () => {
   test('returns false when cliPath is undefined (dev mode — SDK 0.2.x resolves a native binary)', () => {
@@ -3605,5 +3606,74 @@ describe('classifySubprocessError (#2715)', () => {
     expect(classifySubprocessError('rate limit exceeded', '')).toBe('rate_limit');
     expect(classifySubprocessError('too many requests, please slow down', '')).toBe('rate_limit');
     expect(classifySubprocessError('server overloaded', '')).toBe('rate_limit');
+  });
+});
+
+describe('Jev guard wiring (Claude)', () => {
+  const guardConfig = {
+    python: 'python3',
+    scriptsDir: '/s',
+    logDir: '/l',
+    caller: 'archon',
+  };
+
+  test("Claude's sandbox is switched off only when the guard is wired AND Archon's mode is enforce", () => {
+    expect(claudeModule.claudeSandboxOverride(guardConfig, () => 'enforce')).toEqual({
+      sandbox: { enabled: false },
+    });
+    expect(claudeModule.claudeSandboxOverride(guardConfig, () => 'log-only')).toEqual({});
+    expect(claudeModule.claudeSandboxOverride(guardConfig, () => 'off')).toEqual({});
+    // no guard (switched off, not installed, a container run): never, whatever the mode
+    expect(claudeModule.claudeSandboxOverride(null, () => 'enforce')).toEqual({});
+  });
+
+  test('a missing or unreadable mode file keeps the sandbox on (log-only: nothing is set)', () => {
+    const missing = join(tmpdir(), 'no-such-dir-jev', 'jev-guard-mode.json');
+    expect(
+      claudeModule.claudeSandboxOverride(guardConfig, () => readArchonGuardMode(missing))
+    ).toEqual({});
+    const dir = mkdtempSync(join(tmpdir(), 'claude-jev-mode-'));
+    try {
+      const p = join(dir, 'mode.json');
+      writeFileSync(p, '{"archon":"enforce"}');
+      chmodSync(p, 0o000);
+      if (process.getuid?.() !== 0) {
+        expect(
+          claudeModule.claudeSandboxOverride(guardConfig, () => readArchonGuardMode(p, false))
+        ).toEqual({});
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the guard hook is registered for the judged tools with a 45 s timeout; the sandbox is untouched outside enforce', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-jev-wiring-'));
+    writeFileSync(join(dir, 'session_guard.py'), 'print("{}")\n');
+    const saved = process.env.ARCHON_JEV_SCRIPTS_DIR;
+    process.env.ARCHON_JEV_SCRIPTS_DIR = dir;
+    try {
+      mockQuery.mockClear();
+      mockQuery.mockImplementation(async function* () {
+        yield { type: 'result', session_id: 'sid' };
+      });
+      const client = new ClaudeProvider({ retryBaseDelayMs: 1 });
+      for await (const _ of client.sendQuery('test', '/tmp', undefined, {})) {
+        // consume
+      }
+      const callArgs = mockQuery.mock.calls[0][0] as { options: Options };
+      const pre = callArgs.options.hooks?.PreToolUse ?? [];
+      const jev = pre.find(m => m.matcher === 'Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch');
+      expect(jev).toBeDefined();
+      expect(jev?.timeout).toBe(45);
+      // the host has no root-owned mode file saying enforce under test: log-only, sandbox untouched
+      if (claudeModule.claudeSandboxOverride(guardConfig).sandbox === undefined) {
+        expect(callArgs.options.sandbox).toBeUndefined();
+      }
+    } finally {
+      if (saved === undefined) delete process.env.ARCHON_JEV_SCRIPTS_DIR;
+      else process.env.ARCHON_JEV_SCRIPTS_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

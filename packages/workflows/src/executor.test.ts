@@ -196,6 +196,7 @@ import {
 import type { WorkflowRunConfigMetadata } from './schemas/run-config';
 import { substituteWorkflowVariables } from './executor-shared';
 import { TerminalStatusWriteError } from './terminal-status-write';
+import { markShippedBundle } from './shipped-bundle';
 
 // --- Helpers ---
 
@@ -2785,6 +2786,85 @@ describe('executeWorkflow', () => {
         base_branch: 'develop',
         source: 'bundled',
       });
+    });
+
+    it('records who started the run with the dispatch record (guards)', async () => {
+      const store = makeStore();
+      const deps = makeDeps(store);
+
+      await executeWorkflow(
+        deps,
+        makePlatform(),
+        'conv-1',
+        '/tmp/worktree',
+        makeWorkflow(),
+        'test message',
+        'db-conv-1',
+        { baseBranch: 'develop', source: 'bundled', requestSource: 'orchestrator' }
+      );
+
+      const created = (store.createWorkflowRun as ReturnType<typeof mock>).mock.calls[0]?.[0] as {
+        metadata?: Record<string, unknown>;
+      };
+      expect(readRunDispatchMetadata(created.metadata)).toEqual({
+        base_branch: 'develop',
+        source: 'bundled',
+        request_source: 'orchestrator',
+      });
+    });
+
+    it('records bundled_shipped only for a bundled run whose workflow discovery marked as the shipped bytes (guards)', async () => {
+      const dispatchOf = async (source: 'bundled' | 'project', marked: boolean) => {
+        const store = makeStore();
+        const wf = makeWorkflow();
+        if (marked) markShippedBundle(wf);
+        await executeWorkflow(
+          makeDeps(store),
+          makePlatform(),
+          'conv-1',
+          '/tmp/worktree',
+          wf,
+          'test message',
+          'db-conv-1',
+          { baseBranch: 'develop', source }
+        );
+        const created = (store.createWorkflowRun as ReturnType<typeof mock>).mock.calls[0]?.[0] as {
+          metadata?: Record<string, unknown>;
+        };
+        return readRunDispatchMetadata(created.metadata);
+      };
+      expect((await dispatchOf('bundled', true))?.bundled_shipped).toBe(true);
+      // a user-edited copy keeps discovery's `bundled` label but is not marked
+      expect(await dispatchOf('bundled', false)).not.toHaveProperty('bundled_shipped');
+      expect(await dispatchOf('project', true)).not.toHaveProperty('bundled_shipped');
+    });
+
+    it('a continuation keeps the request source it recorded, not the resuming surface (guards)', async () => {
+      const deps = makeDeps();
+
+      await executeWorkflow(
+        deps,
+        makePlatform(),
+        'conv-1',
+        '/tmp/worktree',
+        makeWorkflow(),
+        'test message',
+        'db-conv-1',
+        {
+          preCreatedRun: makeRun({
+            metadata: {
+              [RUN_DISPATCH_METADATA_KEY]: { base_branch: 'main', request_source: 'trigger' },
+            },
+          }),
+          priorCompletedNodes: new Map(),
+          requestSource: 'user',
+        }
+      );
+
+      const run = mockExecuteDagWorkflow.mock.calls[0]?.[0].workflowRun as {
+        metadata?: Record<string, unknown>;
+      };
+      expect(readRunDispatchMetadata(run.metadata)?.request_source).toBe('trigger');
     });
 
     it('a continuation reads the branch the run recorded, not the current environment (#2454)', async () => {

@@ -23,6 +23,7 @@ import type {
   WorkflowExecutionResult,
   WorkflowSource,
   WorkflowRunNodeSession,
+  WorkflowRequestSource,
 } from './schemas';
 import {
   isLoopNode,
@@ -72,6 +73,7 @@ import type { RunChildWorkflowArgs, ChildWorkflowOutcome, PriorRunUsage } from '
 import type { PersistedNodeOutput, WorkflowResumeCursor } from './store';
 import { canonicalValueText, type JsonValue } from './output-ref';
 import { discoverWorkflowsWithConfig } from './workflow-discovery';
+import { isShippedBundle } from './shipped-bundle';
 import type { WorkflowWithSource, WorkflowLoadError } from './schemas';
 import { validateWorkflowOutcomeDeclaration } from './loader';
 import { maybeWarnLegacyStatePath, maybeWarnLegacyArtifactsPath } from './state-migration';
@@ -629,6 +631,16 @@ export type ExecuteWorkflowOptions = ResumePayload & {
    * treatment when a caller doesn't thread it through.
    */
   source?: WorkflowSource;
+  /**
+   * Who started this run, for the tool-call guards (stixed's Jev guard reads it with
+   * the run's message): `user` typed a command, the chat agent (`orchestrator`) chose
+   * and worded it, a `parent_run` spawned it, or a `trigger` fired. Recorded once in
+   * the run's dispatch metadata and read back on every continuation, like `source`.
+   * Optional: a caller that does not know leaves it unset and the guards treat the
+   * run's message as of unknown origin. A `workflow:` sub-run is `parent_run` by its
+   * `parent_run_id` whatever is passed here.
+   */
+  requestSource?: WorkflowRequestSource;
   /**
    * Keys the engine dropped from this workflow's YAML (#2213), as produced by
    * discovery. Recorded on the run as a `workflow_parse_warnings` event at
@@ -1272,6 +1284,8 @@ async function runChildWorkflow(
     //    reference to an ancestor (e.g. `workflow: SELFIE` naming its own run) is caught
     //    as a cycle by canonical name, not left to the less-informative depth cap.
     let childWorkflow: ResolvedWorkflow | undefined;
+    // The child's discovery source (bundled / project / ...), for its dispatch record.
+    let childDiscoverySource: WorkflowSource | undefined;
     try {
       // DELIBERATE AFFORDANCE — do not "fix" this by adding a load-time existence
       // check for `workflow:` targets. Discovery runs HERE, when the node executes,
@@ -1290,6 +1304,7 @@ async function runChildWorkflow(
         childWorkflowName,
         workflows.map(w => w.workflow)
       );
+      childDiscoverySource = workflows.find(w => w.workflow === childWorkflow)?.source;
       if (childWorkflow) await recordSelectedWorkflow(childSource.anchor.root, childWorkflow.name);
     } catch (err) {
       // resolveWorkflowName throws only on ambiguity.
@@ -1527,6 +1542,8 @@ async function runChildWorkflow(
           codebaseId,
           resolveChildIsolation,
           preparedSource: childSource,
+          requestSource: 'parent_run',
+          ...(childDiscoverySource ? { source: childDiscoverySource } : {}),
           ...(runConfig ? { runConfig } : {}),
           ...(childIsolationEnv?.cutFromCommit !== undefined
             ? { cutFromCommit: childIsolationEnv.cutFromCommit }
@@ -1834,6 +1851,7 @@ export async function executeWorkflow(
     priorNodeSessions,
     userId,
     source,
+    requestSource,
     parseWarnings,
     baseBranch: callerBaseBranch,
     baseOverride: callerBaseOverride,
@@ -2047,9 +2065,18 @@ export async function executeWorkflow(
    * original. Only a run with no record at all (warned above) takes the live value.
    */
   const runSource = recordedDispatch ? recordedDispatch.source : source;
+  // Who started the run (guards only), kept the same way: a continuation never re-derives it.
+  const runRequestSource = recordedDispatch ? recordedDispatch.request_source : requestSource;
+  // Byte-identical to the shipped bundle (guards only), decided once from what discovery
+  // read for this run and kept the same way.
+  const runBundledShipped = recordedDispatch
+    ? recordedDispatch.bundled_shipped === true
+    : runSource === 'bundled' && isShippedBundle(workflow);
   const dispatchMetadata: RunDispatchMetadata = {
     base_branch: baseBranch,
     ...(runSource ? { source: runSource } : {}),
+    ...(runRequestSource ? { request_source: runRequestSource } : {}),
+    ...(runBundledShipped ? { bundled_shipped: true as const } : {}),
   };
 
   const docsDir = config.docsPath ?? 'docs/';

@@ -72,8 +72,15 @@ import {
   scrubServerEnv,
   scrubbedKeysIn,
 } from '../shared/agent-env';
-import { JUDGED_TOOLS_MATCHER, resolveJevShadowConfig } from '../shared/jev-shadow';
-import { createPreToolUseJevShadowHook } from './jev-shadow-hook';
+import {
+  JUDGED_TOOLS_MATCHER,
+  jevDecidesFor,
+  readArchonGuardMode,
+  resolveJevShadowConfig,
+  type JevGuardMode,
+  type JevShadowConfig,
+} from '../shared/jev-shadow';
+import { JEV_GUARD_HOOK_TIMEOUT_S, createPreToolUseJevShadowHook } from './jev-shadow-hook';
 import {
   createPreToolUseDestructiveGuardHook,
   guardRewrittenInput,
@@ -860,24 +867,47 @@ export function shouldPassNoEnvFile(cliPath: string | undefined): boolean {
  * Build base Claude SDK options from cwd, request options, and assistant defaults.
  * Does not include nodeConfig translation — that is handled by applyNodeConfig.
  */
-/** The Jev shadow hook's matcher for this request, or none (switched off, container run). */
+/** The server's Jev guard config for this request, or null (switched off, not installed, container run). */
+function jevGuardConfig(isContainerRun: boolean): JevShadowConfig | null {
+  if (isContainerRun) return null;
+  try {
+    return resolveJevShadowConfig(process.env, getArchonHome());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Claude Code's own sandbox, switched off for this request only when the Jev guard
+ * enforces in its place: Archon's mode in the root-owned mode file is `enforce` AND
+ * the guard hook is wired for this request. Claude's sandbox cannot start inside
+ * Archon's container (bubblewrap under Docker's seccomp), so a project whose settings
+ * turn it on (stixed) cannot run Claude nodes there; the env scrub, the destructive
+ * floor and the enforced Jev guard replace it. In any other mode, or without the
+ * guard, nothing is set and the project's own settings decide, as before.
+ */
+export function claudeSandboxOverride(
+  config: JevShadowConfig | null,
+  mode: () => JevGuardMode = readArchonGuardMode
+): { sandbox: { enabled: false } } | Record<string, never> {
+  if (!config) return {};
+  return mode() === 'enforce' ? { sandbox: { enabled: false } } : {};
+}
+
+/** The Jev guard hook's matcher (awaited, may deny), or none when the guard is not configured. */
 function jevShadowMatchers(
   cwd: string,
   requestOptions: SendQueryOptions | undefined,
   env: NodeJS.ProcessEnv,
-  isContainerRun: boolean
+  config: JevShadowConfig | null
 ): HookCallbackMatcher[] {
-  if (isContainerRun) return [];
-  let config;
-  try {
-    config = resolveJevShadowConfig(process.env, getArchonHome());
-  } catch {
-    return [];
-  }
   if (!config) return [];
   return [
     {
       matcher: JUDGED_TOOLS_MATCHER,
+      // The guard decides within 30 s and its child is killed at 40 s; the SDK's
+      // own hook timeout sits above both so it never lets a call through first.
+      timeout: JEV_GUARD_HOOK_TIMEOUT_S,
       hooks: [
         createPreToolUseJevShadowHook(cwd, config, {
           env: claudeBashEnv(env),
@@ -912,9 +942,12 @@ function buildBaseClaudeOptions(
   const spawnOverride = containerExecContext
     ? { spawnClaudeCodeProcess: buildContainerSpawn(containerExecContext) }
     : {};
+  const jevConfig = jevGuardConfig(containerExecContext !== undefined);
 
   return {
     cwd,
+    // Claude's sandbox off only where the enforced Jev guard replaces it (claudeSandboxOverride).
+    ...claudeSandboxOverride(jevConfig),
     // In compiled binaries, the resolver supplies an absolute executable path;
     // in dev mode it returns undefined and the SDK resolves from node_modules.
     // Both are skipped for container runs (spawn hook bypasses disk resolution).
@@ -967,13 +1000,17 @@ function buildBaseClaudeOptions(
       // list`) cannot steer writes into the source repo. Host runs only: inside
       // a container the paths are the container's and the container is the wall.
       PreToolUse: [
-        { matcher: 'Bash', hooks: [createPreToolUseDestructiveGuardHook(cwd)] },
+        {
+          matcher: 'Bash',
+          // Rules flagged moves_to_jev are left to the Jev guard when it enforces here.
+          hooks: [createPreToolUseDestructiveGuardHook(cwd, () => jevDecidesFor(jevConfig))],
+        },
         ...(requestOptions?.writableRoots !== undefined && containerExecContext === undefined
           ? [{ hooks: [createPreToolUsePathGuardHook(cwd, requestOptions.writableRoots)] }]
           : []),
-        // Jev shadow judge (shared/jev-shadow.ts): logs a verdict per call and
-        // always answers "no opinion". Host runs only, like the path guard.
-        ...jevShadowMatchers(cwd, requestOptions, env, containerExecContext !== undefined),
+        // Jev guard (shared/jev-shadow.ts): stixed's session guard decides each
+        // judged call; an enforced deny refuses it. Host runs only, like the path guard.
+        ...jevShadowMatchers(cwd, requestOptions, env, jevConfig),
       ],
     },
     stderr: (data: string): void => {

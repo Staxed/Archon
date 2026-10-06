@@ -594,6 +594,7 @@ import {
   resolveChatModelRequest,
   resolveTitleRequest,
   continueResolvedGateRun,
+  requestSourceFor,
 } from './orchestrator-agent';
 import { buildAiProfile } from '@archon/workflows/model-validation';
 import { TerminalStatusWriteError } from '@archon/workflows/terminal-status-write';
@@ -6881,5 +6882,23 @@ describe('continueResolvedGateRun — chat gate continuation source (#2646)', ()
       );
       expectSlackSpelling(messages);
     });
+  });
+});
+
+describe('requestSourceFor (who started a run, for the tool-call guards)', () => {
+  const on = (type: string) => ({ getPlatformType: () => type });
+
+  test('a typed command is the user; a pick by the chat agent is the orchestrator', () => {
+    for (const p of ['web', 'telegram', 'slack', 'cli', 'api']) {
+      expect(requestSourceFor(on(p), 'command')).toBe('user');
+      expect(requestSourceFor(on(p), 'agent')).toBe('orchestrator');
+    }
+  });
+
+  test('anything a forge event started is a trigger, whatever its text says', () => {
+    for (const p of ['github', 'gitlab', 'gitea']) {
+      expect(requestSourceFor(on(p), 'command')).toBe('trigger');
+      expect(requestSourceFor(on(p), 'agent')).toBe('trigger');
+    }
   });
 });

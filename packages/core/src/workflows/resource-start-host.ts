@@ -478,6 +478,8 @@ export async function startAdmittedResourceStart(
         preCreatedRun: run,
         codebaseId: codebase.id,
         userId: launch.run.user_id,
+        // A resource trigger started it, not a typed request (guards only).
+        requestSource: 'trigger',
         baseBranch,
         ...(execution.cutFromCommit !== undefined
           ? { cutFromCommit: execution.cutFromCommit }

@@ -3162,6 +3162,8 @@ async function runWorkflowWithOwnedSource(
     const commonOptions = {
       codebaseId: codebase?.id,
       source: workflowSource,
+      // A run started from the CLI is the user's own command (guards only).
+      requestSource: 'user' as const,
       parseWarnings: workflowEntry?.parseWarnings,
       userId: cliUserId,
       baseBranch: codebaseDefaultBranch,

@@ -241,6 +241,7 @@ export {
   RUN_DISPATCH_METADATA_KEY,
   runDispatchMetadataSchema,
   readRunDispatchMetadata,
+  workflowRequestSourceSchema,
 } from './workflow-run';
 export type {
   WorkflowRunStatus,
@@ -269,6 +270,7 @@ export type {
   ContinuationMode,
   ExecutionOwnerRecord,
   RunDispatchMetadata,
+  WorkflowRequestSource,
 } from './workflow-run';
 
 // Per-node persisted provider sessions

@@ -12,7 +12,12 @@
  *   config.toml (a dotted `-c hooks.state."<path>"...` key is split at the dots
  *   of the path, so the whole table goes inline). The hash is sha256 of the
  *   canonical JSON of {event_name, hooks: [handler]} with the handler's defaults
- *   filled in (reproduced from a hash Codex wrote itself, verified live on 0.157).
+ *   filled in (reproduced from hashes Codex wrote itself: default and explicit
+ *   timeouts, verified live on 0.157 and 0.161).
+ *
+ * PreToolUse handlers carry an explicit `timeout` (PRE_TOOL_USE_TIMEOUT_S, 45 s) on
+ * both CLIs: the dispatcher waits for the Jev guard (30 s deadline, child killed at
+ * 40 s), and Grok's default PreToolUse timeout is 5 s, after which a hook fails open.
  *
  * The installed command is `case ",$ARCHON_HOOK_EVENTS," in *,<Event>,*) exec bun
  * hook-dispatcher.ts <Event>;; esac`, so an event costs a Bun start only in a run
@@ -68,6 +73,17 @@ export const GROK_HOOK_EVENTS = [
 ];
 
 const MARKER = HOOK_EVENTS_ENV;
+
+/**
+ * Seconds a CLI waits for the PreToolUse dispatcher before giving up (and, on both
+ * CLIs, letting the call through): above the Jev guard's 40 s backstop.
+ */
+export const PRE_TOOL_USE_TIMEOUT_S = 45;
+
+/** The explicit timeout an event's handler carries, or undefined for the CLI's default. */
+export function hookTimeoutFor(event: string): number | undefined {
+  return event === 'PreToolUse' ? PRE_TOOL_USE_TIMEOUT_S : undefined;
+}
 
 export function supportedHookEvents(provider: HookCliProvider): string[] {
   return provider === 'codex' ? Object.keys(CODEX_HOOK_EVENTS) : GROK_HOOK_EVENTS;
@@ -134,11 +150,18 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Codex's trusted_hash for a command handler with no matcher and default settings. */
-export function codexHookHash(eventSnake: string, command: string): string {
+/** Codex's default handler timeout (seconds), filled in when the handler sets none. */
+const CODEX_DEFAULT_TIMEOUT_S = 600;
+
+/** Codex's trusted_hash for a command handler with no matcher and default settings but `timeout`. */
+export function codexHookHash(
+  eventSnake: string,
+  command: string,
+  timeout: number = CODEX_DEFAULT_TIMEOUT_S
+): string {
   const normalized = {
     event_name: eventSnake,
-    hooks: [{ async: false, command, timeout: 600, type: 'command' }],
+    hooks: [{ async: false, command, timeout, type: 'command' }],
   };
   return `sha256:${createHash('sha256').update(canonicalJson(normalized)).digest('hex')}`;
 }
@@ -158,7 +181,7 @@ export function grokHome(): string {
 
 interface CodexHookGroup {
   matcher?: string;
-  hooks?: { type?: string; command?: string }[];
+  hooks?: { type?: string; command?: string; timeout?: number }[];
 }
 
 function isArchonGroup(g: CodexHookGroup): boolean {
@@ -191,10 +214,13 @@ export function ensureCodexDispatcher(
   const trust: Record<string, string> = {};
   for (const [event, snake] of Object.entries(CODEX_HOOK_EVENTS)) {
     const command = dispatcherCommand(event, runtime, script);
+    const timeout = hookTimeoutFor(event);
     const groups = (hooks[event] ?? []).filter(g => !isArchonGroup(g));
-    groups.push({ hooks: [{ type: 'command', command }] });
+    groups.push({
+      hooks: [{ type: 'command', command, ...(timeout !== undefined ? { timeout } : {}) }],
+    });
     hooks[event] = groups;
-    trust[`${path}:${snake}:${groups.length - 1}:0`] = codexHookHash(snake, command);
+    trust[`${path}:${snake}:${groups.length - 1}:0`] = codexHookHash(snake, command, timeout);
   }
   writeIfChanged(path, JSON.stringify({ ...doc, hooks }, null, 2) + '\n');
   return trust;
@@ -255,8 +281,17 @@ export function ensureGrokDispatcher(
   const path = join(home, 'hooks', 'archon-dispatcher.json');
   const hooks: Record<string, unknown[]> = {};
   for (const event of GROK_HOOK_EVENTS) {
+    const timeout = hookTimeoutFor(event);
     hooks[event] = [
-      { hooks: [{ type: 'command', command: dispatcherCommand(event, runtime, script) }] },
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: dispatcherCommand(event, runtime, script),
+            ...(timeout !== undefined ? { timeout } : {}),
+          },
+        ],
+      },
     ];
   }
   writeIfChanged(
@@ -264,7 +299,7 @@ export function ensureGrokDispatcher(
     JSON.stringify(
       {
         description:
-          "Archon workflow hooks (path guard, tool lists, node hooks). A no-op unless an Archon run sets ARCHON_HOOK_EVENTS. Managed by Archon's cli-hooks/install.ts; edits are overwritten.",
+          "Archon workflow hooks (path guard, destructive floor, Jev guard, tool lists, node hooks). A no-op unless an Archon run sets ARCHON_HOOK_EVENTS. Managed by Archon's cli-hooks/install.ts; edits are overwritten.",
         hooks,
       },
       null,
@@ -297,7 +332,7 @@ export function prepareHookRun(spec: HookRunSpec): PreparedHookRun {
   const path = join(dir, `${randomUUID()}.json`);
   // The guard's rules file is the server's choice (its own environment), pinned
   // here so the CLI's environment cannot change it.
-  // So is the Jev shadow judge (log-only): which python, which scripts, which log.
+  // So is the Jev guard: which python, which scripts, which log.
   const pinned: HookRunSpec = {
     ...spec,
     rulesPath: 'rulesPath' in spec ? (spec.rulesPath ?? null) : (resolveRulesPath() ?? null),

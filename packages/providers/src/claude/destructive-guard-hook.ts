@@ -87,8 +87,15 @@ export function guardRewrittenInput(
   }));
 }
 
-/** Build a PreToolUse hook that denies destructive Bash commands; `cwd` is the node's. */
-export function createPreToolUseDestructiveGuardHook(cwd: string): HookCallback {
+/**
+ * Build a PreToolUse hook that denies destructive Bash commands; `cwd` is the node's.
+ * `jevDecides` (asked per call): the node's Jev guard decides, so the floor leaves it
+ * the rules flagged `moves_to_jev`. Default: never, every rule kept.
+ */
+export function createPreToolUseDestructiveGuardHook(
+  cwd: string,
+  jevDecides: () => boolean = () => false
+): HookCallback {
   return (async (input: Record<string, unknown>) => {
     if ((input as { tool_name?: string }).tool_name !== 'Bash') return NO_OPINION;
     const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input ?? {};
@@ -98,7 +105,7 @@ export function createPreToolUseDestructiveGuardHook(cwd: string): HookCallback 
     const effectiveCwd = typeof hookCwd === 'string' && hookCwd ? hookCwd : cwd;
     let violation: Violation | undefined;
     try {
-      violation = checkCommand(command, effectiveCwd);
+      violation = checkCommand(command, effectiveCwd, { jevDecides: jevDecides() });
     } catch (err) {
       // Fail closed: a guard that crashed must not let the command run.
       violation = new Violation(

@@ -1,55 +1,99 @@
 /**
- * Jev shadow judge for agent tool calls (Claude, Codex, Grok). LOG-ONLY.
+ * The Jev guard for agent tool calls (Claude, Codex, Grok): one decision per call.
  *
- * Stixed's Jev guard client (`jev_guard.py`, `decide()`) is the one implementation
- * of the judgement; Archon does not port it. Archon runs the ROOT-OWNED promoted
- * copy (`/usr/local/lib/stixed/.claude/scripts/`, mounted read-only into the
- * container the way `destructive_rules.json` is) with python3, once per tool call
- * that writes, runs a shell command or fetches a URL, and appends the verdict to
- * `<archon home>/logs/jev-shadow/<YYYY-MM-DD>.jsonl`.
+ * Stixed's session guard (`session_guard.py --stdin-json`, profile "archon") is the
+ * one implementation of the judgement; Archon does not port it. Archon runs the
+ * ROOT-OWNED promoted copy (`/usr/local/lib/stixed/.claude/scripts/`, mounted
+ * read-only into the container the way `destructive_rules.json` is) with python3,
+ * once per tool call that writes, runs a shell command or fetches a URL, and WAITS
+ * for its Decision:
  *
- * Shadow mode, by construction:
- *  - the judge runs in a detached process: the tool call never waits for it
- *    (the CLI hook dispatcher waits only for its payload to reach the pipe);
- *  - nothing it returns reaches the agent: the Claude hook and the dispatcher
- *    return their own decision whatever Jev says;
- *  - any failure (no python, no scripts, a crash, a timeout) is one log line.
+ *  - outcome `deny` (enforced): the call is refused with the guard's reason;
+ *  - outcome `allow`, including a log-only would-deny (`enforced: false`): the call
+ *    proceeds. The mode (off | log-only | enforce, root-owned
+ *    `/etc/stixed/jev-guard-mode.json`, key `archon`) is decided inside session_guard;
+ *    this side only obeys the Decision. Code floors (secret opens, wall files, path
+ *    rules) are enforced by session_guard in every mode;
+ *  - no Decision (the child crashed, printed nothing readable, or did not answer in
+ *    40 s): deny. session_guard keeps its own 30 s deadline; 40 s is the backstop.
  *
- * Log entries are redacted with jev_guard's own `redact()`; they hold the call
- * (clipped to 300 chars), the verdict, its triggers and the names of the facts
- * code computed. Never the env, the user's request, file contents or fact values.
+ * The guard's own ledger (stixed's security log) holds the call and the reason,
+ * redacted. This side appends one line per judged call to
+ * `<archon home>/logs/jev-shadow/<YYYY-MM-DD>.jsonl` with the outcome, stage and
+ * mode only: never the command, the env, the user's request or the reason text.
  *
  * Switches (server env, pinned into each run so a project's env cannot change
- * them): ARCHON_JEV_SHADOW=off disables; ARCHON_JEV_SCRIPTS_DIR overrides the
- * scripts folder (tests); ARCHON_LLM_GATEWAY_URL sets the gateway base. Under
+ * them): ARCHON_JEV_SHADOW=off disables the guard; ARCHON_JEV_SCRIPTS_DIR overrides
+ * the scripts folder (tests); ARCHON_LLM_GATEWAY_URL sets the gateway base. Under
  * `bun test` (NODE_ENV=test) it is off unless ARCHON_JEV_SCRIPTS_DIR is set.
  *
  * This file imports node built-ins only (the CLI hook dispatcher imports it).
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const JEV_SHADOW_ENV = 'ARCHON_JEV_SHADOW';
 export const JEV_SCRIPTS_DIR_ENV = 'ARCHON_JEV_SCRIPTS_DIR';
 /** The root-owned promoted copy of stixed's scripts (stixctl promote). */
 export const DEFAULT_JEV_SCRIPTS_DIR = '/usr/local/lib/stixed/.claude/scripts';
+/** The script judgeCall runs (session_guard.py, wave 3). */
+export const SESSION_GUARD_SCRIPT = 'session_guard.py';
 /** llm-metrics' systemone route, appended to ARCHON_LLM_GATEWAY_URL. */
 const SYSTEMONE_ROUTE = '/openrouter/v1/systemone';
-/** Upper bound for one judgement, the Jev call included (jev_guard's own timeout is 3 s). */
-const JUDGE_TIMEOUT_S = 30;
-/** Per-string cap on what is sent to the judge, so a payload always fits a pipe buffer. */
+/** session_guard's own deadline for one call (code, Jev and the judge together). */
+export const GUARD_DEADLINE_S = 30;
+/** TS-side backstop: past this the child is killed and the call denied. */
+export const JUDGE_KILL_MS = 40_000;
+/** Per-string cap on what is sent to the guard, so a payload always fits a pipe buffer. */
 const MAX_TEXT = 24_000;
 const MAX_ENV_VALUE = 2_000;
-/** Judges in flight at once in this process (stixed's host shadow uses 4 slots too). */
-export const MAX_CONCURRENT_JUDGES = 4;
-/** TS-side hard deadline: the judge's own alarm is JUDGE_TIMEOUT_S; this kills it if that fails. */
-const KILL_AFTER_MS = (JUDGE_TIMEOUT_S + 5) * 1000;
-let inFlight = 0;
+/** What is kept of the child's output (a Decision is a few KB). */
+const MAX_OUTPUT = 256_000;
 
-/** Judges currently running in this process (tests). */
-export function judgesInFlight(): number {
-  return inFlight;
+/** The root-owned mode file session_guard reads (`{"archon": "off|log-only|enforce", ...}`). */
+export const JEV_GUARD_MODE_FILE = '/etc/stixed/jev-guard-mode.json';
+export type JevGuardMode = 'off' | 'log-only' | 'enforce';
+const MODES: readonly JevGuardMode[] = ['off', 'log-only', 'enforce'];
+const DEFAULT_MODE: JevGuardMode = 'log-only';
+
+/**
+ * Archon's Jev guard mode, read the way session_guard.read_mode reads it: the
+ * `archon` key, else `default`. A missing, unreadable or malformed file, or one
+ * that is not root's or is group/world-writable, is `log-only` (today's behaviour).
+ * Read on every call: flipping the file needs no restart.
+ */
+export function readArchonGuardMode(
+  path: string = JEV_GUARD_MODE_FILE,
+  requireRoot = true
+): JevGuardMode {
+  try {
+    const st = statSync(path);
+    if (!st.isFile()) return DEFAULT_MODE;
+    if (requireRoot && (st.uid !== 0 || (st.mode & 0o022) !== 0)) return DEFAULT_MODE;
+    const data = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return DEFAULT_MODE;
+    const d = data as Record<string, unknown>;
+    // Python's data.get("archon", data.get("default")): a present key wins even when it
+    // is null or unknown (log-only), so this side never reads `enforce` where the guard
+    // reads log-only (and switches Claude's sandbox off without the guard enforcing).
+    const value = 'archon' in d ? d.archon : 'default' in d ? d.default : DEFAULT_MODE;
+    return MODES.includes(value as JevGuardMode) ? (value as JevGuardMode) : DEFAULT_MODE;
+  } catch {
+    return DEFAULT_MODE;
+  }
+}
+
+/**
+ * Whether the Jev guard decides this call: it is wired for the node (`config`) and
+ * Archon's mode is `enforce`. Archon's destructive floor then leaves the rules flagged
+ * `moves_to_jev` to it (Stixed's jev_decides_for). Read per call, like the mode.
+ */
+export function jevDecidesFor(
+  config: JevShadowConfig | null | undefined,
+  mode: () => JevGuardMode = readArchonGuardMode
+): boolean {
+  return !!config && mode() === 'enforce';
 }
 
 /** Pinned per run by the server (HookRunSpec.jevShadow), or resolved in-process for Claude. */
@@ -62,22 +106,122 @@ export interface JevShadowConfig {
   caller: string;
 }
 
-/** One tool call, in Claude's vocabulary (what jev_guard reads). */
+/** Where the request behind a run came from (stixed's archon channel reads it). */
+export type RequestSource = 'user' | 'orchestrator' | 'parent_run' | 'trigger';
+/** Whether the run's workflow is Archon's bundled one or a repo/global file. */
+export type GuardWorkflowSource = 'bundled' | 'repo';
+
+/** One tool call, in Claude's vocabulary (what session_guard reads). */
 export interface ShadowCall {
   provider: 'claude' | 'codex' | 'grok';
   toolName: string;
   toolInput: Record<string, unknown>;
   cwd: string;
-  /** The node's working directory (worktree root); jev_guard's `project_root`. */
+  /** The node's working directory (worktree root); the guard's `project_root`. */
   projectRoot: string;
-  /** The env the agent's tool runs with (after the scrub). Sent to the judge, never logged. */
+  /** The env the agent's tool runs with (after the scrub). Sent to the guard, never logged. */
   env: Record<string, string | undefined>;
   userRequest?: string;
   runId?: string;
   nodeId?: string;
   workflow?: string;
+  workflowSource?: GuardWorkflowSource;
+  requestSource?: RequestSource;
+  parentRunId?: string;
   /** What Archon's own guards decided for this call ("pass" or the deny reason's head). */
   archonGuard?: string;
+  /**
+   * This node session's own recent enforced denies (RecentBlocks), sent as
+   * `recent_blocked_calls`. Unset: session_guard reads the shared ledger instead.
+   */
+  recentBlockedCalls?: BlockedCall[];
+}
+
+/** One earlier refused call, as session_guard's `recent_blocked_calls` holds it. */
+export interface BlockedCall {
+  call: string;
+  blocked_by: string;
+}
+
+/** The one-line form of a call for `recent_blocked_calls` (session_guard redacts and clips it). */
+export function blockedCallText(toolName: string, toolInput: Record<string, unknown>): string {
+  const text =
+    toolName === 'Bash'
+      ? (str(toolInput.command) ?? '')
+      : `${toolName} ${str(toolInput.file_path) ?? str(toolInput.url) ?? str(toolInput.notebook_path) ?? ''}`;
+  return text.trim().slice(0, 300);
+}
+
+/**
+ * A node session's own recent enforced denies (the last 5 of the last 10 minutes,
+ * session_guard's window for the ledger). Kept in memory by the hook that judges the
+ * session's calls, so a retry of a refused call is seen as one, and no other session's
+ * refusals are.
+ */
+export class RecentBlocks {
+  private items: { at: number; entry: BlockedCall }[] = [];
+  constructor(
+    private readonly windowMs = 10 * 60_000,
+    private readonly limit = 5,
+    private readonly now: () => number = Date.now
+  ) {}
+
+  /** Record a call the guard refused (an enforced deny only). */
+  add(call: Pick<ShadowCall, 'provider' | 'toolName' | 'toolInput'>, verdict: GuardVerdict): void {
+    if (verdict.decision !== 'deny') return;
+    this.items.push({
+      at: this.now(),
+      entry: {
+        call: blockedCallText(call.toolName, call.toolInput),
+        blocked_by: `jev:archon-${call.provider}:${verdict.stage}`,
+      },
+    });
+    if (this.items.length > this.limit) this.items = this.items.slice(-this.limit);
+  }
+
+  /** The denies still inside the window, oldest first. */
+  list(): BlockedCall[] {
+    const since = this.now() - this.windowMs;
+    this.items = this.items.filter(i => i.at >= since);
+    return this.items.map(i => ({ ...i.entry }));
+  }
+}
+
+/** The run fields of a GuardContext (providers/src/types.ts), structurally. */
+export interface GuardContextFields {
+  runId?: string;
+  nodeId?: string;
+  workflow?: string;
+  userRequest?: string;
+  requestSource?: RequestSource;
+  parentRunId?: string;
+  workflowSource?: GuardWorkflowSource;
+}
+
+/** The ShadowCall fields a request's GuardContext supplies (undefined ones left out). */
+export function callContext(g: GuardContextFields | undefined): Partial<ShadowCall> {
+  if (!g) return {};
+  const out: Partial<ShadowCall> = {};
+  if (g.userRequest !== undefined) out.userRequest = g.userRequest;
+  if (g.runId !== undefined) out.runId = g.runId;
+  if (g.nodeId !== undefined) out.nodeId = g.nodeId;
+  if (g.workflow !== undefined) out.workflow = g.workflow;
+  if (g.requestSource !== undefined) out.requestSource = g.requestSource;
+  if (g.parentRunId !== undefined) out.parentRunId = g.parentRunId;
+  if (g.workflowSource !== undefined) out.workflowSource = g.workflowSource;
+  return out;
+}
+
+/** What a caller does with a call: run it, or refuse it with the reason. */
+export interface GuardVerdict {
+  decision: 'allow' | 'deny';
+  reason: string;
+  /** session_guard's stage (floor, open_check, prefilter, jev, judge, ...) or the TS failure. */
+  stage: string;
+  /** The mode session_guard applied; undefined when no Decision was read. */
+  mode?: string;
+  /** False for a log-only would-deny (the call proceeds). */
+  enforced?: boolean;
 }
 
 function isOff(v: string | undefined): boolean {
@@ -85,8 +229,8 @@ function isOff(v: string | undefined): boolean {
 }
 
 /**
- * The shadow judge's config for this server, or null when it cannot or must
- * not run (switched off, or jev_guard.py is not where the promoted copy lives).
+ * The guard's config for this server, or null when it cannot or must not run
+ * (switched off, or session_guard.py is not where the promoted copy lives).
  */
 export function resolveJevShadowConfig(
   env: Record<string, string | undefined>,
@@ -94,10 +238,10 @@ export function resolveJevShadowConfig(
 ): JevShadowConfig | null {
   if (isOff(env[JEV_SHADOW_ENV])) return null;
   // Under `bun test` only an explicitly named scripts folder counts, so no test
-  // run ever starts the real judge (or calls Jev) by finding the promoted copy.
+  // run ever starts the real guard (or calls Jev) by finding the promoted copy.
   if (env.NODE_ENV === 'test' && !env[JEV_SCRIPTS_DIR_ENV]) return null;
   const scriptsDir = env[JEV_SCRIPTS_DIR_ENV] || DEFAULT_JEV_SCRIPTS_DIR;
-  if (!existsSync(join(scriptsDir, 'jev_guard.py'))) return null;
+  if (!existsSync(join(scriptsDir, SESSION_GUARD_SCRIPT))) return null;
   const base = env.ARCHON_LLM_GATEWAY_URL?.trim().replace(/\/+$/, '');
   return {
     python: existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3',
@@ -108,7 +252,7 @@ export function resolveJevShadowConfig(
   };
 }
 
-/** Tool names jev_guard's pre-filter reads (it has nothing to say about the others). */
+/** Tool names the guard reads past its code floors (it has nothing to say about the others). */
 export const JUDGED_TOOLS = new Set([
   'Bash',
   'Write',
@@ -167,19 +311,21 @@ export function claudeShapedCall(
   return undefined;
 }
 
-function clipStrings(value: unknown, max: number): unknown {
+function clipStrings(value: unknown, max: number, seen = new WeakSet()): unknown {
   if (typeof value === 'string') return value.length > max ? value.slice(0, max) : value;
-  if (Array.isArray(value)) return value.map(v => clipStrings(v, max));
   if (value && typeof value === 'object') {
+    if (seen.has(value)) return '[cycle]';
+    seen.add(value);
+    if (Array.isArray(value)) return value.map(v => clipStrings(v, max, seen));
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>))
-      out[k] = clipStrings(v, max);
+      out[k] = clipStrings(v, max, seen);
     return out;
   }
   return value;
 }
 
-/** The env the judge sees: the tool's env minus Archon's own hook plumbing, values capped. */
+/** The env the guard sees: the tool's env minus Archon's own hook plumbing, values capped. */
 export function judgeEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
@@ -189,125 +335,103 @@ export function judgeEnv(env: Record<string, string | undefined>): Record<string
   return out;
 }
 
-/** The JSON a judge process reads on stdin. */
-export function shadowPayload(call: ShadowCall, config: JevShadowConfig): string {
+/**
+ * The JSON session_guard reads on stdin (`--stdin-json`, the archon channel): the
+ * call, the env the agent's tool runs with (`env`), and in `context` the run's
+ * message (`user_request`), where it came from (`request_source`, `parent_run_id`),
+ * which workflow asked (`workflow`, `workflow_source`: `bundled` only for Archon's
+ * shipped default), the run and node ids, and the session's own recent refusals
+ * (`recent_blocked_calls`, when the caller keeps them). Exactly those fields:
+ * session_guard derives the request's source label and the project root itself.
+ * Exit 2 (malformed request) denies.
+ */
+export function guardRequest(call: ShadowCall): string {
+  const context: Record<string, unknown> = {
+    user_request: (call.userRequest ?? '').slice(0, 4_000),
+  };
+  if (call.workflow !== undefined) context.workflow = call.workflow;
+  if (call.workflowSource !== undefined) context.workflow_source = call.workflowSource;
+  if (call.requestSource !== undefined) context.request_source = call.requestSource;
+  if (call.parentRunId !== undefined) context.parent_run_id = call.parentRunId;
+  if (call.runId !== undefined) context.run_id = call.runId;
+  if (call.nodeId !== undefined) context.node_id = call.nodeId;
+  if (call.recentBlockedCalls !== undefined)
+    context.recent_blocked_calls = call.recentBlockedCalls.slice(-5);
   return JSON.stringify({
-    config: {
-      scripts_dir: config.scriptsDir,
-      log_dir: config.logDir,
-      caller: config.caller,
-      timeout_s: JUDGE_TIMEOUT_S,
-      ...(config.gatewayUrl ? { gateway_url: config.gatewayUrl } : {}),
-    },
-    call: {
-      provider: call.provider,
-      tool_name: call.toolName,
-      tool_input: clipStrings(call.toolInput, MAX_TEXT),
-      cwd: call.cwd,
-      project_root: call.projectRoot,
-      env: judgeEnv(call.env),
-      user_request: (call.userRequest ?? '').slice(0, 4_000),
-      run_id: call.runId ?? null,
-      node_id: call.nodeId ?? null,
-      workflow: call.workflow ?? null,
-      archon_guard: call.archonGuard ?? null,
-    },
+    cli: call.provider,
+    tool: call.toolName,
+    tool_input: clipStrings(call.toolInput, MAX_TEXT),
+    cwd: call.cwd,
+    profile: 'archon',
+    env: judgeEnv(call.env),
+    deadline_s: GUARD_DEADLINE_S,
+    context,
   });
 }
 
 /**
- * The judge process: reads the payload, asks jev_guard.decide(), appends one
- * redacted JSON line. Everything it writes goes through jev_guard.redact().
- * Runs with -I (no PYTHON* env, no user site), so only the scripts folder named
- * in the payload is importable besides the standard library.
+ * The verdict for session_guard's stdout. Only an `allow` (a log-only would-deny
+ * included) lets the call run; a deny that is not enforced is an allow; `ask` and
+ * anything unreadable deny (nobody answers an ask in an unattended run).
  */
-export const JUDGE_SCRIPT = String.raw`
-import json, os, signal, sys, threading, time
-started = time.monotonic()
-# Backstop that does not depend on the parent or the main thread: a daemon timer
-# works while the main thread is stuck reading stdin or in a C call. The env var
-# is only ever set by tests (the judge process env is pinned by the parent).
-_backstop = threading.Timer(float(os.environ.get("ARCHON_JEV_BACKSTOP_S") or ${JUDGE_TIMEOUT_S + 5}), os._exit, (0,))
-_backstop.daemon = True
-_backstop.start()
-payload = json.load(sys.stdin)
-cfg, call = payload["config"], payload["call"]
-entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "provider": call.get("provider"),
-         "tool": call.get("tool_name"), "cwd": call.get("cwd"), "run_id": call.get("run_id"),
-         "node_id": call.get("node_id"), "workflow": call.get("workflow"),
-         "archon_guard": call.get("archon_guard")}
-redact = lambda s: str(s)
-def write_entry():
-    entry["elapsed_ms"] = int((time.monotonic() - started) * 1000)
-    os.makedirs(cfg["log_dir"], mode=0o700, exist_ok=True)
-    path = os.path.join(cfg["log_dir"], time.strftime("%Y-%m-%d") + ".jsonl")
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
-    finally:
-        os.close(fd)
-def _take_slot():
-    # One of SLOTS non-blocking flock slots, shared by every judge on this host
-    # (the dispatcher is a fresh process per Codex/Grok hook call, so no in-process
-    # counter can cap them). Held until the process dies, SIGKILL included.
-    try:
-        import fcntl
-        folder = os.path.join(cfg["log_dir"], "slots")
-        os.makedirs(folder, mode=0o700, exist_ok=True)
-        for n in range(${MAX_CONCURRENT_JUDGES}):
-            fd = os.open(os.path.join(folder, "slot-%d.lock" % n), os.O_RDWR | os.O_CREAT, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return True
-            except OSError:
-                os.close(fd)
-        return False
-    except BaseException:
-        return True  # no usable slot folder: judge anyway, the backstop still bounds it
-if not _take_slot():
-    entry.update(decision="skipped", error="skipped: busy")
-    try:
-        write_entry()
-    except BaseException:
-        pass
-    os._exit(0)
-def _timeout(*_):
-    # os._exit, never an exception: jev_guard's broad except blocks would swallow it
-    try:
-        entry.update(decision="error", error="timeout: jev shadow judge timed out")
-        write_entry()
-    except BaseException:
-        pass
-    os._exit(0)
-try:
-    signal.signal(signal.SIGALRM, _timeout)
-    signal.alarm(int(cfg.get("timeout_s") or 30))
-    sys.path.insert(0, cfg["scripts_dir"])
-    if cfg.get("gateway_url"):
-        os.environ["JEV_GATEWAY_URL"] = cfg["gateway_url"]
-    import jev_guard as jg
-    redact = jg.redact
-    jg.CALLER = cfg.get("caller") or "archon"
-    ti = call.get("tool_input") or {}
-    shown = ti.get("command") or ti.get("url") or ti.get("file_path") or ""
-    entry["call"] = redact(str(shown))[:300]
-    context = {"cwd": call.get("cwd") or "/", "project_root": call.get("project_root") or call.get("cwd") or "/",
-               "user_request": call.get("user_request") or "", "env": call.get("env") or {}}
-    v = jg.decide(call.get("tool_name") or "", ti, context)
-    entry.update(decision=v.decision, reason=redact(v.reason)[:400], asked=v.asked,
-                 triggers=[redact(t)[:200] for t in v.triggers][:12], fact_keys=sorted(v.facts)[:24],
-                 model=v.model, latency_ms=v.latency_ms, cost=v.cost)
-    if v.error:
-        entry["error"] = redact(v.error)[:300]
-except BaseException as e:
-    entry.update(decision="error", error=redact(type(e).__name__ + ": " + str(e))[:300])
-finally:
-    signal.alarm(0)
-write_entry()
-`;
+export function verdictOf(stdout: string): GuardVerdict {
+  let d: Record<string, unknown> | undefined;
+  for (const line of stdout.trim().split('\n').reverse()) {
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        d = parsed as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // not the Decision line
+    }
+  }
+  if (!d || typeof d.outcome !== 'string') {
+    return {
+      decision: 'deny',
+      stage: 'archon:unreadable',
+      reason: 'the Jev guard gave no readable decision; the call is denied (fail closed)',
+    };
+  }
+  const stage = typeof d.stage === 'string' ? d.stage : 'unknown';
+  const reason = typeof d.reason === 'string' && d.reason ? d.reason : 'no reason given';
+  const mode = typeof d.mode === 'string' ? d.mode : undefined;
+  const enforced = typeof d.enforced === 'boolean' ? d.enforced : undefined;
+  const base = {
+    stage,
+    ...(mode ? { mode } : {}),
+    ...(enforced !== undefined ? { enforced } : {}),
+  };
+  if (d.outcome === 'allow') return { decision: 'allow', reason, ...base };
+  if (d.outcome === 'deny') {
+    // session_guard turns a log-only would-deny into allow itself; obey `enforced` too.
+    if (enforced === false) return { decision: 'allow', reason, ...base };
+    return { decision: 'deny', reason: denyText(stage, reason, d.user_runs_it === true), ...base };
+  }
+  return {
+    decision: 'deny',
+    reason: `jev-guard: denied (the guard asked for a human, and an Archon run has none: ${reason})\n${ANOTHER_WAY}`,
+    ...base,
+  };
+}
 
-/** The judge process's env: enough to run python and reach the gateway, nothing else. */
-function judgeProcessEnv(): Record<string, string> {
+const ANOTHER_WAY =
+  'Nothing ran. Do it another way; if there is no other way, stop and report what you needed and why.';
+const USER_RUNS_IT =
+  "Nothing ran. This is the user's to run: do not look for another way; report the command and why you need it.";
+/** session_guard's code floors: their reason is the whole message (HARD STOP included). */
+const FLOOR_STAGES = new Set(['floor', 'open_check', 'identity', 'wall_file', 'path_rule']);
+
+/** The agent's text for a deny, as session_guard.deny_text words it for the host hooks. */
+function denyText(stage: string, reason: string, userRunsIt: boolean): string {
+  const flat = reason.split(/\s+/).join(' ');
+  if (FLOOR_STAGES.has(stage) || /hard stop/i.test(flat)) return flat;
+  return `jev-guard: denied (${flat.slice(0, 900)})\n${userRunsIt ? USER_RUNS_IT : ANOTHER_WAY}`;
+}
+
+/** The guard process's env: enough to run python and reach the gateway, nothing else. */
+function judgeProcessEnv(config: JevShadowConfig): Record<string, string> {
   const keep = [
     'PATH',
     'HOME',
@@ -326,15 +450,18 @@ function judgeProcessEnv(): Record<string, string> {
     const v = process.env[k];
     if (v !== undefined) out[k] = v;
   }
+  out.JEV_CALLER = config.caller || 'archon';
+  if (config.gatewayUrl) out.JEV_GATEWAY_URL = config.gatewayUrl;
   return out;
 }
 
-/** Append one line from this side (a judge that could not even start). Never throws. */
-export function logShadowFailure(
+/** Append one line about a judged call (no command, env, request or reason). Never throws. */
+export function logGuardCall(
   config: JevShadowConfig,
   call: ShadowCall,
-  error: string,
-  decision = 'error'
+  verdict: GuardVerdict,
+  elapsedMs: number,
+  error?: string
 ): void {
   try {
     mkdirSync(config.logDir, { recursive: true, mode: 0o700 });
@@ -343,108 +470,128 @@ export function logShadowFailure(
       ts: new Date().toISOString(),
       provider: call.provider,
       tool: call.toolName,
-      cwd: call.cwd,
       run_id: call.runId ?? null,
       node_id: call.nodeId ?? null,
       workflow: call.workflow ?? null,
       archon_guard: call.archonGuard ?? null,
-      decision,
-      error: error.slice(0, 300),
+      decision: verdict.decision,
+      stage: verdict.stage,
+      mode: verdict.mode ?? null,
+      enforced: verdict.enforced ?? null,
+      elapsed_ms: elapsedMs,
+      ...(error ? { error: error.slice(0, 300) } : {}),
     };
     appendFileSync(join(config.logDir, `${day}.jsonl`), `${JSON.stringify(entry)}\n`, {
       mode: 0o600,
     });
   } catch {
-    // shadow mode: a log that cannot be written changes nothing
+    // a log that cannot be written changes nothing
   }
 }
 
 /**
- * Start the judge for one call and return at once. The returned promise settles
- * when the payload has been handed to the judge's stdin (or after `waitMs`), for
- * a short-lived caller (the CLI hook dispatcher) that must not exit first. It
- * never rejects, and nothing about the judgement ever reaches the caller.
+ * Judge one call and wait for the verdict. Never rejects: a child that cannot
+ * start, crashes, prints no Decision or outlives `killAfterMs` is a deny.
  */
-export function shadowJudge(
+export function judgeCall(
   call: ShadowCall,
   config: JevShadowConfig,
-  waitMs = 250
-): Promise<void> {
-  return new Promise<void>(resolve => {
+  killAfterMs: number = JUDGE_KILL_MS
+): Promise<GuardVerdict> {
+  const started = performance.now();
+  return new Promise<GuardVerdict>(resolve => {
     let settled = false;
-    const done = (): void => {
-      if (!settled) {
-        settled = true;
-        resolve();
-      }
+    const finish = (verdict: GuardVerdict, error?: string): void => {
+      if (settled) return;
+      settled = true;
+      logGuardCall(config, call, verdict, Math.round(performance.now() - started), error);
+      resolve(verdict);
     };
-    if (inFlight >= MAX_CONCURRENT_JUDGES) {
-      logShadowFailure(config, call, 'skipped: busy', 'skipped');
-      done();
-      return;
-    }
+    const failed = (stage: string, why: string): void => {
+      finish(
+        {
+          decision: 'deny',
+          stage,
+          reason: `jev-guard: denied (${why}; the call is denied, fail closed)\n${ANOTHER_WAY}`,
+        },
+        why
+      );
+    };
     let payload: string;
     try {
-      payload = shadowPayload(call, config);
+      payload = guardRequest(call);
     } catch (err) {
-      logShadowFailure(config, call, `judge did not start: ${(err as Error).message}`);
-      done();
+      failed('archon:error', `the guard request could not be built: ${(err as Error).message}`);
       return;
     }
-    let counted = false;
-    let child: ChildProcess | undefined;
-    const release = (): void => {
-      if (counted) {
-        counted = false;
-        inFlight--;
-      }
-    };
+    let child: ReturnType<typeof spawn>;
     try {
-      inFlight++;
-      counted = true;
-      child = spawn(config.python, ['-I', '-c', JUDGE_SCRIPT], {
-        cwd: '/',
-        detached: true,
-        stdio: ['pipe', 'ignore', 'ignore'],
-        env: judgeProcessEnv(),
-      });
-      const proc = child;
-      proc.on('exit', release);
-      proc.on('error', (err: Error) => {
-        release();
-        logShadowFailure(config, call, `judge did not start: ${err.message}`);
-        done();
-      });
-      proc.stdin?.on('error', () => {
-        // EPIPE: the judge died before reading; it logs its own failure if it can
-        done();
-      });
-      proc.unref();
-      proc.stdin?.end(payload, () => {
-        done();
-      });
-      const timer = setTimeout(done, waitMs);
-      timer.unref?.();
-      // Hard deadline whatever the judge does: kill its process group.
-      const killer = setTimeout(() => {
+      child = spawn(
+        config.python,
+        [
+          '-I',
+          join(config.scriptsDir, SESSION_GUARD_SCRIPT),
+          '--stdin-json',
+          '--caller',
+          config.caller || 'archon',
+        ],
+        {
+          cwd: '/',
+          // its own process group, so the deadline kills the guard and anything it started
+          detached: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: judgeProcessEnv(config),
+        }
+      );
+    } catch (err) {
+      failed('archon:error', `the guard did not start: ${(err as Error).message}`);
+      return;
+    }
+    const proc = child;
+    const kill = (): void => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
+      } catch {
         try {
-          if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
+          proc.kill('SIGKILL');
         } catch {
           // already gone
         }
-        release();
-      }, KILL_AFTER_MS);
-      killer.unref?.();
-      proc.on('exit', () => clearTimeout(killer));
-    } catch (err) {
-      release();
-      try {
-        if (child?.pid) process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        // already gone
       }
-      logShadowFailure(config, call, `judge did not start: ${(err as Error).message}`);
-      done();
-    }
+    };
+    let out = '';
+    let err = '';
+    proc.stdout?.on('data', (c: Buffer) => {
+      if (out.length < MAX_OUTPUT) out += c.toString('utf8');
+    });
+    proc.stderr?.on('data', (c: Buffer) => {
+      if (err.length < 4_000) err += c.toString('utf8');
+    });
+    const timer = setTimeout(() => {
+      kill();
+      failed('archon:deadline', `no verdict in ${String(killAfterMs / 1000)} s`);
+    }, killAfterMs);
+    proc.on('error', (e: Error) => {
+      clearTimeout(timer);
+      failed('archon:error', `the guard did not start: ${e.message}`);
+    });
+    proc.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0) {
+        const head = err.trim().split('\n').pop() ?? '';
+        failed(
+          'archon:crash',
+          `the guard exited with ${code === null ? `signal ${String(signal)}` : `code ${String(code)}`}${head ? `: ${head.slice(0, 200)}` : ''}`
+        );
+        return;
+      }
+      const verdict = verdictOf(out);
+      finish(verdict, verdict.stage === 'archon:unreadable' ? 'no readable Decision' : undefined);
+    });
+    proc.stdin?.on('error', () => {
+      // EPIPE: the guard died before reading; its exit settles the call
+    });
+    proc.stdin?.end(payload);
   });
 }

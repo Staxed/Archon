@@ -1,17 +1,31 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEFAULT_JEV_SCRIPTS_DIR,
-  JUDGE_SCRIPT,
-  MAX_CONCURRENT_JUDGES,
-  judgesInFlight,
+  GUARD_DEADLINE_S,
+  JEV_GUARD_MODE_FILE,
+  JUDGE_KILL_MS,
+  RecentBlocks,
+  blockedCallText,
+  callContext,
   claudeShapedCall,
+  guardRequest,
+  judgeCall,
   judgeEnv,
+  readArchonGuardMode,
   resolveJevShadowConfig,
-  shadowJudge,
-  shadowPayload,
+  verdictOf,
+  type GuardVerdict,
   type JevShadowConfig,
   type ShadowCall,
 } from './jev-shadow';
@@ -22,38 +36,57 @@ afterAll(() => {
 });
 
 /**
- * A stand-in for stixed's jev_guard.py with the same public surface the judge
- * uses (decide, redact, CALLER). It records what it was given next to itself.
+ * A stand-in for stixed's session_guard.py with the same CLI (`--stdin-json
+ * [--caller NAME]`, one Decision as JSON on stdout, exit 0). It records what it was
+ * given next to itself and answers by the command's first word. No model is called.
  */
-const FAKE_JEV_GUARD = `
-import json, os, re
-CALLER = "stixed"
+const FAKE_SESSION_GUARD = String.raw`
+import json, os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
-def redact(text):
-    return re.sub(r"SECRET[0-9]+", "[REDACTED]", str(text))
-class V:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-def decide(tool_name, tool_input, context):
-    with open(os.path.join(HERE, "seen.json"), "w") as f:
-        json.dump({"tool": tool_name, "input": tool_input, "context": context, "caller": CALLER,
-                   "gateway": os.environ.get("JEV_GATEWAY_URL"),
-                   "server_secret_in_env": "POSTGRES_PASSWORD" in os.environ}, f)
-    cmd = str(tool_input.get("command", ""))
-    if cmd.startswith("crash"):
-        raise RuntimeError("boom SECRET999")
-    if cmd.startswith("rm"):
-        return V(decision="deny", reason="deletes the project SECRET111", asked=True,
-                 triggers=["destructive: " + cmd], facts={"project": "p", "live_values": ["SECRET222"]},
-                 model="typesafe/jev-1.13-20260917", latency_ms=321, cost=0.0001, error="")
-    return V(decision="allow", reason="nothing at stake (pre-filter)", asked=False, triggers=[],
-             facts={}, model="", latency_ms=0, cost=0.0, error="")
+req = json.loads(sys.stdin.read() or "{}")
+with open(os.path.join(HERE, "seen.json"), "w") as f:
+    json.dump({"req": req, "argv": sys.argv[1:], "gateway": os.environ.get("JEV_GATEWAY_URL"),
+               "caller_env": os.environ.get("JEV_CALLER"),
+               "server_secret_in_env": "POSTGRES_PASSWORD" in os.environ}, f)
+ti = req.get("tool_input") or {}
+cmd = str(ti.get("command", ""))
+word = cmd.split(" ")[0] if cmd else ""
+def out(**d):
+    base = {"outcome": "allow", "stage": "prefilter", "reason": "nothing at stake (pre-filter)",
+            "verdict": None, "judge": None, "mode": "enforce", "enforced": True, "would": "",
+            "cli": req.get("cli"), "profile": req.get("profile"), "elapsed_ms": 1, "user_runs_it": False}
+    base.update(d)
+    print(json.dumps(base))
+if word == "rm":
+    out(outcome="deny", stage="judge", reason="deletes another project's files")
+elif word == "logonly":
+    out(outcome="allow", stage="jev", reason="would deny: deletes data", mode="log-only",
+        enforced=False, would="deny")
+elif word == "denyraw":
+    out(outcome="deny", stage="jev", reason="a would-deny printed as deny", mode="log-only", enforced=False)
+elif word == "floor":
+    out(outcome="deny", stage="open_check", reason="HARD STOP: opens a secret file")
+elif word == "control":
+    out(outcome="deny", stage="code", reason="code: control API write", user_runs_it=True)
+elif word == "ask":
+    out(outcome="ask", stage="not_judged", reason="agy can't read it")
+elif word == "sleep":
+    time.sleep(30)
+elif word == "crash":
+    raise RuntimeError("boom")
+elif word == "garbage":
+    print("this is not a decision")
+elif word == "trailing":
+    print("a warning line first")
+    out(outcome="deny", stage="judge", reason="denied after noise")
+else:
+    out()
 `;
 
 function fakeScripts(name: string): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'jev_guard.py'), FAKE_JEV_GUARD);
+  writeFileSync(join(dir, 'session_guard.py'), FAKE_SESSION_GUARD);
   return dir;
 }
 
@@ -69,47 +102,41 @@ function config(scriptsDir: string, logDir: string, extra: Partial<JevShadowConf
 
 function call(command: string, extra: Partial<ShadowCall> = {}): ShadowCall {
   return {
-    provider: 'claude',
+    provider: 'codex',
     toolName: 'Bash',
     toolInput: { command },
-    cwd: '/work/tree',
+    cwd: '/work/tree/pkg',
     projectRoot: '/work/tree',
-    env: { PATH: '/usr/bin', DATABASE_URL: 'postgresql://x.invalid/none', GH_TOKEN: 'SECRET333' },
-    userRequest: 'clean up SECRET444',
+    env: { PATH: '/usr/bin', DATABASE_URL: 'postgresql://x.invalid/none', GH_TOKEN: 'tok' },
+    userRequest: 'clean up the build',
     runId: 'run-1',
     nodeId: 'implement',
-    workflow: 'probe',
+    workflow: 'archon-sdlc-deliver',
+    workflowSource: 'bundled',
+    requestSource: 'user',
     archonGuard: 'pass',
     ...extra,
   };
 }
 
-/** Wait for the detached judge to append its line (judge logs local days, the TS side UTC days: read both). */
-async function logLines(logDir: string, n = 1): Promise<Record<string, unknown>[]> {
-  for (let i = 0; i < 100; i++) {
-    const day = new Date();
-    const names = new Set<string>();
-    for (const d of [
-      day,
-      new Date(day.getTime() - 86_400_000),
-      new Date(day.getTime() + 86_400_000),
-    ]) {
-      names.add(
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      );
-      names.add(d.toISOString().slice(0, 10));
-    }
-    const all: Record<string, unknown>[] = [];
-    for (const name of names) {
-      const p = join(logDir, `${name}.jsonl`);
-      if (existsSync(p))
-        for (const l of readFileSync(p, 'utf8').trim().split('\n').filter(Boolean))
-          all.push(JSON.parse(l) as Record<string, unknown>);
-    }
-    if (all.length >= n) return all;
-    await Bun.sleep(50);
-  }
-  throw new Error(`no ${n} log line(s) in ${logDir}`);
+function seen(dir: string): {
+  req: Record<string, unknown>;
+  argv: string[];
+  gateway: string | null;
+  caller_env: string | null;
+  server_secret_in_env: boolean;
+} {
+  return JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) as ReturnType<typeof seen>;
+}
+
+function logLines(logDir: string): Record<string, unknown>[] {
+  const p = join(logDir, `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  if (!existsSync(p)) return [];
+  return readFileSync(p, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l) as Record<string, unknown>);
 }
 
 describe('resolveJevShadowConfig', () => {
@@ -124,8 +151,11 @@ describe('resolveJevShadowConfig', () => {
     ).toBeNull();
   });
 
-  test('a folder without jev_guard.py means off', () => {
-    expect(resolveJevShadowConfig({ ARCHON_JEV_SCRIPTS_DIR: root }, '/h')).toBeNull();
+  test('a folder without session_guard.py means off', () => {
+    const dir = join(root, 'only-jev-guard');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'jev_guard.py'), '');
+    expect(resolveJevShadowConfig({ ARCHON_JEV_SCRIPTS_DIR: dir }, '/h')).toBeNull();
   });
 
   test('resolved: log under the Archon home, gateway from ARCHON_LLM_GATEWAY_URL, caller archon', () => {
@@ -150,6 +180,65 @@ describe('resolveJevShadowConfig', () => {
   });
 });
 
+describe('readArchonGuardMode (the root-owned mode file)', () => {
+  const file = (name: string, body: string): string => {
+    const p = join(root, name);
+    writeFileSync(p, body);
+    chmodSync(p, 0o644);
+    return p;
+  };
+
+  test('the archon key, else default, else log-only', () => {
+    expect(readArchonGuardMode(file('m1.json', '{"archon":"enforce","claude":"off"}'), false)).toBe(
+      'enforce'
+    );
+    expect(readArchonGuardMode(file('m2.json', '{"default":"off"}'), false)).toBe('off');
+    expect(readArchonGuardMode(file('m3.json', '{"codex":"enforce"}'), false)).toBe('log-only');
+  });
+
+  test('missing, malformed or an unknown value is log-only', () => {
+    expect(readArchonGuardMode(join(root, 'nope.json'), false)).toBe('log-only');
+    expect(readArchonGuardMode(file('m4.json', 'not json'), false)).toBe('log-only');
+    expect(readArchonGuardMode(file('m5.json', '{"archon":"ENFORCE"}'), false)).toBe('log-only');
+    expect(readArchonGuardMode(file('m6.json', '["enforce"]'), false)).toBe('log-only');
+    expect(readArchonGuardMode(root, false)).toBe('log-only'); // a folder, not a file
+  });
+
+  test('a present archon key wins even when null or unknown, as session_guard.read_mode reads it', () => {
+    // Python: data.get("archon", data.get("default")) -> None -> log-only, never the default.
+    expect(readArchonGuardMode(file('m9.json', '{"archon":null,"default":"enforce"}'), false)).toBe(
+      'log-only'
+    );
+    expect(
+      readArchonGuardMode(file('m10.json', '{"archon":"bogus","default":"enforce"}'), false)
+    ).toBe('log-only');
+  });
+
+  test('an unreadable file is log-only', () => {
+    const p = file('m11.json', '{"archon":"enforce"}');
+    chmodSync(p, 0o000);
+    if (process.getuid?.() !== 0) expect(readArchonGuardMode(p, false)).toBe('log-only');
+    chmodSync(p, 0o644);
+  });
+
+  test("a file that is not root's is ignored: log-only (an agent cannot switch it on or off)", () => {
+    const p = file('m7.json', '{"archon":"enforce"}');
+    if (process.getuid?.() !== 0) expect(readArchonGuardMode(p)).toBe('log-only');
+  });
+
+  test('a group- or world-writable file is ignored even when not checking the owner', () => {
+    const p = file('m8.json', '{"archon":"enforce"}');
+    chmodSync(p, 0o666);
+    // requireRoot=false skips the owner check only; the writable bits still count when it is on
+    expect(readArchonGuardMode(p, false)).toBe('enforce');
+    if (process.getuid?.() !== 0) expect(readArchonGuardMode(p, true)).toBe('log-only');
+  });
+
+  test('the real path is the one session_guard reads', () => {
+    expect(JEV_GUARD_MODE_FILE).toBe('/etc/stixed/jev-guard-mode.json');
+  });
+});
+
 describe('claudeShapedCall (Codex/Grok calls in Claude vocabulary)', () => {
   test('shell calls become Bash', () => {
     expect(
@@ -168,11 +257,11 @@ describe('claudeShapedCall (Codex/Grok calls in Claude vocabulary)', () => {
     expect(
       claudeShapedCall(
         ['Write'],
-        ['/w/x.env'],
-        { file_path: '/w/x.env', content: 'K=v' },
+        ['/w/x.txt'],
+        { file_path: '/w/x.txt', content: 'K=v' },
         undefined
       )
-    ).toEqual({ toolName: 'Write', toolInput: { file_path: '/w/x.env', content: 'K=v' } });
+    ).toEqual({ toolName: 'Write', toolInput: { file_path: '/w/x.txt', content: 'K=v' } });
   });
 
   test('reads, searches and plans are not judged', () => {
@@ -182,220 +271,253 @@ describe('claudeShapedCall (Codex/Grok calls in Claude vocabulary)', () => {
   });
 });
 
-describe('payload', () => {
-  test("Archon's hook plumbing is not part of the env the judge sees", () => {
-    const env = judgeEnv({
-      ARCHON_HOOK_SPEC: '/tmp/s.json',
-      ARCHON_HOOK_EVENTS: 'PreToolUse',
-      A: '1',
-    });
-    expect(env).toEqual({ A: '1' });
-  });
-
-  test('big inputs are clipped so the payload fits a pipe buffer', () => {
-    const p = shadowPayload(
-      call('x', { toolName: 'Write', toolInput: { file_path: 'f', content: 'a'.repeat(200_000) } }),
-      config('/s', '/l')
-    );
-    expect(p.length).toBeLessThan(40_000);
-  });
-});
-
-describe('shadowJudge (real python, fake jev_guard)', () => {
-  test('a verdict is logged, redacted, with no env, request or fact values', async () => {
-    const dir = fakeScripts('judge-deny');
-    const logDir = join(root, 'log-deny');
-    await shadowJudge(
-      call('rm -rf src SECRET555'),
-      config(dir, logDir, { gatewayUrl: 'http://gw:8093/openrouter/v1/systemone' })
-    );
-    const [entry] = await logLines(logDir);
-    expect(entry).toMatchObject({
-      provider: 'claude',
+describe('guardRequest (what session_guard reads on stdin)', () => {
+  test('profile archon, the call, the env, and exactly the archon channel context', () => {
+    const req = JSON.parse(
+      guardRequest(
+        call('git push -u origin HEAD', { parentRunId: 'parent-9', requestSource: 'parent_run' })
+      )
+    ) as Record<string, unknown>;
+    expect(req).toMatchObject({
+      cli: 'codex',
       tool: 'Bash',
-      decision: 'deny',
-      asked: true,
+      tool_input: { command: 'git push -u origin HEAD' },
+      cwd: '/work/tree/pkg',
+      profile: 'archon',
+      deadline_s: GUARD_DEADLINE_S,
+    });
+    expect(req.context).toEqual({
+      user_request: 'clean up the build',
+      workflow: 'archon-sdlc-deliver',
+      workflow_source: 'bundled',
+      request_source: 'parent_run',
+      parent_run_id: 'parent-9',
       run_id: 'run-1',
       node_id: 'implement',
-      workflow: 'probe',
-      archon_guard: 'pass',
-      fact_keys: ['live_values', 'project'],
-      model: 'typesafe/jev-1.13-20260917',
     });
-    const text = JSON.stringify(entry);
-    expect(text).not.toMatch(/SECRET\d/); // redacted call, reason, triggers; no fact values
-    expect(text).not.toContain('clean up'); // the user request is never logged
-    expect(text).not.toContain('postgresql'); // nor the env
-
-    // what jev_guard was handed
-    const seen = JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    expect(seen.caller).toBe('archon');
-    expect(seen.gateway).toBe('http://gw:8093/openrouter/v1/systemone');
-    expect(seen.server_secret_in_env).toBe(false); // the judge process gets a minimal env
-    expect(seen.context).toMatchObject({
-      cwd: '/work/tree',
-      project_root: '/work/tree',
-      user_request: 'clean up SECRET444',
-      env: { DATABASE_URL: 'postgresql://x.invalid/none', GH_TOKEN: 'SECRET333', PATH: '/usr/bin' },
-    });
+    expect((req as { env: Record<string, string> }).env.GH_TOKEN).toBe('tok');
   });
 
-  test('a crash inside jev_guard is one error line', async () => {
-    const dir = fakeScripts('judge-crash');
-    const logDir = join(root, 'log-crash');
-    await shadowJudge(call('crash now'), config(dir, logDir));
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('error');
-    expect(String(entry.error)).toContain('RuntimeError');
-    expect(String(entry.error)).not.toContain('SECRET999');
+  test('unknown run fields are left out, not sent empty', () => {
+    const req = JSON.parse(
+      guardRequest(
+        call('ls', {
+          workflowSource: undefined,
+          requestSource: undefined,
+          workflow: undefined,
+          userRequest: undefined,
+        })
+      )
+    ) as { context: Record<string, unknown> };
+    expect(req.context).not.toHaveProperty('workflow_source');
+    expect(req.context).not.toHaveProperty('request_source');
+    expect(req.context).not.toHaveProperty('parent_run_id');
+    expect(req.context.user_request).toBe('');
   });
 
-  test('a scripts folder that vanished is one error line', async () => {
-    const logDir = join(root, 'log-missing');
-    await shadowJudge(call('ls'), config(join(root, 'nowhere'), logDir));
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('error');
-    expect(String(entry.error)).toContain('ModuleNotFoundError');
+  test("Archon's hook plumbing is not part of the env the guard sees", () => {
+    expect(
+      judgeEnv({ ARCHON_HOOK_SPEC: '/tmp/s.json', ARCHON_HOOK_EVENTS: 'PreToolUse', A: '1' })
+    ).toEqual({ A: '1' });
   });
 
-  test('no python: logged from this side, the promise still settles', async () => {
-    const logDir = join(root, 'log-nopython');
-    await shadowJudge(call('ls'), config('/s', logDir, { python: '/nonexistent/python3' }));
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('error');
-    expect(String(entry.error)).toContain('judge did not start');
-  });
-
-  test('the caller never waits for the judgement (returns before the judge answers)', async () => {
-    const dir = fakeScripts('judge-slow');
-    writeFileSync(
-      join(dir, 'jev_guard.py'),
-      `${FAKE_JEV_GUARD}\nimport time\n_d = decide\ndef decide(*a):\n    time.sleep(1.5)\n    return _d(*a)\n`
+  test('big inputs are clipped so the payload fits a pipe buffer; cycles do not throw', () => {
+    const p = guardRequest(
+      call('x', { toolName: 'Write', toolInput: { file_path: 'f', content: 'a'.repeat(200_000) } })
     );
-    const logDir = join(root, 'log-slow');
-    const t = performance.now();
-    await shadowJudge(call('ls'), config(dir, logDir));
-    expect(performance.now() - t).toBeLessThan(1000);
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('allow');
-  });
-});
-
-describe('concurrency cap and timeout (shadow stays log-only)', () => {
-  const SLEEPY = `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    time.sleep(2)\n    return V(decision="allow", reason="", asked=False, triggers=[], facts={}, model="", latency_ms=0, cost=0.0, error="")\n`;
-
-  test('cap reached: the extra call is skipped, logged "skipped: busy", and nothing throws', async () => {
-    const dir = fakeScripts('judge-cap');
-    writeFileSync(join(dir, 'jev_guard.py'), SLEEPY);
-    const logDir = join(root, 'log-cap');
-    const cfg = config(dir, logDir);
-    for (let i = 0; i < MAX_CONCURRENT_JUDGES; i++) await shadowJudge(call('ls'), cfg, 10);
-    expect(judgesInFlight()).toBe(MAX_CONCURRENT_JUDGES);
-    await shadowJudge(call('ls extra'), cfg, 10); // resolves, does not reject
-    const lines = await logLines(logDir);
-    const skipped = lines.filter(l => l.decision === 'skipped');
-    expect(skipped).toHaveLength(1);
-    expect(skipped[0].error).toBe('skipped: busy');
-    // the slots come back once the judges finish
-    for (let i = 0; i < 100 && judgesInFlight() > 0; i++) await Bun.sleep(100);
-    expect(judgesInFlight()).toBe(0);
-    await logLines(logDir, MAX_CONCURRENT_JUDGES + 1);
-    await shadowJudge(call('ls again'), cfg, 10);
-    expect(judgesInFlight()).toBe(1);
-  }, 20_000);
-
-  test('timeout: the judge logs it and exits even when jev_guard swallows exceptions', async () => {
-    const dir = fakeScripts('judge-timeout');
-    writeFileSync(
-      join(dir, 'jev_guard.py'),
-      `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    while True:\n        try:\n            time.sleep(30)\n        except Exception:\n            pass\n`
-    );
-    const logDir = join(root, 'log-timeout');
-    const payload = JSON.parse(shadowPayload(call('ls'), config(dir, logDir))) as {
-      config: { timeout_s: number };
-    };
-    payload.config.timeout_s = 1;
-    const t = performance.now();
-    const proc = Bun.spawn(['python3', '-I', '-c', JUDGE_SCRIPT], {
-      stdin: new TextEncoder().encode(JSON.stringify(payload)),
-      stdout: 'ignore',
-      stderr: 'ignore',
-    });
-    await proc.exited;
-    expect(performance.now() - t).toBeLessThan(10_000);
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('error');
-    expect(String(entry.error)).toContain('timeout');
-  }, 20_000);
-});
-
-describe('cross-process slots, backstop and payload errors', () => {
-  const PY = existsSync('/usr/bin/python3') ? '/usr/bin/python3' : 'python3';
-  const SLEEPY = `${FAKE_JEV_GUARD}\nimport time\ndef decide(*a):\n    time.sleep(2.5)\n    return V(decision="allow", reason="", asked=False, triggers=[], facts={}, model="", latency_ms=0, cost=0.0, error="")\n`;
-
-  test('separate processes share the 4 slots: at most 4 judge, the rest log "skipped: busy"', async () => {
-    const dir = fakeScripts('judge-slots');
-    writeFileSync(join(dir, 'jev_guard.py'), SLEEPY);
-    const logDir = join(root, 'log-slots');
-    const payload = shadowPayload(call('ls'), config(dir, logDir));
-    const procs = Array.from({ length: 8 }, () =>
-      Bun.spawn([PY, '-I', '-c', JUDGE_SCRIPT], {
-        stdin: new TextEncoder().encode(payload),
-        stdout: 'ignore',
-        stderr: 'ignore',
-      })
-    );
-    await Promise.all(procs.map(p => p.exited));
-    const lines = await logLines(logDir, 8);
-    expect(lines).toHaveLength(8);
-    expect(lines.filter(l => l.decision === 'allow')).toHaveLength(MAX_CONCURRENT_JUDGES);
-    const skipped = lines.filter(l => l.decision === 'skipped');
-    expect(skipped).toHaveLength(8 - MAX_CONCURRENT_JUDGES);
-    for (const l of skipped) expect(l.error).toBe('skipped: busy');
-  }, 30_000);
-
-  test('a judge whose stdin never closes exits by the backstop', async () => {
-    const dir = fakeScripts('judge-backstop');
-    const t = performance.now();
-    const proc = Bun.spawn([PY, '-I', '-c', JUDGE_SCRIPT], {
-      stdin: 'pipe', // never written, never ended
-      stdout: 'ignore',
-      stderr: 'ignore',
-      env: { ...process.env, ARCHON_JEV_BACKSTOP_S: '1' },
-    });
-    const code = await Promise.race([proc.exited, Bun.sleep(15_000).then(() => 'hung')]);
-    if (code === 'hung') proc.kill('SIGKILL');
-    expect(code).toBe(0);
-    expect(performance.now() - t).toBeLessThan(10_000);
-    expect(existsSync(dir)).toBe(true);
-  }, 30_000);
-
-  test('a payload that cannot be built starts no judge and is logged', async () => {
-    const dir = fakeScripts('judge-badpayload');
-    const logDir = join(root, 'log-badpayload');
-    const cyclic: Record<string, unknown> = {};
+    expect(p.length).toBeLessThan(40_000);
+    const cyclic: Record<string, unknown> = { command: 'ls' };
     cyclic.self = cyclic;
-    const before = judgesInFlight();
-    await shadowJudge(call('ls', { toolInput: cyclic }), config(dir, logDir), 10);
-    expect(judgesInFlight()).toBe(before);
-    const [entry] = await logLines(logDir);
-    expect(entry.decision).toBe('error');
-    expect(String(entry.error)).toContain('judge did not start');
+    expect(() => guardRequest(call('ls', { toolInput: cyclic }))).not.toThrow();
+  });
+
+  test('callContext copies the GuardContext fields that are set', () => {
+    expect(
+      callContext({
+        runId: 'r',
+        requestSource: 'trigger',
+        workflowSource: 'repo',
+        parentRunId: 'p',
+      })
+    ).toEqual({ runId: 'r', requestSource: 'trigger', workflowSource: 'repo', parentRunId: 'p' });
+    expect(callContext(undefined)).toEqual({});
   });
 });
 
-describe('the real promoted jev_guard (no network: a call with nothing at stake)', () => {
-  const real = DEFAULT_JEV_SCRIPTS_DIR;
-  test.skipIf(!existsSync(join(real, 'jev_guard.py')))(
-    '`ls -la` is judged allow by the pre-filter and logged',
-    async () => {
-      const logDir = join(root, 'log-real');
-      await shadowJudge(call('ls -la', { cwd: root, projectRoot: root }), config(real, logDir));
-      const [entry] = await logLines(logDir);
-      expect(entry).toMatchObject({ decision: 'allow', asked: false, call: 'ls -la' });
+describe("recent_blocked_calls (the session's own refusals)", () => {
+  test('sent in the context when the caller keeps them (last 5), left out otherwise', () => {
+    const blocked = Array.from({ length: 7 }, (_, i) => ({ call: `c${i}`, blocked_by: 'b' }));
+    const req = JSON.parse(guardRequest(call('ls', { recentBlockedCalls: blocked })));
+    expect(req.context.recent_blocked_calls).toEqual(blocked.slice(-5));
+    const none = JSON.parse(guardRequest(call('ls')));
+    expect('recent_blocked_calls' in none.context).toBe(false);
+  });
+
+  test('RecentBlocks keeps enforced denies only, the last 5 of the last 10 minutes', () => {
+    let now = 0;
+    const blocks = new RecentBlocks(10 * 60_000, 5, () => now);
+    const c = (command: string) =>
+      ({ provider: 'codex', toolName: 'Bash', toolInput: { command } }) as const;
+    const deny: GuardVerdict = { decision: 'deny', reason: 'r', stage: 'jev' };
+    blocks.add(c('allowed'), { decision: 'allow', reason: 'r', stage: 'jev' });
+    expect(blocks.list()).toEqual([]);
+    for (let i = 0; i < 6; i++) blocks.add(c(`x${i}`), deny);
+    expect(blocks.list().map(b => b.call)).toEqual(['x1', 'x2', 'x3', 'x4', 'x5']);
+    expect(blocks.list()[0].blocked_by).toBe('jev:archon-codex:jev');
+    now = 10 * 60_000 + 1;
+    expect(blocks.list()).toEqual([]);
+  });
+
+  test('a write or fetch is named by its path or URL', () => {
+    expect(blockedCallText('Write', { file_path: '/a/b', content: 'secret text' })).toBe(
+      'Write /a/b'
+    );
+    expect(blockedCallText('WebFetch', { url: 'https://x.test/' })).toBe(
+      'WebFetch https://x.test/'
+    );
+  });
+});
+
+describe('verdictOf (reading the Decision)', () => {
+  const d = (o: Record<string, unknown>): string => JSON.stringify(o);
+
+  test('must stop: an enforced deny denies with the guard reason and the next step', () => {
+    const v = verdictOf(
+      d({ outcome: 'deny', stage: 'judge', reason: 'no', enforced: true, mode: 'enforce' })
+    );
+    expect(v.decision).toBe('deny');
+    expect(v.reason).toContain('jev-guard: denied (no)');
+    expect(v.reason).toContain('Nothing ran.');
+  });
+
+  test('must stop: a floor deny keeps its own words (HARD STOP)', () => {
+    const v = verdictOf(
+      d({ outcome: 'deny', stage: 'open_check', reason: 'HARD STOP: x', enforced: true })
+    );
+    expect(v).toMatchObject({ decision: 'deny', reason: 'HARD STOP: x', stage: 'open_check' });
+  });
+
+  test('must pass: allow, and a log-only would-deny (enforced false), even printed as deny', () => {
+    expect(verdictOf(d({ outcome: 'allow', stage: 'prefilter', reason: 'ok' })).decision).toBe(
+      'allow'
+    );
+    expect(
+      verdictOf(d({ outcome: 'allow', stage: 'jev', reason: 'r', enforced: false, would: 'deny' }))
+        .decision
+    ).toBe('allow');
+    expect(
+      verdictOf(d({ outcome: 'deny', stage: 'jev', reason: 'r', enforced: false })).decision
+    ).toBe('allow');
+  });
+
+  test('must stop: ask (no human in a run), nothing, or garbage', () => {
+    expect(verdictOf(d({ outcome: 'ask', stage: 'not_judged', reason: 'r' })).decision).toBe(
+      'deny'
+    );
+    expect(verdictOf('').decision).toBe('deny');
+    expect(verdictOf('not json').decision).toBe('deny');
+    expect(verdictOf('[1,2]').decision).toBe('deny');
+  });
+
+  test('the Decision is the last JSON line (a warning printed before it is skipped)', () => {
+    expect(verdictOf(`warn\n${d({ outcome: 'allow', stage: 'read', reason: 'r' })}`).decision).toBe(
+      'allow'
+    );
+  });
+});
+
+describe('judgeCall (real python, fake session_guard; no model calls)', () => {
+  const dir = fakeScripts('judge');
+  const logDir = join(root, 'judge-log');
+  const cfg = config(dir, logDir, { gatewayUrl: 'http://gw:8093/openrouter/v1/systemone' });
+
+  test('must pass: an allow lets the call run; the guard got the call, the caller and the gateway', async () => {
+    const v = await judgeCall(call('ls -la'), cfg);
+    expect(v).toMatchObject({ decision: 'allow', stage: 'prefilter', mode: 'enforce' });
+    const s = seen(dir);
+    expect(s.argv).toEqual(['--stdin-json', '--caller', 'archon']);
+    expect(s.req.profile).toBe('archon');
+    expect(s.gateway).toBe('http://gw:8093/openrouter/v1/systemone');
+    expect(s.caller_env).toBe('archon');
+  });
+
+  test('the guard process does not inherit the server env (secrets reach it only as the call env)', async () => {
+    const saved = process.env.POSTGRES_PASSWORD;
+    process.env.POSTGRES_PASSWORD = 'server-secret';
+    try {
+      await judgeCall(call('ls'), cfg);
+    } finally {
+      if (saved === undefined) delete process.env.POSTGRES_PASSWORD;
+      else process.env.POSTGRES_PASSWORD = saved;
     }
-  );
+    expect(seen(dir).server_secret_in_env).toBe(false);
+  });
+
+  test('must stop: an enforced deny', async () => {
+    const v = await judgeCall(call('rm -rf ../other-project'), cfg);
+    expect(v.decision).toBe('deny');
+    expect(v.reason).toContain("deletes another project's files");
+  });
+
+  test('must stop: a floor deny keeps its HARD STOP words', async () => {
+    const v = await judgeCall(call('floor cat secrets'), cfg);
+    expect(v).toMatchObject({ decision: 'deny', stage: 'open_check' });
+    expect(v.reason).toBe('HARD STOP: opens a secret file');
+  });
+
+  test("must stop: a control-API write is the user's to run", async () => {
+    const v = await judgeCall(call('control post'), cfg);
+    expect(v.decision).toBe('deny');
+    expect(v.reason).toContain("This is the user's to run");
+  });
+
+  test('must pass: a log-only would-deny lets the call run', async () => {
+    expect((await judgeCall(call('logonly rm -rf data'), cfg)).decision).toBe('allow');
+    expect((await judgeCall(call('denyraw rm -rf data'), cfg)).decision).toBe('allow');
+  });
+
+  test('must stop: ask, garbage output, a crash', async () => {
+    expect((await judgeCall(call('ask x'), cfg)).decision).toBe('deny');
+    const g = await judgeCall(call('garbage'), cfg);
+    expect(g).toMatchObject({ decision: 'deny', stage: 'archon:unreadable' });
+    const c = await judgeCall(call('crash now'), cfg);
+    expect(c).toMatchObject({ decision: 'deny', stage: 'archon:crash' });
+    expect(c.reason).toContain('exited with code 1');
+  });
+
+  test('a Decision after noise on stdout is still read', async () => {
+    expect((await judgeCall(call('trailing'), cfg)).decision).toBe('deny');
+  });
+
+  test('must stop: no verdict before the backstop kills the guard', async () => {
+    const t = performance.now();
+    const v = await judgeCall(call('sleep forever'), cfg, 400);
+    expect(performance.now() - t).toBeLessThan(5_000);
+    expect(v).toMatchObject({ decision: 'deny', stage: 'archon:deadline' });
+    expect(v.reason).toContain('no verdict in 0.4 s');
+  });
+
+  test('the backstop is 40 s, above session_guard`s own 30 s deadline', () => {
+    expect(JUDGE_KILL_MS).toBe(40_000);
+    expect(GUARD_DEADLINE_S).toBe(30);
+  });
+
+  test('must stop: the guard cannot start (no python, no scripts)', async () => {
+    const v1 = await judgeCall(call('ls'), config(dir, logDir, { python: '/nonexistent/python3' }));
+    expect(v1.decision).toBe('deny');
+    const v2 = await judgeCall(call('ls'), config(join(root, 'nowhere'), logDir));
+    expect(v2).toMatchObject({ decision: 'deny', stage: 'archon:crash' });
+  });
+
+  test('each judged call is logged with outcome and stage only: no command, env, request or reason', async () => {
+    const lines = logLines(logDir);
+    expect(lines.length).toBeGreaterThan(5);
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain('rm -rf');
+    expect(text).not.toContain('tok');
+    expect(text).not.toContain('clean up the build');
+    expect(text).not.toContain("deletes another project's files");
+    expect(lines.some(l => l.decision === 'deny' && l.stage === 'judge')).toBe(true);
+    expect(lines.some(l => l.stage === 'archon:deadline')).toBe(true);
+  });
 });
