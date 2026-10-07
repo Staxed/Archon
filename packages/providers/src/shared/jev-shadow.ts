@@ -17,6 +17,15 @@
  *  - no Decision (the child crashed, printed nothing readable, or did not answer in
  *    40 s): deny. session_guard keeps its own 30 s deadline; 40 s is the backstop.
  *
+ * Where it runs: for Claude nodes, in the Archon server process (claude/jev-shadow-hook.ts).
+ * For Codex and Grok nodes the hook dispatcher (cli-hooks/hook-dispatcher.ts) is a
+ * child of the CLI, which never carries the Claude login (agent-env.ts), and
+ * session_guard's judge stage needs it. So the dispatcher sends each call to the
+ * server's judge relay (jev-relay.ts, a unix socket pinned into the run's spec as
+ * `relay`), which runs judgeCall here, with the server's config and env, and answers
+ * with the verdict alone. A relay it cannot reach leaves the call to judgeCall in the
+ * dispatcher: code floors and Jev still decide, the judge stage is unavailable.
+ *
  * The guard's own ledger (stixed's security log) holds the call and the reason,
  * redacted. This side appends one line per judged call to
  * `<archon home>/logs/jev-shadow/<YYYY-MM-DD>.jsonl` with the outcome, stage and
@@ -105,6 +114,12 @@ export interface JevShadowConfig {
   /** Full systemone URL; unset = jev_guard's own default (host or container spelling). */
   gatewayUrl?: string;
   caller: string;
+  /**
+   * The server's judge relay socket (jev-relay.ts), pinned by prepareHookRun for a
+   * Codex or Grok run only. The dispatcher sends its calls there; the server judges
+   * them with its own config, never with the fields of this one.
+   */
+  relay?: string;
 }
 
 /** Where the request behind a run came from (stixed's archon channel reads it). */
@@ -375,6 +390,20 @@ export function judgeEnv(env: Record<string, string | undefined>): Record<string
 }
 
 /**
+ * The tool_input the guard is sent: a patch keeps every header whole (fitPatch);
+ * everything else is clipped per string. Applying it twice changes nothing, so the
+ * relay client can clip before sending and the server clip again.
+ */
+export function guardToolInput(
+  toolName: string,
+  toolInput: Record<string, unknown>
+): Record<string, unknown> {
+  return toolName === 'apply_patch'
+    ? { patch: fitPatch(str(toolInput.patch) ?? '') }
+    : (clipStrings(toolInput, MAX_TEXT) as Record<string, unknown>);
+}
+
+/**
  * The JSON session_guard reads on stdin (`--stdin-json`, the archon channel): the
  * call, the env the agent's tool runs with (`env`), and in `context` the run's
  * message (`user_request`), where it came from (`request_source`, `parent_run_id`),
@@ -399,11 +428,7 @@ export function guardRequest(call: ShadowCall): string {
   return JSON.stringify({
     cli: call.provider,
     tool: call.toolName,
-    // a patch keeps every header whole (fitPatch); everything else is clipped per string
-    tool_input:
-      call.toolName === 'apply_patch'
-        ? { patch: fitPatch(str(call.toolInput.patch) ?? '') }
-        : clipStrings(call.toolInput, MAX_TEXT),
+    tool_input: guardToolInput(call.toolName, call.toolInput),
     cwd: call.cwd,
     profile: 'archon',
     env: judgeEnv(call.env),
@@ -477,9 +502,10 @@ function denyText(stage: string, reason: string, userRunsIt: boolean): string {
  * The guard process's env: enough to run python, reach the gateway and start the judge,
  * nothing else. The judge (session_guard's judge_sdk.py child) runs the Claude CLI on the
  * user's subscription, so it gets the CLI's own login and the binary the entrypoint pinned
- * (CLAUDE_BIN_PATH, as stixed's STIXED_CLAUDE_CLI). Both are in the server's env (Claude
- * nodes); the Codex and Grok CLIs never carry the login (agent-env.ts), so their hook
- * dispatcher passes none.
+ * (CLAUDE_BIN_PATH, as stixed's STIXED_CLAUDE_CLI). Both are in the server's env, which
+ * judges Claude nodes' calls and, through the relay (jev-relay.ts), Codex and Grok
+ * nodes' calls. The Codex and Grok CLIs never carry the login (agent-env.ts), so a
+ * dispatcher that judges locally (no relay reachable) passes none.
  */
 export function judgeProcessEnv(
   config: JevShadowConfig,
@@ -543,14 +569,26 @@ export function logGuardCall(
   }
 }
 
+/** The deny for a guard that gave no verdict (it failed, or Archon's side did). */
+export function failClosed(stage: string, why: string): GuardVerdict {
+  return {
+    decision: 'deny',
+    stage,
+    reason: `jev-guard: denied (${why}; the call is denied, fail closed)\n${ANOTHER_WAY}`,
+  };
+}
+
 /**
  * Judge one call and wait for the verdict. Never rejects: a child that cannot
- * start, crashes, prints no Decision or outlives `killAfterMs` is a deny.
+ * start, crashes, prints no Decision or outlives `killAfterMs` is a deny. `note`
+ * goes into the call's log line (the relay's failure when the dispatcher judges
+ * locally instead).
  */
 export function judgeCall(
   call: ShadowCall,
   config: JevShadowConfig,
-  killAfterMs: number = JUDGE_KILL_MS
+  killAfterMs: number = JUDGE_KILL_MS,
+  note?: string
 ): Promise<GuardVerdict> {
   const started = performance.now();
   return new Promise<GuardVerdict>(resolve => {
@@ -558,18 +596,18 @@ export function judgeCall(
     const finish = (verdict: GuardVerdict, error?: string): void => {
       if (settled) return;
       settled = true;
-      logGuardCall(config, call, verdict, Math.round(performance.now() - started), error);
+      const logged = [note, error].filter(Boolean).join('; ');
+      logGuardCall(
+        config,
+        call,
+        verdict,
+        Math.round(performance.now() - started),
+        logged || undefined
+      );
       resolve(verdict);
     };
     const failed = (stage: string, why: string): void => {
-      finish(
-        {
-          decision: 'deny',
-          stage,
-          reason: `jev-guard: denied (${why}; the call is denied, fail closed)\n${ANOTHER_WAY}`,
-        },
-        why
-      );
+      finish(failClosed(stage, why), why);
     };
     let payload: string;
     try {

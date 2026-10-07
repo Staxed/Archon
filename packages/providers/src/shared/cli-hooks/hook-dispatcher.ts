@@ -24,7 +24,10 @@
  * guards let through then waits for the Jev guard (../jev-shadow.ts, stixed's
  * session guard, profile "archon"): its enforced deny, or no verdict at all
  * (crash, 40 s), is printed as the same deny. A log-only would-deny lets the call
- * run. The deny is the Claude-shaped JSON on stdout with exit 0 for both CLIs
+ * run. The verdict comes from the Archon server through its judge relay
+ * (../jev-relay.ts, a unix socket pinned in the spec), because the judge stage needs
+ * the Claude login and this process, a child of the CLI, never has it; a relay it
+ * cannot reach leaves the call to the guard run here, without the judge. The deny is the Claude-shaped JSON on stdout with exit 0 for both CLIs
  * (Grok treats a non-zero exit as a failed hook and fails open).
  *
  * This file is executed directly by the CLIs (`bun hook-dispatcher.ts <Event>`),
@@ -37,11 +40,11 @@ import {
   callContext,
   claudeShapedCall,
   jevDecidesFor,
-  judgeCall,
   type GuardVerdict,
   type JevShadowConfig,
   type ShadowCall,
 } from '../jev-shadow';
+import { relayJudge } from '../jev-relay';
 import type { GuardContext } from '../../types';
 
 export const HOOK_SPEC_ENV = 'ARCHON_HOOK_SPEC';
@@ -433,7 +436,7 @@ export async function decideHook(
   event: string,
   input: HookInput,
   env: Record<string, string | undefined>,
-  judge: GuardJudge = judgeCall
+  judge: GuardJudge = relayJudge
 ): Promise<Record<string, unknown> | undefined> {
   let out: Record<string, unknown> | undefined;
   try {
@@ -470,7 +473,7 @@ export async function runDispatcher(
   event: string,
   stdin: string,
   env: Record<string, string | undefined>,
-  judge: GuardJudge = judgeCall
+  judge: GuardJudge = relayJudge
 ): Promise<{ stdout: string; exitCode: number }> {
   const specPath = env[HOOK_SPEC_ENV];
   if (!specPath) return { stdout: '', exitCode: 0 };

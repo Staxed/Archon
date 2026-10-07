@@ -26,7 +26,10 @@
  *    agent nodes. Their scope is governed by github-token-policy.ts.
  *  - CLAUDE_CODE_OAUTH_TOKEN is the Claude CLI's own login: kept in the Claude
  *    CLI's env, unset in its Bash tool (CLAUDE_ENV_FILE, claudeBashEnvFile), and
- *    removed outright from the Codex and Grok CLIs, which never use it.
+ *    removed outright from the Codex and Grok CLIs, which never use it. The Jev
+ *    guard's judge for their tool calls does need it: their hook dispatcher sends
+ *    each call to the server's judge relay (jev-relay.ts), which judges it in the
+ *    server process, so the login never reaches the CLI, its tools or its hooks.
  *
  * This file imports node built-ins only (the CLI hook dispatcher imports it).
  */

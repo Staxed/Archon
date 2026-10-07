@@ -41,6 +41,7 @@ import {
 } from './hook-dispatcher';
 import { resolveRulesPath } from '../destructive-guard';
 import { resolveJevShadowConfig, type JevShadowConfig } from '../jev-shadow';
+import { ensureJevRelay } from '../jev-relay';
 import { getArchonHome } from '@archon/paths';
 
 /** Claude hook events the Codex CLI fires (codex 0.157), with Codex's snake_case name. */
@@ -318,6 +319,21 @@ function serverJevShadowConfig(): JevShadowConfig | null {
   }
 }
 
+/**
+ * The Jev config a Codex or Grok run pins: the server's own, plus the socket of the
+ * server's judge relay (../jev-relay.ts), started here on first use. The judge needs
+ * the Claude login, which only this process holds, so the run's dispatcher asks the
+ * relay for each verdict. A relay given by the caller is never kept: the socket is
+ * the server's choice. No relay (it could not start): the dispatcher judges locally.
+ */
+function withRelay(provider: HookCliProvider, jev: JevShadowConfig): JevShadowConfig {
+  const own: JevShadowConfig = { ...jev };
+  delete own.relay;
+  if (provider !== 'codex' && provider !== 'grok') return own;
+  const relay = ensureJevRelay(own);
+  return relay ? { ...own, relay } : own;
+}
+
 export interface PreparedHookRun {
   /** Env vars that switch the dispatcher on for this run. */
   env: Record<string, string>;
@@ -333,10 +349,11 @@ export function prepareHookRun(spec: HookRunSpec): PreparedHookRun {
   // The guard's rules file is the server's choice (its own environment), pinned
   // here so the CLI's environment cannot change it.
   // So is the Jev guard: which python, which scripts, which log.
+  const jev = 'jevShadow' in spec ? (spec.jevShadow ?? null) : serverJevShadowConfig();
   const pinned: HookRunSpec = {
     ...spec,
     rulesPath: 'rulesPath' in spec ? (spec.rulesPath ?? null) : (resolveRulesPath() ?? null),
-    jevShadow: 'jevShadow' in spec ? (spec.jevShadow ?? null) : serverJevShadowConfig(),
+    jevShadow: jev ? withRelay(spec.provider, jev) : null,
   };
   writeFileSync(path, JSON.stringify(pinned), { mode: 0o600 });
   const events = new Set<string>(['PreToolUse']);
