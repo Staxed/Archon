@@ -121,6 +121,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
 # Point agent-browser to system Chromium (avoids ~400MB Chrome for Testing download)
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 
+# Node 22 with npm and pnpm, for the projects' own validation (lint, build, tests):
+# the base image's `node` is only Bun's fallback shim, and Next.js projects
+# (af-website on pnpm; devsite, OmnisView, forumone on npm) need the real one.
+# Copied from the official image, after the agent-browser step purges apt's nodejs.
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && npm install -g pnpm@10 \
+    && npm cache clean --force \
+    && node --version && npm --version && pnpm --version
+
 # CLAUDE_BIN_PATH is set at container startup (docker-entrypoint.sh).
 # The entrypoint pins the glibc variant to bypass the SDK's musl-first resolver.
 
