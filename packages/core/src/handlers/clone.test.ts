@@ -1556,6 +1556,70 @@ describe('name-based deduplication', () => {
     expect(result.defaultBranch).toBe('trunk');
   });
 
+  describe('default_branch detection', () => {
+    function mockGit(remoteHead: string | Error, current: string): void {
+      spyExecFileAsync.mockImplementation((_cmd: string, args: string[]) => {
+        if (args.includes('--git-dir')) return Promise.resolve({ stdout: '.git', stderr: '' });
+        if (args.includes('symbolic-ref')) {
+          return remoteHead instanceof Error
+            ? Promise.reject(remoteHead)
+            : Promise.resolve({ stdout: `${remoteHead}\n`, stderr: '' });
+        }
+        if (args.includes('--abbrev-ref')) {
+          return Promise.resolve({ stdout: `${current}\n`, stderr: '' });
+        }
+        if (args.includes('get-url'))
+          return Promise.resolve({ stdout: 'https://github.com/owner/repo', stderr: '' });
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+    }
+
+    test('registers the remote default branch when the checkout is on a feature branch', async () => {
+      mockGit('origin/main', 'feat/pearl-partner-api');
+      mockFindCodebaseByDefaultCwd.mockResolvedValueOnce(null);
+      mockCreateCodebase.mockResolvedValueOnce(makeCodebase({ default_cwd: '/home/user/repo' }));
+
+      await registerRepository('/home/user/repo');
+
+      expect(mockCreateCodebase).toHaveBeenCalledWith(
+        expect.objectContaining({ default_branch: 'main' })
+      );
+    });
+
+    test('falls back to the current branch when origin/HEAD is not set', async () => {
+      mockGit(new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref'), 'develop');
+      mockFindCodebaseByDefaultCwd.mockResolvedValueOnce(null);
+      mockCreateCodebase.mockResolvedValueOnce(makeCodebase({ default_cwd: '/home/user/repo' }));
+
+      await registerRepository('/home/user/repo');
+
+      expect(mockCreateCodebase).toHaveBeenCalledWith(
+        expect.objectContaining({ default_branch: 'develop' })
+      );
+    });
+
+    test('keeps an existing non-empty default_branch', async () => {
+      mockGit('origin/main', 'feat/other');
+      mockFindCodebaseByDefaultCwd.mockResolvedValueOnce(null);
+      mockFindCodebaseByName.mockResolvedValueOnce(
+        makeCodebase({
+          id: 'existing-id',
+          name: 'owner/repo',
+          default_cwd: '/home/user/repo',
+          default_branch: 'release',
+        })
+      );
+
+      const result = await registerRepository('/home/user/repo');
+
+      expect(mockUpdateCodebase).not.toHaveBeenCalledWith(
+        'existing-id',
+        expect.objectContaining({ default_branch: expect.anything() })
+      );
+      expect(result.defaultBranch).toBe('release');
+    });
+  });
+
   test('should not downgrade default_cwd from local to managed path', async () => {
     // Existing codebase registered via local path
     const existingCodebase = makeCodebase({

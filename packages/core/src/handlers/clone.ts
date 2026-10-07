@@ -179,18 +179,37 @@ export interface RegisterResult {
   alreadyExisted: boolean;
 }
 
-async function detectCurrentGitBranch(targetPath: string): Promise<string | null> {
+async function runGitForBranch(targetPath: string, args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'git',
-      ['-C', targetPath, 'rev-parse', '--abbrev-ref', 'HEAD'],
-      { timeout: 5000 }
-    );
-    const branch = stdout.trim();
-    return branch && branch !== 'HEAD' ? branch : null;
+    const { stdout } = await execFileAsync('git', ['-C', targetPath, ...args], { timeout: 5000 });
+    return stdout.trim() || null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Branch to store as a project's default_branch at registration. The checkout's
+ * current branch is wherever the user last worked, not the base runs should
+ * branch from, so prefer the remote's default as git already recorded it
+ * (refs/remotes/origin/HEAD; read locally, no network). Only when that is unknown
+ * (no origin, or origin/HEAD never set) fall back to the current branch.
+ */
+export async function detectRegistrationBranch(targetPath: string): Promise<string | null> {
+  const remote = 'origin';
+  const remoteHead = await runGitForBranch(targetPath, [
+    'symbolic-ref',
+    '--short',
+    `refs/remotes/${remote}/HEAD`,
+  ]);
+  if (remoteHead) {
+    const branch = remoteHead.startsWith(`${remote}/`)
+      ? remoteHead.slice(remote.length + 1)
+      : remoteHead;
+    if (branch) return branch;
+  }
+  const current = await runGitForBranch(targetPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return current && current !== 'HEAD' ? current : null;
 }
 
 /**
@@ -205,7 +224,7 @@ async function registerRepoAtPath(
   existing: Codebase | null
 ): Promise<RegisterResult> {
   const suggestedAssistant = await resolveDefaultAssistant(targetPath);
-  const detectedBranch = await detectCurrentGitBranch(targetPath);
+  const detectedBranch = await detectRegistrationBranch(targetPath);
 
   if (existing) {
     const updates: {
