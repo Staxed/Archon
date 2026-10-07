@@ -32,6 +32,7 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { CLAUDE_LOGIN_ENV_KEYS } from './agent-env';
 
 export const JEV_SHADOW_ENV = 'ARCHON_JEV_SHADOW';
 export const JEV_SCRIPTS_DIR_ENV = 'ARCHON_JEV_SCRIPTS_DIR';
@@ -472,8 +473,18 @@ function denyText(stage: string, reason: string, userRunsIt: boolean): string {
   return `jev-guard: denied (${flat.slice(0, 900)})\n${userRunsIt ? USER_RUNS_IT : ANOTHER_WAY}`;
 }
 
-/** The guard process's env: enough to run python and reach the gateway, nothing else. */
-function judgeProcessEnv(config: JevShadowConfig): Record<string, string> {
+/**
+ * The guard process's env: enough to run python, reach the gateway and start the judge,
+ * nothing else. The judge (session_guard's judge_sdk.py child) runs the Claude CLI on the
+ * user's subscription, so it gets the CLI's own login and the binary the entrypoint pinned
+ * (CLAUDE_BIN_PATH, as stixed's STIXED_CLAUDE_CLI). Both are in the server's env (Claude
+ * nodes); the Codex and Grok CLIs never carry the login (agent-env.ts), so their hook
+ * dispatcher passes none.
+ */
+export function judgeProcessEnv(
+  config: JevShadowConfig,
+  server: Record<string, string | undefined> = process.env
+): Record<string, string> {
   const keep = [
     'PATH',
     'HOME',
@@ -488,10 +499,11 @@ function judgeProcessEnv(config: JevShadowConfig): Record<string, string> {
     'no_proxy',
   ];
   const out: Record<string, string> = {};
-  for (const k of keep) {
-    const v = process.env[k];
+  for (const k of [...keep, ...CLAUDE_LOGIN_ENV_KEYS]) {
+    const v = server[k];
     if (v !== undefined) out[k] = v;
   }
+  if (server.CLAUDE_BIN_PATH) out.STIXED_CLAUDE_CLI = server.CLAUDE_BIN_PATH;
   out.JEV_CALLER = config.caller || 'archon';
   if (config.gatewayUrl) out.JEV_GATEWAY_URL = config.gatewayUrl;
   return out;

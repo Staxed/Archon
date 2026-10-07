@@ -23,6 +23,7 @@ import {
   guardRequest,
   judgeCall,
   judgeEnv,
+  judgeProcessEnv,
   readArchonGuardMode,
   resolveJevShadowConfig,
   verdictOf,
@@ -48,7 +49,9 @@ req = json.loads(sys.stdin.read() or "{}")
 with open(os.path.join(HERE, "seen.json"), "w") as f:
     json.dump({"req": req, "argv": sys.argv[1:], "gateway": os.environ.get("JEV_GATEWAY_URL"),
                "caller_env": os.environ.get("JEV_CALLER"),
-               "server_secret_in_env": "POSTGRES_PASSWORD" in os.environ}, f)
+               "server_secret_in_env": "POSTGRES_PASSWORD" in os.environ,
+               "claude_login": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+               "claude_cli": os.environ.get("STIXED_CLAUDE_CLI")}, f)
 ti = req.get("tool_input") or {}
 cmd = str(ti.get("command", ""))
 word = cmd.split(" ")[0] if cmd else ""
@@ -126,6 +129,8 @@ function seen(dir: string): {
   gateway: string | null;
   caller_env: string | null;
   server_secret_in_env: boolean;
+  claude_login: string | null;
+  claude_cli: string | null;
 } {
   return JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) as ReturnType<typeof seen>;
 }
@@ -473,6 +478,35 @@ describe('verdictOf (reading the Decision)', () => {
   });
 });
 
+describe('judgeProcessEnv', () => {
+  const cfg = config('/scripts', '/logs');
+
+  test("keeps the runtime basics and the judge's Claude login and CLI; drops server secrets", () => {
+    const env = judgeProcessEnv(cfg, {
+      PATH: '/usr/bin',
+      HOME: '/home/bun',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-login',
+      CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh',
+      CLAUDE_BIN_PATH: '/app/claude',
+      POSTGRES_PASSWORD: 'server-secret',
+      DATABASE_URL: 'postgresql://archon',
+    });
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/bun',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-login',
+      CLAUDE_CODE_OAUTH_REFRESH_TOKEN: 'refresh',
+      STIXED_CLAUDE_CLI: '/app/claude',
+      JEV_CALLER: 'archon',
+    });
+  });
+
+  test('a Codex or Grok dispatcher (no Claude login in its env) passes none', () => {
+    const env = judgeProcessEnv(cfg, { PATH: '/usr/bin', HOME: '/home/bun' });
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/bun', JEV_CALLER: 'archon' });
+  });
+});
+
 describe('judgeCall (real python, fake session_guard; no model calls)', () => {
   const dir = fakeScripts('judge');
   const logDir = join(root, 'judge-log');
@@ -498,6 +532,25 @@ describe('judgeCall (real python, fake session_guard; no model calls)', () => {
       else process.env.POSTGRES_PASSWORD = saved;
     }
     expect(seen(dir).server_secret_in_env).toBe(false);
+  });
+
+  test("the judge gets the server's Claude login and pinned CLI, never in the call env", async () => {
+    const keys = ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_BIN_PATH'] as const;
+    const saved = keys.map(k => process.env[k]);
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-login';
+    process.env.CLAUDE_BIN_PATH = '/app/claude';
+    try {
+      await judgeCall(call('ls'), cfg);
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+    const s = seen(dir);
+    expect(s.claude_login).toBe('oauth-login');
+    expect(s.claude_cli).toBe('/app/claude');
+    expect(JSON.stringify(s.req)).not.toContain('oauth-login');
   });
 
   test('must stop: an enforced deny', async () => {
