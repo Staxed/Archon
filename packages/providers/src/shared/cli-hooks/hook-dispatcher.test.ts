@@ -77,6 +77,13 @@ describe('toolView', () => {
     expect(v).toEqual({ names: ['Write'], writes: ['/tmp/cprobe/probe.txt'], mcp: false });
   });
 
+  test('codex apply_patch headers are read with their indentation stripped, as Codex reads them', () => {
+    const v = toolView('codex', 'apply_patch', {
+      command: patch(['  *** Delete File: /etc/x', '*** Add File: /tmp/y', '+hi']),
+    });
+    expect(v.writes).toEqual(['/etc/x', '/tmp/y']);
+  });
+
   test('grok tool ids map back to Claude names; write tools expose file_path', () => {
     expect(toolView('grok', 'run_terminal_command', { command: 'ls' }).names).toEqual(['Bash']);
     expect(toolView('grok', 'write', { file_path: '/x/y', content: 'hi' })).toEqual({
@@ -584,6 +591,25 @@ describe("Jev guard (awaited after Archon's own guards)", () => {
     );
     expect(calls[0].toolInput).toEqual({ command: 'make clean' });
     expect(reasonOf(out)).toBe("no (after this node's hook rewrote the call)");
+  });
+
+  test('a Codex patch is judged whole: session_guard sees every file and delete', async () => {
+    const { calls, judge } = recording();
+    const body = patch([
+      '*** Update File: /work/tree/a.ts',
+      '+x',
+      '*** Update File: /work/tree/b.ts',
+      '+y',
+      '*** Delete File: /work/tree/old.ts',
+    ]);
+    await decideHook(
+      codex({ jevShadow: guard }),
+      'PreToolUse',
+      { tool_name: 'apply_patch', tool_input: { command: body } },
+      ENV,
+      judge
+    );
+    expect(calls.map(c => [c.toolName, c.toolInput])).toEqual([['apply_patch', { patch: body }]]);
   });
 
   test('Grok writes are judged; reads, MCP, other events and a spec without a guard are not', async () => {

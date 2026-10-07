@@ -156,7 +156,8 @@ const CODEX_TO_CLAUDE: Record<string, string[]> = {
 export function parseApplyPatch(patch: string): { op: 'Write' | 'Edit'; path: string }[] {
   const out: { op: 'Write' | 'Edit'; path: string }[] = [];
   for (const raw of patch.split('\n')) {
-    const line = raw.trimEnd();
+    // Codex reads a header with its indentation stripped
+    const line = raw.trim();
     const m = /^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$/.exec(line);
     if (!m) continue;
     out.push({ op: m[1] === 'Add File' ? 'Write' : 'Edit', path: m[2].trim() });
@@ -407,7 +408,7 @@ export function guardCallFor(
   const view = toolView(spec.provider, toolName, input.tool_input);
   if (view.mcp) return undefined;
   const command = shellCommand(input.tool_input);
-  const shaped = claudeShapedCall(view.names, view.writes, input.tool_input, command);
+  const shaped = claudeShapedCall(view.names, view.writes, input.tool_input, command, toolName);
   if (!shaped) return undefined;
   return {
     provider: spec.provider,

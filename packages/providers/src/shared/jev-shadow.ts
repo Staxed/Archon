@@ -148,7 +148,13 @@ export function blockedCallText(toolName: string, toolInput: Record<string, unkn
   const text =
     toolName === 'Bash'
       ? (str(toolInput.command) ?? '')
-      : `${toolName} ${str(toolInput.file_path) ?? str(toolInput.url) ?? str(toolInput.notebook_path) ?? ''}`;
+      : toolName === 'apply_patch'
+        ? `apply_patch ${(str(toolInput.patch) ?? '')
+            .split('\n')
+            .map(l => l.trim())
+            .filter(l => /^\*\*\* (Add File|Update File|Delete File|Move to): /.test(l))
+            .join('; ')}`
+        : `${toolName} ${str(toolInput.file_path) ?? str(toolInput.url) ?? str(toolInput.notebook_path) ?? ''}`;
   return text.trim().slice(0, 300);
 }
 
@@ -272,18 +278,26 @@ function str(v: unknown): string | undefined {
 /**
  * A Codex or Grok call in Claude's vocabulary, or undefined when nothing in it
  * is judged. `names` and `writes` come from the dispatcher's toolView; `command`
- * from its shellCommand (argv arrays already joined into one line).
+ * from its shellCommand (argv arrays already joined into one line); `toolName` is
+ * the CLI's own. A Codex apply_patch goes whole, as `apply_patch {patch}`:
+ * session_guard splits it into every file and delete (payload_calls), so each
+ * file gets its path rules and each delete the floor.
  */
 export function claudeShapedCall(
   names: string[],
   writes: string[],
   rawInput: unknown,
-  command: string | undefined
+  command: string | undefined,
+  toolName?: string
 ): { toolName: string; toolInput: Record<string, unknown> } | undefined {
   const input = (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<
     string,
     unknown
   >;
+  if (toolName === 'apply_patch') {
+    const patch = str(input.command) ?? str(input.patch) ?? str(input.input);
+    return patch ? { toolName: 'apply_patch', toolInput: { patch } } : undefined;
+  }
   if (names.includes('Bash')) {
     return command ? { toolName: 'Bash', toolInput: { command } } : undefined;
   }
@@ -293,13 +307,12 @@ export function claudeShapedCall(
   }
   const writeName = names.find(n => n === 'Write' || n === 'Edit' || n === 'MultiEdit');
   if (writeName) {
-    // apply_patch carries the patch; Grok's write/search_replace carry the text.
+    // Grok's write/search_replace carry the text.
     const text =
       str(input.content) ??
       str(input.new_string) ??
       str(input.replace) ??
       str(input.command) ??
-      str(input.patch) ??
       str(input.input) ??
       '';
     const filePath = writes[0] ?? str(input.file_path) ?? str(input.path);
@@ -309,6 +322,31 @@ export function claudeShapedCall(
       : { toolName: 'Edit', toolInput: { file_path: filePath, new_string: text } };
   }
   return undefined;
+}
+
+/** A patch header line (`*** Add File: x`, `*** Delete File: x`...), read as Codex reads it. */
+function isPatchHeader(line: string): boolean {
+  return line.trim().startsWith('*** ');
+}
+
+/**
+ * A patch cut to MAX_TEXT without losing a header: every `***` line is kept whole and the
+ * hunk lines fill what is left, in order, so a long file early in the patch never hides a
+ * later file or delete from the guard (guardRequest).
+ */
+export function fitPatch(patch: string, max: number = MAX_TEXT): string {
+  if (patch.length <= max) return patch;
+  const lines = patch.split('\n');
+  let left = max - lines.filter(isPatchHeader).reduce((n, l) => n + l.length + 1, 0);
+  const out: string[] = [];
+  for (const line of lines) {
+    if (isPatchHeader(line)) out.push(line);
+    else if (line.length + 1 <= left) {
+      out.push(line);
+      left -= line.length + 1;
+    }
+  }
+  return out.join('\n');
 }
 
 function clipStrings(value: unknown, max: number, seen = new WeakSet()): unknown {
@@ -360,7 +398,11 @@ export function guardRequest(call: ShadowCall): string {
   return JSON.stringify({
     cli: call.provider,
     tool: call.toolName,
-    tool_input: clipStrings(call.toolInput, MAX_TEXT),
+    // a patch keeps every header whole (fitPatch); everything else is clipped per string
+    tool_input:
+      call.toolName === 'apply_patch'
+        ? { patch: fitPatch(str(call.toolInput.patch) ?? '') }
+        : clipStrings(call.toolInput, MAX_TEXT),
     cwd: call.cwd,
     profile: 'archon',
     env: judgeEnv(call.env),

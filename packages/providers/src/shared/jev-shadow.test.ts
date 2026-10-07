@@ -19,6 +19,7 @@ import {
   blockedCallText,
   callContext,
   claudeShapedCall,
+  fitPatch,
   guardRequest,
   judgeCall,
   judgeEnv,
@@ -246,11 +247,57 @@ describe('claudeShapedCall (Codex/Grok calls in Claude vocabulary)', () => {
     ).toEqual({ toolName: 'Bash', toolInput: { command: 'bash -lc ls' } });
   });
 
-  test('apply_patch becomes an Edit carrying the patch', () => {
-    const patch = '*** Begin Patch\n*** Update File: a.ts\n+x\n*** End Patch';
+  test('apply_patch goes whole, for session_guard to split into every file and delete', () => {
+    const patch =
+      '*** Begin Patch\n*** Update File: a.ts\n+x\n*** Delete File: b.ts\n*** End Patch';
     expect(
-      claudeShapedCall(['Edit', 'MultiEdit'], ['a.ts'], { command: patch }, undefined)
-    ).toEqual({ toolName: 'Edit', toolInput: { file_path: 'a.ts', new_string: patch } });
+      claudeShapedCall(
+        ['Edit', 'MultiEdit'],
+        ['a.ts', 'b.ts'],
+        { command: patch },
+        undefined,
+        'apply_patch'
+      )
+    ).toEqual({ toolName: 'apply_patch', toolInput: { patch } });
+    expect(
+      claudeShapedCall(['Edit'], [], { command: '' }, undefined, 'apply_patch')
+    ).toBeUndefined();
+  });
+
+  test('a long patch keeps every header: a late delete is never clipped away', () => {
+    const pad = Array.from({ length: 600 }, (_, i) => `+line ${String(i)} ${'x'.repeat(50)}`);
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: docs/notes.md',
+      ...pad,
+      '  *** Delete File: secrets/key.pem',
+      '*** End Patch',
+    ].join('\n');
+    expect(patch.length).toBeGreaterThan(24_000);
+    const req = JSON.parse(
+      guardRequest({
+        provider: 'codex',
+        toolName: 'apply_patch',
+        toolInput: { patch },
+        cwd: '/w',
+        projectRoot: '/w',
+        env: {},
+      })
+    ) as { tool_input: { patch: string } };
+    const sent = req.tool_input.patch;
+    expect(sent.length).toBeLessThanOrEqual(24_000);
+    expect(sent).toContain('*** Update File: docs/notes.md');
+    expect(sent).toContain('  *** Delete File: secrets/key.pem');
+    expect(sent.endsWith('*** End Patch')).toBe(true);
+    expect(fitPatch('short')).toBe('short');
+  });
+
+  test('a refused patch is remembered by its files', () => {
+    const patch =
+      '*** Begin Patch\n*** Update File: a.ts\n+x\n*** Delete File: b.ts\n*** End Patch';
+    expect(blockedCallText('apply_patch', { patch })).toBe(
+      'apply_patch *** Update File: a.ts; *** Delete File: b.ts'
+    );
   });
 
   test('a Grok write becomes a Write with its content', () => {
