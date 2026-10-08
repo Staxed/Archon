@@ -41,7 +41,28 @@
       "api": "openai-completions",
       "apiKey": "gateway",
       "headers": { "X-Caller": "archon" },
-      "models": [{ "id": "local", "contextWindow": 32768, "maxTokens": 8192 }]
+      "models": [
+        {
+          "id": "local",
+          "contextWindow": 65536,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "xhigh",
+            "xhigh": "xhigh",
+            "max": "xhigh"
+          },
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+              "reasoning_effort": { "$var": "thinking.effort", "omitWhenOff": true }
+            }
+          }
+        }
+      ]
     }
   }
 }
