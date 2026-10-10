@@ -30,6 +30,9 @@ deployment of it needs.
   (`test-workflows/`, `e2e-*`, `rasmus-tests/`) and the Codex/Pi variants keep
   their models, because the model is what they test. On an upstream merge, keep
   the fork's `model:`/`effort:` lines and re-run `bun run generate:bundled`.
+- **Run model = the requested model:** when a Claude turn's usage lists several
+  models, the one the node asked for is recorded, not whichever produced the most
+  output (Claude Code's Haiku side calls won on short turns).
 - **Sub-cent cost caps** show as `$0.001`, not `$0.00`.
 - **Short run ids on Postgres:** the id-prefix lookup (`workflow get|resume|abandon
 <short-id>`, chat `/workflow` commands) casts the uuid to text before `LIKE`.

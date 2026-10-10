@@ -579,6 +579,34 @@ describe('ClaudeProvider', () => {
       );
     });
 
+    test('picks the requested model over a Haiku side call that produced more output', async () => {
+      // Claude Code's own side calls run on Haiku; on a short turn they can
+      // out-produce the main model.
+      mockQuery.mockImplementation(async function* () {
+        yield {
+          type: 'result',
+          session_id: 'sid-side-call',
+          modelUsage: {
+            'claude-haiku-4-5-20251001': { inputTokens: 300, outputTokens: 40 },
+            'claude-sonnet-5-5': { inputTokens: 9000, outputTokens: 2 },
+          },
+        };
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace', undefined, {
+        model: 'sonnet',
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks[0]).toMatchObject({ resolvedModel: { id: 'claude-sonnet-5-5' } });
+      expect(mockLogger.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'claude.resolved_model_ambiguous'
+      );
+    });
+
     test('omits resolvedModel when modelUsage is an empty record', async () => {
       mockQuery.mockImplementation(async function* () {
         yield { type: 'result', session_id: 'sid-empty-usage', modelUsage: {} };

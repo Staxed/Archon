@@ -196,14 +196,23 @@ function toModelSpend(breakdown: Record<string, ModelUsage> | undefined): ModelS
  * and the caller omits `resolvedModel` entirely rather than inventing a value.
  * On a tie (or output counts the SDK didn't send) the first key wins, which is
  * exactly the pre-#2314 behavior — safe, and the warning still fires.
+ *
+ * Fork: when the node asked for a model and exactly one entry is that model,
+ * it wins without a warning. Claude Code's own side calls (titles, summaries)
+ * run on Haiku in every session, so on a short turn they can out-produce the
+ * main model and the run was recorded as Haiku.
  */
 function selectResolvedModelId(
-  modelUsage: Record<string, ModelUsage> | undefined
+  modelUsage: Record<string, ModelUsage> | undefined,
+  requestedModel?: string
 ): string | undefined {
   if (!modelUsage) return undefined;
   const entries = Object.entries(modelUsage);
   if (entries.length === 0) return undefined;
   if (entries.length === 1) return entries[0][0];
+
+  const matching = entries.filter(([id]) => modelIdMatches(id, requestedModel));
+  if (matching.length === 1) return matching[0][0];
 
   const outputTokensOf = (usage: ModelUsage): number =>
     Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0;
@@ -216,6 +225,18 @@ function selectResolvedModelId(
     'claude.resolved_model_ambiguous'
   );
   return selected[0];
+}
+
+/**
+ * Whether a concrete model id is the model a request named: the exact id, or
+ * an alias (`haiku`, `sonnet`, `opus`, `fable`) naming its family.
+ */
+function modelIdMatches(id: string, requested: string | undefined): boolean {
+  if (!requested) return false;
+  const want = requested.trim().toLowerCase();
+  const have = id.toLowerCase();
+  if (have === want) return true;
+  return ['haiku', 'sonnet', 'opus', 'fable'].includes(want) && have.includes(`-${want}-`);
 }
 
 /**
@@ -1113,7 +1134,8 @@ function buildToolCaptureHooks(toolResultQueue: ToolResultEntry[]): Options['hoo
 async function* streamClaudeMessages(
   events: AsyncGenerator,
   toolResultQueue: ToolResultEntry[],
-  spendBaseline: SpendBaseline
+  spendBaseline: SpendBaseline,
+  requestedModel?: string
 ): AsyncGenerator<MessageChunk> {
   // Synthetic error message recorded while waiting for the terminal result to
   // confirm it (#1797). Detection is two-signal: the typed wrapper `error`
@@ -1344,7 +1366,7 @@ async function* streamClaudeMessages(
           );
         }
       }
-      const resolvedModelId = selectResolvedModelId(spend.modelUsage);
+      const resolvedModelId = selectResolvedModelId(spend.modelUsage, requestedModel);
       const modelSpend = toModelSpend(spend.breakdown);
       // The terminal result resolves any recorded synthetic error message.
       const syntheticError = pendingSdkError;
@@ -1749,7 +1771,7 @@ export class ClaudeProvider implements IAgentProvider {
         // retried/surfaced), so reaching the result stream means the prior
         // session was restored. Hence `true` whenever a resume was requested.
         yield* withResumedOutcome(
-          streamClaudeMessages(events, toolResultQueue, spendBaseline),
+          streamClaudeMessages(events, toolResultQueue, spendBaseline, options.model),
           resumedOutcome(resumeSessionId, true)
         );
         return;
