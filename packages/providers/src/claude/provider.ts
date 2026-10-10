@@ -187,8 +187,8 @@ function toModelSpend(breakdown: Record<string, ModelUsage> | undefined): ModelS
  * More than one entry is reachable for a single turn: a subagent pinned to
  * another model via `agents:`, or a `fallbackModel` takeover. Key insertion
  * order happens to put the main model first today, but nothing in the SDK
- * guarantees it — so select by greatest output-token count (the main model
- * produces the bulk of the output) and WARN whenever the record is ambiguous,
+ * guarantees it — so select by greatest cost (greatest output-token count
+ * when a cost is missing) and WARN whenever the record is ambiguous,
  * so a multi-model turn is visible instead of silently collapsed.
  *
  * `modelUsage` is non-optional in the SDK types but arrives over an IPC
@@ -214,11 +214,17 @@ function selectResolvedModelId(
   const matching = entries.filter(([id]) => modelIdMatches(id, requestedModel));
   if (matching.length === 1) return matching[0][0];
 
-  const outputTokensOf = (usage: ModelUsage): number =>
-    Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0;
+  // Cost when every entry has one: the main model reads the whole context, so
+  // it costs the most even on a turn where a side call wrote more. Output
+  // tokens otherwise.
+  const byCost = entries.every(([, u]) => Number.isFinite(u.costUSD));
+  const weightOf = (usage: ModelUsage): number => {
+    const v = byCost ? usage.costUSD : usage.outputTokens;
+    return Number.isFinite(v) ? v : 0;
+  };
   let selected = entries[0];
   for (const entry of entries.slice(1)) {
-    if (outputTokensOf(entry[1]) > outputTokensOf(selected[1])) selected = entry;
+    if (weightOf(entry[1]) > weightOf(selected[1])) selected = entry;
   }
   getLog().warn(
     { models: entries.map(([id]) => id), selected: selected[0] },

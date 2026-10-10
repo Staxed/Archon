@@ -607,6 +607,26 @@ describe('ClaudeProvider', () => {
       );
     });
 
+    test('with no requested model, picks the costlier model over a wordier Haiku side call', async () => {
+      mockQuery.mockImplementation(async function* () {
+        yield {
+          type: 'result',
+          session_id: 'sid-unrequested',
+          modelUsage: {
+            'claude-haiku-4-5-20251001': { inputTokens: 300, outputTokens: 40, costUSD: 0.0005 },
+            'claude-sonnet-5-5': { inputTokens: 9000, outputTokens: 2, costUSD: 0.03 },
+          },
+        };
+      });
+
+      const chunks = [];
+      for await (const chunk of client.sendQuery('test', '/workspace')) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks[0]).toMatchObject({ resolvedModel: { id: 'claude-sonnet-5-5' } });
+    });
+
     test('omits resolvedModel when modelUsage is an empty record', async () => {
       mockQuery.mockImplementation(async function* () {
         yield { type: 'result', session_id: 'sid-empty-usage', modelUsage: {} };
