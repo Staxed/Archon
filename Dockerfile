@@ -220,6 +220,35 @@ RUN CODEX_BIN="$(ls /app/node_modules/@openai/codex-linux-*/vendor/*/bin/codex 2
     && ln -sf "$CODEX_BIN" /usr/local/bin/codex \
     && codex --version
 
+# Grok CLI for Grok nodes (fork provider), pinned by version and checksum; bump both
+# together (the checksum is the binary at https://x.ai/cli/grok-<version>-linux-x86_64).
+# ARCHON_GROK_EXECUTABLE points the provider here, so its login can live in its own
+# volume on /home/bun/.grok (`grok login` in the container, like Codex's).
+ARG GROK_VERSION=1.0.41
+ARG GROK_SHA256=9ce03ed23e16ea01072b4496263d6213a27899e1e3e107f008d36edf82e70407
+RUN [ "$(uname -m)" = "x86_64" ] \
+    && curl -fsSL "https://x.ai/cli/grok-${GROK_VERSION}-linux-x86_64" -o /usr/local/bin/grok \
+    && echo "${GROK_SHA256}  /usr/local/bin/grok" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/grok \
+    && mkdir -p /home/bun/.grok && chown bun:bun /home/bun/.grok
+ENV ARCHON_GROK_EXECUTABLE=/usr/local/bin/grok
+
+# `archon` on PATH: the CLI for `docker exec` (Stixed's `stixctl archon` runs it here).
+# docker exec skips docker-entrypoint.sh, so this sets what the entrypoint exports for
+# the server (CLAUDE_BIN_PATH), and refuses without DATABASE_URL: on SQLite the CLI
+# would open and migrate a fork-era ~/.archon/archon.db.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ -z "${DATABASE_URL:-}" ]; then echo "archon: refused, no DATABASE_URL in this environment" >&2; exit 1; fi' \
+    'case "$(uname -m)" in' \
+    '  x86_64) _b=/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude ;;' \
+    '  aarch64) _b=/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude ;;' \
+    'esac' \
+    'if [ -z "${CLAUDE_BIN_PATH:-}" ] && [ -x "${_b:-}" ]; then export CLAUDE_BIN_PATH="$_b"; fi' \
+    'exec bun /app/packages/cli/src/cli.ts "$@"' \
+    > /usr/local/bin/archon \
+    && chmod 755 /usr/local/bin/archon
+
 # Configure git to trust Archon directories (as appuser)
 RUN gosu appuser git config --global --add safe.directory '/.archon/workspaces' && \
     gosu appuser git config --global --add safe.directory '/.archon/workspaces/*' && \
