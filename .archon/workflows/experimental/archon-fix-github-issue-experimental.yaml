@@ -56,6 +56,7 @@ nodes:
   # actually fails on a real project.
 
   - id: prep-worktree
+    effort: medium
     prompt: |
       Install this project's dependencies so builds, type-checks and tests can run
       in this fresh worktree.
@@ -120,6 +121,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: parse-request
+    effort: medium
     command: archon-parse-user-request
     model: small
     output_format:
@@ -184,6 +186,7 @@ nodes:
     depends_on: [parse-request]
 
   - id: classify
+    effort: medium
     prompt: |
       You are an issue classifier. Analyze the GitHub issue below and determine:
       (1) its type, (2) its scope, and (3) whether external web research is needed.
@@ -262,6 +265,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: smoke-validate
+    model: medium
+    effort: medium
     prompt: |
       You are a smoke validator. Your job: verify that the issue's claims about the
       code are ACCURATE, so downstream skip decisions rest on a reliable foundation.
@@ -330,6 +335,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: web-research
+    model: medium
+    effort: medium
     command: archon-web-research
     depends_on: [classify, smoke-validate]
     # Runs when research is flagged OR smoke-validate finds the issue unreliable (fallback)
@@ -341,6 +348,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: investigate
+    model: medium
+    effort: high
     command: archon-investigate-issue
     output_type: investigation
     depends_on: [classify, web-research]
@@ -350,6 +359,8 @@ nodes:
     context: fresh
 
   - id: plan
+    model: medium
+    effort: medium
     command: archon-create-plan
     output_type: plan
     depends_on: [classify, web-research]
@@ -390,11 +401,12 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: implement
+    effort: high
     command: archon-fix-issue
     output_type: implementation
     depends_on: [bridge-artifacts, assert-deps-installed]
     context: fresh
-    model: large
+    model: medium
 
   # Hard stop when `implement` produced nothing.
   #
@@ -451,6 +463,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: validate
+    model: medium
+    effort: medium
     command: archon-validate
     output_type: validation
     depends_on: [assert-implemented]
@@ -461,6 +475,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: create-pr
+    model: medium
+    effort: medium
     prompt: |
       Create a draft pull request for the current branch.
 
@@ -564,11 +580,14 @@ nodes:
     trigger_rule: all_done
 
   - id: review-scope
+    model: small
+    effort: medium
     command: archon-pr-review-scope
     depends_on: [capture-pr-number]
     context: fresh
 
   - id: review-classify
+    effort: medium
     prompt: |
       You are a PR review classifier. Analyze the PR scope and determine
       which review agents should run.
@@ -623,6 +642,8 @@ nodes:
 
   # Code review always runs — mandatory
   - id: code-review
+    model: medium
+    effort: high
     command: archon-code-review-agent
     depends_on: [review-classify]
     context: fresh
@@ -662,24 +683,32 @@ nodes:
 
   # Reviewer gates: the agent's own flag AND the shared extra-scrutiny term.
   - id: error-handling
+    model: medium
+    effort: high
     command: archon-error-handling-agent
     depends_on: [review-classify, review-gate]
     when: "$review-classify.output.run_error_handling == 'true' && $review-gate.output.extra_review == 'true'"
     context: fresh
 
   - id: test-coverage
+    model: medium
+    effort: high
     command: archon-test-coverage-agent
     depends_on: [review-classify, review-gate]
     when: "$review-classify.output.run_test_coverage == 'true' && $review-gate.output.extra_review == 'true'"
     context: fresh
 
   - id: comment-quality
+    model: medium
+    effort: high
     command: archon-comment-quality-agent
     depends_on: [review-classify, review-gate]
     when: "$review-classify.output.run_comment_quality == 'true' && $review-gate.output.extra_review == 'true'"
     context: fresh
 
   - id: docs-impact
+    model: medium
+    effort: high
     command: archon-docs-impact-agent
     depends_on: [review-classify, review-gate]
     when: "$review-classify.output.run_docs_impact == 'true' && $review-gate.output.extra_review == 'true'"
@@ -690,6 +719,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: synthesize
+    model: medium
+    effort: medium
     command: archon-synthesize-review
     output_type: review-synthesis
     depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact, pr-exists]
@@ -708,6 +739,8 @@ nodes:
     context: fresh
 
   - id: self-fix
+    model: medium
+    effort: medium
     command: archon-self-fix-all
     depends_on: [synthesize]
     context: fresh
@@ -717,6 +750,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: simplify
+    model: medium
+    effort: medium
     command: archon-simplify-changes
     depends_on: [self-fix]
     context: fresh
@@ -726,6 +761,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: report
+    model: medium
+    effort: medium
     command: archon-issue-completion-report
     output_type: completion-report
     depends_on: [simplify]

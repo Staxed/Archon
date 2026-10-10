@@ -18,6 +18,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: investigate
+    model: medium
+    effort: high
     command: archon-investigate-issue
 
   # ═══════════════════════════════════════════════════════════════════
@@ -25,6 +27,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: implement
+    model: medium
+    effort: medium
     command: archon-implement-issue
     depends_on: [investigate]
     context: fresh
@@ -44,6 +48,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: summary
+    model: medium
+    effort: medium
     command: archon-workflow-summary
     depends_on: [review]
     context: fresh

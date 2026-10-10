@@ -12,6 +12,8 @@ description: |
 
 nodes:
   - id: resolve
+    model: medium
+    effort: medium
     command: archon-resolve-merge-conflicts
 
 # Deprecated legacy default (#2781): announce removal in the run-start notice during this window.

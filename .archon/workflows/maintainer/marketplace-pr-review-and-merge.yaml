@@ -10,7 +10,7 @@ description: |
   Arguments: PR number (integer).
 
 provider: claude
-model: claude-haiku-4-5-20251001
+model: medium
 
 worktree:
   enabled: false
@@ -199,6 +199,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: ai-review
+    model: medium
+    effort: high
     prompt: |
       You are reviewing a community marketplace submission for the Archon workflow platform.
       The submitter pinned their workflow to a commit SHA in an external repository; the

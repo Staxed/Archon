@@ -9,7 +9,7 @@ description: |
   "run the checks", "is this green", "validate this".
   NOT for: fixing failures (implement) or reviewing code (review).
 
-model: medium
+model: small
 
 inputs:
   scope:
@@ -73,6 +73,8 @@ nodes:
   # script node runs for as long as its own `timeout:` allows. Judging why a
   # check failed is judgement again, so only a red run reaches an agent.
   - id: discover
+    model: small
+    effort: medium
     command: discover-checks
     depends_on: [mode]
     when: "$mode.output.comparison == false"
@@ -123,6 +125,8 @@ nodes:
       required: [status, summary]
 
   - id: classify
+    model: small
+    effort: medium
     command: classify-red
     depends_on: [run]
     when: "$run.output.status == 'red'"

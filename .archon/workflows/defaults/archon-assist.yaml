@@ -16,4 +16,6 @@ worktree:
 
 nodes:
   - id: assist
+    model: medium
+    effort: medium
     command: archon-assist

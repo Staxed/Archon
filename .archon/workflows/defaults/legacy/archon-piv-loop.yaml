@@ -27,6 +27,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: explore
+    model: small
+    effort: medium
     loop:
       prompt: |
         # PIV Loop — Exploration
@@ -174,6 +176,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: create-plan
+    effort: medium
     model: medium
     depends_on: [explore]
     context: fresh
@@ -295,6 +298,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: refine-plan
+    model: medium
+    effort: medium
     depends_on: [create-plan]
     loop:
       prompt: |
@@ -409,9 +414,10 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: implement
+    effort: high
     depends_on: [implement-setup]
     idle_timeout: 600000
-    model: large
+    model: medium
     loop:
       prompt: |
         # PIV Loop — Implementation Agent
@@ -541,6 +547,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: code-review
+    effort: high
     model: medium
     depends_on: [implement]
     context: fresh
@@ -617,6 +624,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: fix-feedback
+    model: medium
+    effort: medium
     depends_on: [code-review]
     loop:
       prompt: |
@@ -701,6 +710,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: finalize
+    effort: medium
     model: medium
     depends_on: [fix-feedback]
     context: fresh

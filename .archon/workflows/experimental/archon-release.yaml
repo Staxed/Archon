@@ -258,6 +258,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: draft-changelog
+    model: medium
+    effort: medium
     prompt: |
       You are drafting a CHANGELOG entry for the upcoming release.
 
@@ -394,6 +396,7 @@ nodes:
   # the dynamic summary as a Haiku prompt-node output (which DOES get
   # substituted and streams to chat). Cheap pass-through, ~200 tokens.
   - id: review-summary
+    effort: medium
     prompt: |
       Reply to the user with EXACTLY this text, verbatim, no elaboration,
       no markdown-rendering, no commentary, no questions. Just print it.
@@ -419,7 +422,7 @@ nodes:
       Reply with `/workflow approve <run-id>` to continue, or
       `/workflow reject <run-id> <reason>` to abort.
     depends_on: [format-changelog, collect-commits, bump-version, parse-args]
-    model: haiku
+    model: small
     allowed_tools: []
 
   - id: review-changelog
@@ -576,6 +579,7 @@ nodes:
 
   # Pre-merge-gate summary (same pass-through pattern as review-summary)
   - id: merge-summary
+    effort: medium
     prompt: |
       Reply to the user with EXACTLY this text, verbatim, no elaboration:
 
@@ -592,7 +596,7 @@ nodes:
       Then approve here to continue with tag, GitHub release, dev sync,
       binary wait, and Homebrew formula update.
     depends_on: [create-pr]
-    model: haiku
+    model: small
     allowed_tools: []
     when: "$parse-args.output.dryRun == 'false'"
 

@@ -65,6 +65,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: analyze
+    model: small
+    effort: medium
     prompt: |
       You are a senior software architect performing a codebase health assessment.
 
@@ -119,6 +121,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: plan
+    model: medium
+    effort: medium
     prompt: |
       You are planning targeted architectural improvements.
 
@@ -156,6 +160,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: simplify
+    model: medium
+    effort: medium
     prompt: |
       You are implementing targeted architectural simplifications.
 
@@ -253,6 +259,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: fix-failures
+    model: medium
+    effort: medium
     prompt: |
       Review the validation output below.
 
@@ -298,6 +306,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: create-pr
+    model: medium
+    effort: medium
     prompt: |
       Create a pull request for the architectural improvements.
 

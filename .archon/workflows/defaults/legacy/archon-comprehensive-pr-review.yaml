@@ -12,38 +12,56 @@ description: |
 
 nodes:
   - id: scope
+    model: small
+    effort: medium
     command: archon-pr-review-scope
 
   - id: sync
+    model: medium
+    effort: medium
     command: archon-sync-pr-with-main
     depends_on: [scope]
 
   - id: code-review
+    model: medium
+    effort: high
     command: archon-code-review-agent
     depends_on: [sync]
 
   - id: error-handling
+    model: medium
+    effort: high
     command: archon-error-handling-agent
     depends_on: [sync]
 
   - id: test-coverage
+    model: medium
+    effort: high
     command: archon-test-coverage-agent
     depends_on: [sync]
 
   - id: comment-quality
+    model: medium
+    effort: high
     command: archon-comment-quality-agent
     depends_on: [sync]
 
   - id: docs-impact
+    model: medium
+    effort: high
     command: archon-docs-impact-agent
     depends_on: [sync]
 
   - id: synthesize
+    model: medium
+    effort: medium
     command: archon-synthesize-review
     depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact]
     trigger_rule: one_success
 
   - id: implement-fixes
+    model: medium
+    effort: medium
     command: archon-implement-review-fixes
     depends_on: [synthesize]
 

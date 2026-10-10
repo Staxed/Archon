@@ -25,6 +25,8 @@ nodes:
   # publish below owns that, so the same intent is published the same way
   # whichever source the run selected.
   - id: pr
+    model: medium
+    effort: medium
     command: pr
     output_type: pull-request-intent
     output_format:

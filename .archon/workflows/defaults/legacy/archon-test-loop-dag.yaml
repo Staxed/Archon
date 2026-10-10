@@ -12,6 +12,8 @@ nodes:
       echo "Counter initialized to 0"
 
   - id: loop-counter
+    model: small
+    effort: medium
     depends_on: [setup]
     loop:
       prompt: |
@@ -42,6 +44,8 @@ nodes:
       fresh_context: false
 
   - id: report
+    model: medium
+    effort: medium
     depends_on: [loop-counter]
     prompt: |
       The loop counter test has completed. The loop node output was:

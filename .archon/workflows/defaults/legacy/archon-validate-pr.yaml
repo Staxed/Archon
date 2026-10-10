@@ -83,11 +83,15 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: code-review-main
+    model: medium
+    effort: high
     command: archon-validate-pr-code-review-main
     depends_on: [fetch-pr, resolve-paths]
     context: fresh
 
   - id: code-review-feature
+    model: medium
+    effort: high
     command: archon-validate-pr-code-review-feature
     depends_on: [fetch-pr, resolve-paths, code-review-main]
     context: fresh
@@ -97,6 +101,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: classify-testability
+    effort: medium
     prompt: |
       You are a PR testability classifier. Determine whether this PR's changes can be
       validated via browser E2E testing, or if it requires code-review-only validation.
@@ -132,6 +137,8 @@ nodes:
       required: [testable, reasoning, test_plan]
 
   - id: e2e-test-main
+    model: medium
+    effort: medium
     command: archon-validate-pr-e2e-main
     depends_on: [classify-testability, find-ports, resolve-paths, code-review-main, code-review-feature]
     when: "$classify-testability.output.testable == 'e2e_testable'"
@@ -139,6 +146,8 @@ nodes:
     idle_timeout: 1800000
 
   - id: e2e-test-feature
+    model: medium
+    effort: medium
     command: archon-validate-pr-e2e-feature
     depends_on: [e2e-test-main, find-ports, resolve-paths]
     when: "$classify-testability.output.testable == 'e2e_testable'"
@@ -205,6 +214,8 @@ nodes:
     trigger_rule: all_done
 
   - id: final-report
+    model: medium
+    effort: medium
     command: archon-validate-pr-report
     depends_on: [code-review-main, code-review-feature, e2e-test-main, e2e-test-feature, classify-testability, cleanup-processes]
     trigger_rule: all_done

@@ -20,6 +20,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: initiate
+    effort: medium
     model: medium
     prompt: |
       You are a sharp product manager starting a PRD creation process.
@@ -60,6 +61,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: research
+    effort: medium
     model: medium
     prompt: |
       You are researching context for a PRD. Think from first principles —
@@ -115,6 +117,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: technical
+    effort: medium
     model: medium
     prompt: |
       You are assessing technical feasibility for a PRD.
@@ -182,6 +185,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: generate
+    effort: medium
     model: medium
     prompt: |
       You are generating a PRD from the user's guided inputs.
@@ -239,6 +243,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: validate
+    effort: medium
     model: medium
     prompt: |
       You are a technical validator checking a PRD for accuracy.

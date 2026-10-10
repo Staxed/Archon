@@ -26,6 +26,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: parse-request
+    effort: medium
     command: archon-parse-user-request
     model: small
     output_format:
@@ -90,6 +91,7 @@ nodes:
     depends_on: [parse-request]
 
   - id: classify
+    effort: medium
     prompt: |
       You are an issue classifier. Analyze the GitHub issue below and determine its type.
 
@@ -129,6 +131,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: web-research
+    model: medium
+    effort: medium
     command: archon-web-research
     depends_on: [classify]
     context: fresh
@@ -138,12 +142,16 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: investigate
+    model: medium
+    effort: high
     command: archon-investigate-issue
     depends_on: [classify, web-research]
     when: "$classify.output.issue_type == 'bug'"
     context: fresh
 
   - id: plan
+    model: medium
+    effort: medium
     command: archon-create-plan
     depends_on: [classify, web-research]
     when: "$classify.output.issue_type != 'bug'"
@@ -178,16 +186,19 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: implement
+    effort: high
     command: archon-fix-issue
     depends_on: [bridge-artifacts]
     context: fresh
-    model: large
+    model: medium
 
   # ═══════════════════════════════════════════════════════════════
   # PHASE 5: VALIDATE
   # ═══════════════════════════════════════════════════════════════
 
   - id: validate
+    model: medium
+    effort: medium
     command: archon-validate
     depends_on: [implement]
     context: fresh
@@ -197,6 +208,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: create-pr
+    model: medium
+    effort: medium
     prompt: |
       Create a draft pull request for the current branch.
 
@@ -274,11 +287,14 @@ nodes:
     depends_on: [create-pr]
 
   - id: review-scope
+    model: small
+    effort: medium
     command: archon-pr-review-scope
     depends_on: [verify-pr-base]
     context: fresh
 
   - id: review-classify
+    effort: medium
     prompt: |
       You are a PR review classifier. Analyze the PR scope and determine
       which review agents should run.
@@ -334,29 +350,39 @@ nodes:
 
   # Code review always runs — mandatory
   - id: code-review
+    model: medium
+    effort: high
     command: archon-code-review-agent
     depends_on: [review-classify]
     context: fresh
 
   - id: error-handling
+    model: medium
+    effort: high
     command: archon-error-handling-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_error_handling == 'true'"
     context: fresh
 
   - id: test-coverage
+    model: medium
+    effort: high
     command: archon-test-coverage-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_test_coverage == 'true'"
     context: fresh
 
   - id: comment-quality
+    model: medium
+    effort: high
     command: archon-comment-quality-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_comment_quality == 'true'"
     context: fresh
 
   - id: docs-impact
+    model: medium
+    effort: high
     command: archon-docs-impact-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_docs_impact == 'true'"
@@ -367,12 +393,16 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: synthesize
+    model: medium
+    effort: medium
     command: archon-synthesize-review
     depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact]
     trigger_rule: one_success
     context: fresh
 
   - id: self-fix
+    model: medium
+    effort: medium
     command: archon-self-fix-all
     depends_on: [synthesize]
     context: fresh
@@ -382,6 +412,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: simplify
+    model: medium
+    effort: medium
     command: archon-simplify-changes
     depends_on: [self-fix]
     context: fresh
@@ -391,6 +423,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: report
+    model: medium
+    effort: medium
     command: archon-issue-completion-report
     depends_on: [simplify]
     context: fresh

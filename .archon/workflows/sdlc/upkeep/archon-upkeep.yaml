@@ -36,6 +36,7 @@ nodes:
   # judge-and-return shape appears here for the second time after triage — rule
   # of three says extract on the third package that needs it, not now.
   - id: assess
+    effort: high
     command: assess
     # Advisory on both counts, and the engine holds both: it fails this node with
     # the touched paths named if the checkout is modified, and it refuses the

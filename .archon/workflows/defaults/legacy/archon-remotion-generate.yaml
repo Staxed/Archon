@@ -26,6 +26,8 @@ nodes:
 
   # ── Layer 1: Generate composition code ────────────────────────────────
   - id: generate
+    model: medium
+    effort: medium
     prompt: |
       You are working in a Remotion video project. The project root is the current directory.
 
@@ -109,6 +111,7 @@ nodes:
 
   # ── Layer 4: Summary ──────────────────────────────────────────────────
   - id: summary
+    effort: medium
     prompt: |
       A Remotion video was generated and rendered.
 
@@ -127,7 +130,7 @@ nodes:
     depends_on: [render-video]
     allowed_tools:
       - Read
-    model: small
+    model: medium
 
 # Deprecated legacy default (#2781): announce removal in the run-start notice during this window.
 deprecated:

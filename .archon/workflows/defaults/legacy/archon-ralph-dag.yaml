@@ -21,6 +21,7 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: detect-input
+    effort: medium
     model: small
     prompt: |
       # Detect Ralph Input
@@ -94,6 +95,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: generate-prd
+    model: medium
+    effort: medium
     depends_on: [detect-input]
     when: "$detect-input.output.input_type != 'ready'"
     command: archon-ralph-generate
@@ -187,9 +190,10 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: implement
+    effort: high
     depends_on: [validate-prd]
     idle_timeout: 600000
-    model: large
+    model: medium
     loop:
       prompt: |
         # Ralph Agent — Autonomous Story Implementation
@@ -686,6 +690,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: report
+    model: medium
+    effort: medium
     depends_on: [verify-pr-base]
     prompt: |
       # Completion Report

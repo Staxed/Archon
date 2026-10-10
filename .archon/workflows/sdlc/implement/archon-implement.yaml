@@ -9,7 +9,7 @@ description: |
   "apply these review findings", "build what this describes", "fix this CI failure".
   NOT for: deciding what to build, reviewing changes, or opening a PR.
 
-model: large
+model: medium
 
 inputs:
   work:
@@ -29,6 +29,8 @@ nodes:
   # it deterministically before spending or shipping (deliver does), and the
   # workflow's outcome_field records it as the run's authored outcome.
   - id: implement
+    model: medium
+    effort: high
     loop:
       command: implement
       until_field: done

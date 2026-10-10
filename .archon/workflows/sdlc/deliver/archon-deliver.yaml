@@ -105,6 +105,7 @@ nodes:
   # and correction reviews preserve those concerns while one continuation
   # reviewer judges the prior report and correction delta.
   - id: classify
+    effort: medium
     command: classify-review-scope
     # This workflow declares no top-level model, so every AI node here names its
     # own tier. Choosing between two booleans off a diff is small-tier work.
@@ -328,6 +329,7 @@ nodes:
       required: [body, url]
 
   - id: sync-pr-body
+    effort: medium
     command: sync-pr-body
     model: medium
     with:

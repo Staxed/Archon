@@ -19,6 +19,17 @@ deployment of it needs.
   artifacts, state and log dirs.
 - **Missing MCP config on a `when:`-gated node** is a validation warning, not an
   error.
+- **Model and effort per node (routes-2026-10-09.1):** every Claude node in
+  `sdlc/`, `defaults/` (legacy included), `experimental/` and `maintainer/` names
+  its tier and effort, from Stixed's routing decision
+  (`stixed/.agent/docs/model-routing-2026-10-09.md`). Review and debug nodes are
+  `medium` · high, unattended whole-ticket builds `medium` · high, other build,
+  plan, research, verify and summary nodes `medium` · medium, classification and
+  plain lookups `small` · medium. No node uses `large`. Codex tiers are
+  `gpt-6-luna` / `gpt-6.1-sol` / `gpt-6.1-sol`. Provider test workflows
+  (`test-workflows/`, `e2e-*`, `rasmus-tests/`) and the Codex/Pi variants keep
+  their models, because the model is what they test. On an upstream merge, keep
+  the fork's `model:`/`effort:` lines and re-run `bun run generate:bundled`.
 - **Sub-cent cost caps** show as `$0.001`, not `$0.00`.
 - **Short run ids on Postgres:** the id-prefix lookup (`workflow get|resume|abandon
 <short-id>`, chat `/workflow` commands) casts the uuid to text before `LIKE`.

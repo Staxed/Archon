@@ -18,6 +18,8 @@ model: medium
 nodes:
   # ─── Phase 1: Planning ───────────────────────────────────────────────
   - id: plan
+    model: medium
+    effort: medium
     prompt: |
       You are a product planning expert. Your job is to take a short user prompt and expand it
       into a comprehensive product specification.
@@ -115,9 +117,10 @@ nodes:
   # fresh_context ensures genuine separation between roles
   #
   - id: adversarial-sprint
+    effort: high
     depends_on: [init-workspace]
     idle_timeout: 600000
-    model: large
+    model: medium
     loop:
       prompt: |
         # Adversarial Development — Sprint Loop
@@ -304,10 +307,11 @@ nodes:
 
   # ─── Phase 4: Report ─────────────────────────────────────────────────
   - id: report
+    effort: medium
     depends_on: [adversarial-sprint]
     trigger_rule: all_done
     context: fresh
-    model: small
+    model: medium
     prompt: |
       You are a project reporter. Generate a comprehensive summary of the adversarial development run.
 

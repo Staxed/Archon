@@ -23,6 +23,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: create-plan
+    model: medium
+    effort: medium
     command: archon-create-plan
     context: fresh
 
@@ -31,6 +33,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: plan-setup
+    model: small
+    effort: medium
     command: archon-plan-setup
     depends_on: [create-plan]
     context: fresh
@@ -40,6 +44,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: confirm-plan
+    model: medium
+    effort: medium
     command: archon-confirm-plan
     depends_on: [plan-setup]
     context: fresh
@@ -49,17 +55,20 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: implement-tasks
+    effort: high
     command: archon-implement-tasks
     depends_on: [confirm-plan]
     context: fresh
     provider: claude
-    model: large
+    model: medium
 
   # ═══════════════════════════════════════════════════════════════════
   # PHASE 4: VALIDATE
   # ═══════════════════════════════════════════════════════════════════
 
   - id: validate
+    model: medium
+    effort: medium
     command: archon-validate
     depends_on: [implement-tasks]
     context: fresh
@@ -69,6 +78,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: finalize-pr
+    model: medium
+    effort: medium
     command: archon-finalize-pr
     depends_on: [validate]
     context: fresh
@@ -88,6 +99,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════════
 
   - id: workflow-summary
+    model: medium
+    effort: medium
     command: archon-workflow-summary
     depends_on: [review]
     context: fresh

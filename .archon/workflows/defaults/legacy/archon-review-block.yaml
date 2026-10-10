@@ -31,47 +31,65 @@ nodes:
       fi
 
   - id: review-scope
+    model: small
+    effort: medium
     command: archon-pr-review-scope
     depends_on: [verify-pr-base]
     context: fresh
 
   - id: sync
+    model: medium
+    effort: medium
     command: archon-sync-pr-with-main
     depends_on: [review-scope]
     context: fresh
 
   - id: code-review
+    model: medium
+    effort: high
     command: archon-code-review-agent
     depends_on: [sync]
     context: fresh
 
   - id: error-handling
+    model: medium
+    effort: high
     command: archon-error-handling-agent
     depends_on: [sync]
     context: fresh
 
   - id: test-coverage
+    model: medium
+    effort: high
     command: archon-test-coverage-agent
     depends_on: [sync]
     context: fresh
 
   - id: comment-quality
+    model: medium
+    effort: high
     command: archon-comment-quality-agent
     depends_on: [sync]
     context: fresh
 
   - id: docs-impact
+    model: medium
+    effort: high
     command: archon-docs-impact-agent
     depends_on: [sync]
     context: fresh
 
   - id: synthesize
+    model: medium
+    effort: medium
     command: archon-synthesize-review
     depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact]
     trigger_rule: one_success
     context: fresh
 
   - id: implement-fixes
+    model: medium
+    effort: medium
     command: archon-implement-review-fixes
     depends_on: [synthesize]
     context: fresh

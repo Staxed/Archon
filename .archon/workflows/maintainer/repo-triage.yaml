@@ -81,8 +81,9 @@ nodes:
   # Issue triage — runs concurrently with pr-link (no depends_on between them).
   # ---------------------------------------------------------------------------
   - id: triage-issues
+    effort: medium
     depends_on: [state-preflight]
-    model: sonnet
+    model: medium
     allowed_tools: [Bash, Read, Write, Task]
     agents:
       brief-gen:
@@ -382,8 +383,9 @@ nodes:
   # artifact. Runs in parallel with link-prs once triage-issues is done.
   # ---------------------------------------------------------------------------
   - id: closed-dedup-check
+    effort: medium
     depends_on: [triage-issues]
-    model: sonnet
+    model: medium
     allowed_tools: [Bash, Read, Write, Task]
     agents:
       closed-brief-gen:
@@ -629,8 +631,9 @@ nodes:
   # other top-level nodes.
   # ---------------------------------------------------------------------------
   - id: closed-pr-dedup-check
+    effort: medium
     depends_on: [state-preflight]
-    model: sonnet
+    model: medium
     allowed_tools: [Bash, Read, Write, Task]
     agents:
       pr-brief-gen:
@@ -842,8 +845,9 @@ nodes:
   # PR ↔ issue linker — runs concurrently with triage-issues.
   # ---------------------------------------------------------------------------
   - id: link-prs
+    effort: medium
     depends_on: [state-preflight]
-    model: sonnet
+    model: medium
     allowed_tools: [Bash, Read, Write, Task]
     agents:
       pr-issue-matcher:
@@ -1226,8 +1230,9 @@ nodes:
   # nudge each item once per quiet period.
   # ---------------------------------------------------------------------------
   - id: stale-nudge
+    effort: medium
     depends_on: [state-preflight]
-    model: sonnet
+    model: small
     allowed_tools: [Bash, Read, Write]
     prompt: |
       You post gentle reminders on GitHub issues and PRs that have gone
@@ -1363,13 +1368,14 @@ nodes:
   # no gh calls, no mutations, no Task fan-out.
   # ---------------------------------------------------------------------------
   - id: digest
+    effort: medium
     depends_on:
       - triage-issues
       - link-prs
       - closed-dedup-check
       - closed-pr-dedup-check
       - stale-nudge
-    model: sonnet
+    model: medium
     allowed_tools: [Bash, Read, Write]
     prompt: |
       You synthesise the outputs of all prior nodes in this run into one

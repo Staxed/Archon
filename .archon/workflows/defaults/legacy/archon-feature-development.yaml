@@ -7,11 +7,14 @@ description: |
 
 nodes:
   - id: implement
+    effort: high
     command: archon-implement
     provider: claude
-    model: large
+    model: medium
 
   - id: create-pr
+    model: medium
+    effort: medium
     command: archon-create-pr
     depends_on: [implement]
     context: fresh

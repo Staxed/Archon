@@ -49,6 +49,7 @@ nodes:
       fi
 
   - id: extract-intent
+    effort: medium
     prompt: |
       You are a workflow design classifier. Given a user's description of what they want
       a workflow to do, extract structured intent.
@@ -91,6 +92,8 @@ nodes:
     depends_on: [scan-codebase]
 
   - id: generate-yaml
+    model: medium
+    effort: medium
     prompt: |
       You are an Archon workflow author. Generate a complete, valid workflow YAML file
       based on the structured intent provided.
@@ -248,6 +251,8 @@ nodes:
     depends_on: [generate-yaml]
 
   - id: save-or-report
+    model: small
+    effort: medium
     prompt: |
       You are a workflow installer. Save the generated workflow and report to the user.
 

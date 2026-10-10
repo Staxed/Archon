@@ -12,7 +12,7 @@ description: |
   this ready to build".
   NOT for: performing the investigation, writing the plan, or delivering work.
 
-model: medium
+model: small
 
 inputs:
   target:
@@ -33,6 +33,8 @@ outcome_field: ready
 
 nodes:
   - id: triage
+    model: small
+    effort: medium
     command: triage
     # Triage is advisory on both counts, and the engine holds both. It fails this
     # node with the touched paths named if the checkout is modified, and it

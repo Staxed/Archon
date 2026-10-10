@@ -12,13 +12,18 @@ description: |
 
 nodes:
   - id: scope
+    model: small
+    effort: medium
     command: archon-pr-review-scope
 
   - id: sync
+    model: medium
+    effort: medium
     command: archon-sync-pr-with-main
     depends_on: [scope]
 
   - id: classify
+    effort: medium
     prompt: |
       You are a PR complexity classifier. Analyze the PR scope below and determine
       which review agents should run.
@@ -80,36 +85,50 @@ nodes:
         - reasoning
 
   - id: code-review
+    model: medium
+    effort: high
     command: archon-code-review-agent
     depends_on: [classify, sync]
     when: "$classify.output.run_code_review == 'true'"
 
   - id: error-handling
+    model: medium
+    effort: high
     command: archon-error-handling-agent
     depends_on: [classify, sync]
     when: "$classify.output.run_error_handling == 'true'"
 
   - id: test-coverage
+    model: medium
+    effort: high
     command: archon-test-coverage-agent
     depends_on: [classify, sync]
     when: "$classify.output.run_test_coverage == 'true'"
 
   - id: comment-quality
+    model: medium
+    effort: high
     command: archon-comment-quality-agent
     depends_on: [classify, sync]
     when: "$classify.output.run_comment_quality == 'true'"
 
   - id: docs-impact
+    model: medium
+    effort: high
     command: archon-docs-impact-agent
     depends_on: [classify, sync]
     when: "$classify.output.run_docs_impact == 'true'"
 
   - id: synthesize
+    model: medium
+    effort: medium
     command: archon-synthesize-review
     depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact]
     trigger_rule: one_success
 
   - id: implement-fixes
+    model: medium
+    effort: medium
     command: archon-implement-review-fixes
     depends_on: [synthesize]
 
@@ -120,6 +139,8 @@ nodes:
     depends_on: [implement-fixes]
 
   - id: notify
+    model: small
+    effort: medium
     depends_on: [check-ntfy, synthesize, implement-fixes]
     when: "$check-ntfy.output == 'true'"
     trigger_rule: all_success

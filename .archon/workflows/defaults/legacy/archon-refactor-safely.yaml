@@ -62,6 +62,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: analyze-impact
+    model: small
+    effort: medium
     prompt: |
       You are a senior software engineer analyzing code for a safe refactoring.
 
@@ -125,6 +127,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: plan-refactor
+    model: medium
+    effort: medium
     prompt: |
       You are planning a safe refactoring. You must produce a precise, ordered plan
       that another agent will follow literally.
@@ -207,7 +211,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: execute-refactor
-    model: large
+    effort: high
+    model: medium
     prompt: |
       You are executing a refactoring plan with strict safety guardrails.
 
@@ -333,6 +338,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: fix-failures
+    model: medium
+    effort: medium
     prompt: |
       Review the validation output below.
 
@@ -381,6 +388,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: verify-behavior
+    model: medium
+    effort: medium
     prompt: |
       You are a code reviewer verifying that a refactoring preserved exact behavior.
       You can ONLY read files — you cannot make any changes.
@@ -436,6 +445,8 @@ nodes:
   # ═══════════════════════════════════════════════════════════════
 
   - id: create-pr
+    model: medium
+    effort: medium
     prompt: |
       Create a pull request for the refactoring.
 
